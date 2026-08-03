@@ -1,0 +1,55 @@
+import os
+from urllib.error import HTTPError
+from urllib.parse import quote
+from urllib.request import Request, urlopen
+import json
+
+
+def _url(object_name):
+    base = os.environ["SUPABASE_URL"].rstrip("/")
+    bucket = quote(os.getenv("SUPABASE_STORAGE_BUCKET", "face-scans"), safe="")
+    return f"{base}/storage/v1/object/{bucket}/{quote(object_name, safe='/')}"
+
+
+def _headers():
+    key = os.environ["SUPABASE_SECRET_KEY"]
+    return {"apikey": key, "Authorization": f"Bearer {key}"}
+
+
+def upload_image(object_name, data, content_type):
+    request = Request(
+        _url(object_name),
+        data=data,
+        method="POST",
+        headers={**_headers(), "Content-Type": content_type, "x-upsert": "false"},
+    )
+    with urlopen(request, timeout=30):
+        pass
+    return object_name
+
+
+def download_image(object_name):
+    with urlopen(Request(_url(object_name), headers=_headers()), timeout=30) as response:
+        return response.read()
+
+
+def delete_image(object_name):
+    try:
+        with urlopen(Request(_url(object_name), method="DELETE", headers=_headers()), timeout=30):
+            pass
+    except HTTPError as exc:
+        if exc.code != 404:
+            raise
+
+
+def signed_url(object_name, expires_in=900):
+    request = Request(
+        f"{_url(object_name).replace('/object/', '/object/sign/')}",
+        data=json.dumps({"expiresIn": expires_in}).encode(),
+        method="POST",
+        headers={**_headers(), "Content-Type": "application/json"},
+    )
+    with urlopen(request, timeout=30) as response:
+        path = json.loads(response.read())["signedURL"]
+    return path if path.startswith("http") else f"{os.environ['SUPABASE_URL'].rstrip('/')}/storage/v1{path}"
+

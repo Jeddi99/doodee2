@@ -1,0 +1,16 @@
+{
+  "expo": {
+    "name": "Doodee",
+    "slug": "doodee",
+    "scheme": "doodee",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "plugins": ["expo-router"],
+    "ios": {
+      "supportsTablet": false,
+      "bundleIdentifier": "app.doodee.mobile",
+      "infoPlist": { "NSCameraUsageDescription": "Doodee uses the camera to capture the seven face views you consent to analyze." }
+    },
+    "android": { "package": "app.doodee.mobile", "permissions": ["android.permission.CAMERA"] }
+  }
+}

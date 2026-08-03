@@ -1,0 +1,11 @@
+{
+  "name": "doodee-app",
+  "private": true,
+  "workspaces": ["apps/*", "packages/*"],
+  "scripts": {
+    "dev:web": "npm run dev --workspace @doodee/web",
+    "build:web": "npm run build --workspace @doodee/web",
+    "test:web": "npm test --workspace @doodee/web",
+    "test:shared": "npm test --workspace @doodee/shared"
+  }
+}

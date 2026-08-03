@@ -1,0 +1,11 @@
+.env
+firebase-service-account.json
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+node_modules/
+dist/
+.expo/
+coverage/
+*.sqlite3

@@ -1,0 +1,2820 @@
+/*
+ * Mobile presentation layer
+ * -------------------------
+ * All existing desktop declarations remain authoritative above 768px.
+ * The selectors below only reflow the same controls and content for phones.
+ */
+
+.landing-mobile-menu-button,
+.landing-mobile-menu,
+.portrait-route-gate,
+.tryon-rotate-gate,
+.tryon-mobile-composer-toggle {
+  display: none;
+}
+
+@media (max-width: 768px) {
+  html,
+  body,
+  #root {
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+    overflow-x: hidden !important;
+    overflow-y: auto !important;
+    height: auto !important;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  body {
+    overscroll-behavior-y: auto;
+  }
+
+  button,
+  a,
+  [role='button'] {
+    touch-action: manipulation;
+  }
+
+  .landing-bg {
+    background-attachment: scroll !important;
+    overflow-y: auto !important;
+    height: auto !important;
+  }
+
+  /* Landing header and complete mobile navigation */
+  .landing-header {
+    padding: 10px 12px !important;
+    background: rgba(250, 247, 242, 0.96) !important;
+    border-bottom: 1px solid rgba(232, 228, 220, 0.9) !important;
+    backdrop-filter: blur(18px) !important;
+  }
+
+  .landing-header-inner {
+    min-height: 44px;
+    gap: 10px;
+  }
+
+  .landing-header-brand {
+    min-width: 0;
+    gap: 9px !important;
+  }
+
+  .landing-header-brand > img {
+    width: 36px !important;
+    height: 36px !important;
+    border-radius: 13px !important;
+  }
+
+  .landing-header-brand .font-wordmark {
+    font-size: 1.12rem !important;
+  }
+
+  .landing-brand-subtitle,
+  .desktop-nav,
+  .landing-login-button,
+  .landing-primary-cta {
+    display: none !important;
+  }
+
+  .landing-header-actions {
+    flex: 0 0 auto;
+    gap: 7px !important;
+  }
+
+  .landing-language-button {
+    min-height: 42px;
+    padding: 7px 11px !important;
+    font-size: 0.76rem !important;
+  }
+
+  .landing-mobile-menu-button {
+    width: 42px;
+    height: 42px;
+    border: 1px solid #dde5db;
+    border-radius: 15px;
+    background: #ffffff;
+    color: #0066cc;
+    display: grid;
+    place-items: center;
+    cursor: pointer;
+    box-shadow: 0 4px 14px rgba(0, 102, 204, 0.1);
+  }
+
+  .landing-mobile-menu {
+    position: absolute;
+    top: calc(100% + 7px);
+    left: 12px;
+    right: 12px;
+    max-height: calc(100dvh - 84px);
+    border: 1px solid #e8e4dc;
+    border-radius: 22px;
+    padding: 10px;
+    background: rgba(255, 253, 249, 0.98);
+    box-shadow: 0 20px 48px rgba(62, 81, 69, 0.18);
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+
+  .landing-mobile-menu nav {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+  }
+
+  .landing-mobile-menu nav button,
+  .landing-mobile-login,
+  .landing-mobile-start {
+    width: 100%;
+    min-height: 46px;
+    border: 0;
+    border-radius: 14px;
+    padding: 10px 13px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    font-size: 0.86rem;
+    font-weight: 700;
+    cursor: pointer;
+  }
+
+  .landing-mobile-menu nav button {
+    background: transparent;
+    color: #4f5d53;
+    text-align: left;
+  }
+
+  .landing-mobile-login {
+    justify-content: center;
+    background: #f4f1eb;
+    color: #52675a;
+  }
+
+  .landing-mobile-start {
+    justify-content: center;
+    background: linear-gradient(135deg, #2997ff, #0066cc);
+    color: #fff;
+    box-shadow: 0 7px 18px rgba(0, 102, 204, 0.2);
+  }
+
+  /* Dashboard shell: top utility, scrollable content, bottom function bar */
+  .app-shell {
+    width: 100% !important;
+    height: 100dvh !important;
+    max-height: 100dvh !important;
+  }
+
+  .dashboard-main {
+    width: 100% !important;
+    height: 100dvh !important;
+    min-width: 0 !important;
+    margin-left: 0 !important;
+    padding: 56px 8px calc(82px + env(safe-area-inset-bottom)) !important;
+    overflow-x: hidden !important;
+    overflow-y: auto !important;
+    overscroll-behavior: contain;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .app-language-switcher {
+    top: 8px !important;
+    right: 8px !important;
+    z-index: 60 !important;
+  }
+
+  .app-language-switcher > .app-language-trigger {
+    width: 44px;
+    height: 40px;
+    min-width: 44px;
+    min-height: 40px;
+    padding: 0 !important;
+    gap: 3px !important;
+  }
+
+  .app-language-trigger span {
+    font-size: 0.56rem;
+  }
+
+  .app-language-menu {
+    width: 176px;
+    max-width: calc(100vw - 16px);
+  }
+
+  .sidebar-floating-backdrop {
+    display: none !important;
+  }
+
+  .dashboard-sidebar {
+    top: auto !important;
+    right: 0 !important;
+    bottom: 0 !important;
+    left: 0 !important;
+    z-index: 80 !important;
+    width: 100% !important;
+    height: calc(64px + env(safe-area-inset-bottom)) !important;
+    padding: 7px 8px calc(7px + env(safe-area-inset-bottom)) !important;
+    border-width: 1px 0 0 !important;
+    border-radius: 20px 20px 0 0 !important;
+    background: rgba(255, 253, 249, 0.97) !important;
+    box-shadow: 0 -10px 28px rgba(62, 81, 69, 0.11) !important;
+    backdrop-filter: blur(18px);
+    flex-direction: row !important;
+  }
+
+  .dashboard-sidebar-main {
+    width: 100% !important;
+    min-width: 0 !important;
+    flex-direction: row !important;
+    overflow: visible !important;
+  }
+
+  .dashboard-sidebar-brand,
+  .dashboard-sidebar-profile {
+    display: none !important;
+  }
+
+  .dashboard-sidebar-nav {
+    width: 100% !important;
+    min-width: 0 !important;
+    height: 50px !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    display: flex !important;
+    flex: 1 1 auto !important;
+    flex-direction: row !important;
+    align-items: center !important;
+    justify-content: space-between !important;
+    gap: 4px !important;
+    overflow-x: auto !important;
+    overflow-y: hidden !important;
+    scrollbar-width: none;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .dashboard-sidebar-nav::-webkit-scrollbar {
+    display: none;
+  }
+
+  .dashboard-sidebar-nav > button {
+    width: 44px !important;
+    min-width: 44px !important;
+    height: 46px !important;
+    min-height: 46px !important;
+    padding: 0 !important;
+    border-width: 1px !important;
+    border-radius: 15px !important;
+    justify-content: center !important;
+  }
+
+  .dashboard-sidebar-nav > button > span {
+    display: none !important;
+  }
+
+  /* Face assessment */
+  .scan-workspace {
+    height: auto !important;
+    min-height: 0 !important;
+    overflow: visible !important;
+  }
+
+  .scan-workspace-header {
+    min-height: 0 !important;
+    margin-bottom: 8px !important;
+    padding: 12px !important;
+    padding-right: 86px !important;
+    align-items: flex-start !important;
+    flex-wrap: wrap !important;
+    gap: 9px !important;
+  }
+
+  .scan-workspace-header h1 {
+    font-size: clamp(1rem, 4.7vw, 1.2rem) !important;
+    line-height: 1.35 !important;
+  }
+
+  .scan-workspace-header p {
+    font-size: 0.73rem !important;
+    line-height: 1.5 !important;
+  }
+
+  .scan-view-header-actions,
+  .scan-workspace-header > div:last-child {
+    width: 100%;
+    display: grid !important;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 7px !important;
+  }
+
+  .scan-view-header-actions > button,
+  .scan-workspace-header > div:last-child > button {
+    min-height: 42px;
+    margin: 0 !important;
+    padding: 8px 10px !important;
+    justify-content: center !important;
+  }
+
+  .scan-workspace-grid {
+    display: flex !important;
+    flex-direction: column !important;
+    gap: 10px !important;
+    flex: none !important;
+    overflow: visible !important;
+  }
+
+  .scan-workspace-grid > *,
+  .scan-workspace-primary,
+  .scan-workspace-aside {
+    width: 100% !important;
+    min-width: 0 !important;
+    height: auto !important;
+    overflow: visible !important;
+  }
+
+  .scan-view-card {
+    height: auto !important;
+    min-height: 0 !important;
+    overflow: visible !important;
+  }
+
+  .scan-viewfinder {
+    flex: none !important;
+    min-height: clamp(420px, 116vw, 560px) !important;
+  }
+
+  .scan-view-ready {
+    min-height: 300px;
+    padding: 18px 14px !important;
+  }
+
+  .scan-camera-view {
+    height: auto !important;
+    flex: none !important;
+  }
+
+  .scan-camera-stage {
+    width: min(100%, 380px) !important;
+    height: clamp(380px, 116vw, 500px) !important;
+    min-height: 0 !important;
+    max-height: none !important;
+    flex: none !important;
+  }
+
+  .scan-pwa-banner {
+    right: 10px !important;
+    bottom: calc(74px + env(safe-area-inset-bottom)) !important;
+    left: 10px !important;
+    max-width: none !important;
+  }
+
+  /* Deep report becomes a thumb-friendly bottom sheet */
+  .deep-report-overlay {
+    padding: 0 !important;
+    align-items: flex-end !important;
+  }
+
+  .deep-report-dialog {
+    width: 100% !important;
+    max-width: none !important;
+    max-height: 92dvh !important;
+    border-radius: 24px 24px 0 0 !important;
+    padding: 14px !important;
+  }
+
+  .deep-report-header {
+    align-items: flex-start !important;
+    gap: 10px !important;
+  }
+
+  .deep-report-kpis {
+    grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  }
+
+  .deep-report-body {
+    grid-template-columns: 1fr !important;
+  }
+
+  .deep-report-actions {
+    flex-direction: column !important;
+  }
+
+  .deep-report-actions > button {
+    width: 100% !important;
+    min-height: 44px;
+    justify-content: center !important;
+  }
+
+  /* Procedure customizer */
+  .surgery-workspace {
+    height: auto !important;
+    overflow: visible !important;
+  }
+
+  .surgery-workspace-header,
+  .surgery-header {
+    min-height: 0 !important;
+    padding: 11px 12px !important;
+    padding-right: 86px !important;
+    align-items: flex-start !important;
+    flex-wrap: wrap !important;
+  }
+
+  .surgery-workspace-header h2,
+  .surgery-header h2 {
+    font-size: 0.98rem !important;
+  }
+
+  .surgery-reset,
+  .surgery-workspace-header > button {
+    width: 100% !important;
+    min-height: 42px;
+    margin-right: 0 !important;
+    justify-content: center !important;
+  }
+
+  .procedure-customizer-layout {
+    height: auto !important;
+    min-height: 0 !important;
+    display: flex !important;
+    flex-direction: column !important;
+    gap: 10px !important;
+    overflow: visible !important;
+  }
+
+  .procedure-customizer-layout > * {
+    width: 100% !important;
+    min-width: 0 !important;
+  }
+
+  .procedure-preview {
+    order: 1;
+    height: auto !important;
+    min-height: 0 !important;
+    overflow: visible !important;
+  }
+
+  .procedure-categories {
+    order: 2;
+    height: auto !important;
+    overflow: visible !important;
+  }
+
+  .procedure-details {
+    order: 3;
+    height: auto !important;
+    overflow: visible !important;
+  }
+
+  .procedure-details > div:first-child {
+    min-height: 0 !important;
+    flex: none !important;
+    overflow: visible !important;
+  }
+
+  .procedure-preview-stage {
+    flex: none !important;
+    min-height: clamp(450px, 122vw, 590px) !important;
+    aspect-ratio: 4 / 5;
+  }
+
+  .procedure-category-list {
+    display: flex !important;
+    flex-direction: row !important;
+    gap: 7px !important;
+    overflow-x: auto !important;
+    overflow-y: hidden !important;
+    scroll-snap-type: x proximity;
+    scrollbar-width: none;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .procedure-category-list::-webkit-scrollbar {
+    display: none;
+  }
+
+  .procedure-category-button {
+    min-width: 128px !important;
+    min-height: 64px !important;
+    flex: 0 0 128px !important;
+    scroll-snap-align: start;
+  }
+
+  .procedure-options-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  }
+
+  .procedure-slider-list {
+    flex: none !important;
+    overflow: visible !important;
+  }
+
+  .procedure-preview-toolbar button,
+  .tryon-preview-toolbar button {
+    min-height: 40px !important;
+    padding: 7px 10px !important;
+  }
+
+  /* Makeup try-on */
+  .tryon-workspace {
+    height: auto !important;
+    overflow: visible !important;
+  }
+
+  .tryon-workspace-header,
+  .tryon-header {
+    min-height: 0 !important;
+    padding: 11px 12px !important;
+    padding-right: 86px !important;
+    align-items: flex-start !important;
+    flex-wrap: wrap !important;
+  }
+
+  .tryon-workspace-header h2,
+  .tryon-header h2 {
+    font-size: 0.98rem !important;
+  }
+
+  .tryon-reset,
+  .tryon-workspace-header > button {
+    width: 100% !important;
+    min-height: 42px;
+    margin-right: 0 !important;
+    justify-content: center !important;
+  }
+
+  .tryon-workspace-layout,
+  .tryon-grid {
+    height: auto !important;
+    min-height: 0 !important;
+    display: flex !important;
+    flex-direction: column !important;
+    gap: 10px !important;
+    overflow: visible !important;
+  }
+
+  .tryon-workspace-layout > *,
+  .tryon-grid > * {
+    width: 100% !important;
+    min-width: 0 !important;
+  }
+
+  .tryon-preview-panel,
+  .tryon-preview {
+    order: 1;
+    height: auto !important;
+    min-height: 0 !important;
+    overflow: visible !important;
+  }
+
+  .tryon-category-panel,
+  .tryon-categories {
+    order: 2;
+    height: auto !important;
+    overflow: visible !important;
+  }
+
+  .tryon-controls-panel,
+  .tryon-composer {
+    order: 3;
+    height: auto !important;
+    overflow: visible !important;
+  }
+
+  .tryon-preview-toolbar {
+    flex-wrap: wrap !important;
+  }
+
+  .tryon-image-stage {
+    flex: none !important;
+    min-height: clamp(440px, 122vw, 590px) !important;
+    aspect-ratio: 4 / 5;
+  }
+
+  .tryon-category-list {
+    display: flex !important;
+    flex-direction: row !important;
+    gap: 7px !important;
+    overflow-x: auto !important;
+    overflow-y: hidden !important;
+    scroll-snap-type: x proximity;
+    scrollbar-width: none;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .tryon-category-list::-webkit-scrollbar {
+    display: none;
+  }
+
+  .tryon-category-button {
+    min-width: 132px !important;
+    min-height: 66px !important;
+    flex: 0 0 132px !important;
+    scroll-snap-align: start;
+  }
+
+  .tryon-preset-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
+  }
+
+  .tryon-option-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  }
+
+  .tryon-option-panel {
+    flex: none !important;
+    overflow: visible !important;
+  }
+
+  /* Skin scan */
+  .skin-scan-workspace {
+    height: auto !important;
+    overflow: visible !important;
+  }
+
+  .skin-scan-header {
+    min-height: 0;
+    padding: 12px;
+    gap: 10px;
+  }
+
+  .skin-scan-title h1 {
+    font-size: clamp(1rem, 4.8vw, 1.25rem);
+  }
+
+  .skin-scan-title p {
+    font-size: 0.72rem;
+  }
+
+  .skin-health-score {
+    width: 100%;
+    min-width: 0;
+    margin-left: 0;
+    display: flex !important;
+    justify-content: flex-start;
+  }
+
+  .skin-health-ring {
+    width: 48px;
+    height: 48px;
+    flex: 0 0 48px;
+  }
+
+  .skin-scan-entry {
+    gap: 12px;
+    padding: 12px;
+    overflow: visible;
+  }
+
+  .skin-entry-stage {
+    width: min(100%, 440px);
+    min-height: clamp(390px, 118vw, 500px);
+    flex: 0 0 auto;
+    aspect-ratio: 4 / 5;
+  }
+
+  .skin-entry-action {
+    width: min(100%, 440px);
+  }
+
+  .skin-entry-action > button {
+    min-height: 48px;
+  }
+
+  .skin-panel,
+  .skin-camera-panel,
+  .skin-findings-panel,
+  .skin-plan-panel,
+  .skin-finding-list,
+  .skin-selected-detail,
+  .face-metric-list {
+    height: auto !important;
+    max-height: none !important;
+    overflow: visible !important;
+  }
+
+  .face-overall-card {
+    grid-template-columns: 68px minmax(0, 1fr);
+  }
+
+  .skin-face-stage {
+    height: clamp(420px, 125vw, 540px);
+  }
+
+  .skin-rescan-button {
+    width: 100%;
+    min-height: 42px;
+    margin-left: 0;
+    justify-content: center;
+  }
+
+  /* Consultation report */
+  .report-workspace,
+  .consult-report {
+    width: 100% !important;
+    gap: 12px !important;
+  }
+
+  .report-workspace-header,
+  .consult-report-header {
+    padding: 15px !important;
+    border-radius: 20px !important;
+    align-items: flex-start !important;
+  }
+
+  .report-workspace-header h1,
+  .consult-report-header h1 {
+    font-size: 1.25rem !important;
+  }
+
+  .consult-report-actions,
+  .report-workspace-header > div:last-child {
+    width: 100%;
+    display: grid !important;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .consult-report-actions > button,
+  .report-workspace-header > div:last-child > button {
+    min-height: 44px;
+    justify-content: center !important;
+  }
+
+  .report-tabs,
+  .consult-report-tabs {
+    display: flex !important;
+    gap: 8px !important;
+    padding-bottom: 3px;
+    overflow-x: auto;
+    scroll-snap-type: x proximity;
+    scrollbar-width: none;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .report-tabs::-webkit-scrollbar,
+  .consult-report-tabs::-webkit-scrollbar {
+    display: none;
+  }
+
+  .report-tabs > button,
+  .consult-report-tab {
+    min-width: 148px !important;
+    flex: 0 0 148px !important;
+    scroll-snap-align: start;
+  }
+
+  .report-active-content,
+  .consult-report-main {
+    padding: 15px !important;
+    border-radius: 20px !important;
+  }
+
+  .report-active-content [style*='grid-template-columns'],
+  .consult-report-main [style*='grid-template-columns'],
+  .consult-summary-grid {
+    grid-template-columns: 1fr !important;
+  }
+
+  .consult-patient-header,
+  .consult-disclaimer {
+    align-items: flex-start !important;
+    flex-direction: column !important;
+  }
+
+  .consult-score {
+    text-align: left !important;
+  }
+
+  .consult-patient-identity {
+    width: 100%;
+    min-width: 0;
+    align-items: flex-start !important;
+  }
+
+  .consult-patient-identity > div {
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+
+  /* History and sharing */
+  .history-workspace-grid,
+  .history-view {
+    width: 100% !important;
+    grid-template-columns: 1fr !important;
+    gap: 12px !important;
+  }
+
+  .history-card {
+    padding: 15px !important;
+    border-radius: 20px !important;
+  }
+
+  .history-share-row {
+    align-items: stretch !important;
+    flex-direction: column !important;
+  }
+
+  .history-share-row > input,
+  .history-share-row > button {
+    width: 100% !important;
+    min-height: 44px;
+  }
+
+  .history-og-card {
+    min-width: 0;
+    flex-wrap: wrap;
+  }
+
+  .history-item {
+    min-width: 0;
+    gap: 8px;
+  }
+
+  .history-item > div:first-child {
+    min-width: 0;
+  }
+
+  .history-item > div:first-child > div {
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+
+  /* Settings and pricing */
+  .settings-page,
+  .pricing-page {
+    width: 100%;
+    max-width: 100%;
+    padding-right: 0;
+    padding-left: 0;
+  }
+
+  .settings-hero,
+  .settings-profile-card,
+  .settings-card,
+  .pricing-hero,
+  .pricing-plan-card,
+  .pricing-value-strip {
+    border-radius: 20px;
+  }
+
+  .settings-hero,
+  .settings-profile-card,
+  .settings-card {
+    padding: 15px;
+  }
+
+  .settings-actions > button,
+  .settings-outline-danger,
+  .settings-logout-button,
+  .settings-tour-button {
+    min-height: 44px;
+  }
+
+  .settings-redeem {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .settings-redeem input,
+  .settings-redeem button {
+    width: 100%;
+    min-height: 44px;
+  }
+
+  .settings-toast,
+  .pricing-toast {
+    right: 10px;
+    bottom: calc(76px + env(safe-area-inset-bottom));
+    left: 10px;
+    justify-content: center;
+  }
+
+  .settings-tour-modal {
+    width: calc(100% - 20px);
+    max-height: calc(100dvh - 20px);
+    overflow-y: auto;
+  }
+
+  .pricing-hero {
+    padding: 12px 10px;
+  }
+
+  .pricing-hero h1 {
+    font-size: clamp(1.25rem, 5vw, 1.75rem);
+    margin-bottom: 4px;
+  }
+
+  .pricing-hero p {
+    font-size: 0.8rem;
+    margin-bottom: 8px;
+  }
+
+  .pricing-plan-grid {
+    display: grid !important;
+    grid-template-columns: repeat(3, 1fr) !important;
+    gap: 6px !important;
+    margin-bottom: 16px !important;
+  }
+
+  .pricing-plan-card {
+    padding: 10px 6px !important;
+    border-radius: 14px !important;
+    display: flex !important;
+    flex-direction: column !important;
+    justify-content: space-between !important;
+  }
+
+  .pricing-plan-top {
+    margin-bottom: 6px !important;
+  }
+
+  .pricing-plan-top span {
+    font-size: 0.7rem !important;
+    font-weight: 800 !important;
+  }
+
+  .pricing-plan-top h2 {
+    font-size: 0.62rem !important;
+    line-height: 1.2 !important;
+    margin-top: 2px !important;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+
+  .pricing-price {
+    margin-bottom: 6px !important;
+  }
+
+  .pricing-price strong {
+    font-size: 1.3rem !important;
+  }
+
+  .pricing-price small {
+    font-size: 0.6rem !important;
+  }
+
+  .pricing-quotas {
+    gap: 4px !important;
+    padding: 6px 0 !important;
+    margin-bottom: 6px !important;
+  }
+
+  .pricing-quotas div strong {
+    font-size: 0.85rem !important;
+  }
+
+  .pricing-quotas div span {
+    font-size: 0.58rem !important;
+  }
+
+  .pricing-feature-list {
+    gap: 3px !important;
+    margin-bottom: 8px !important;
+  }
+
+  .pricing-feature-list div p {
+    font-size: 0.58rem !important;
+    line-height: 1.2 !important;
+  }
+
+  .pricing-select-button {
+    min-height: 32px !important;
+    padding: 6px 4px !important;
+    font-size: 0.68rem !important;
+    border-radius: 8px !important;
+  }
+
+  .pricing-payment-note {
+    font-size: 0.55rem !important;
+    margin-top: 4px !important;
+  }
+
+  /* Landing page sections */
+  .landing-hero {
+    min-height: auto !important;
+    padding-top: 84px !important;
+    justify-content: flex-start !important;
+  }
+
+  .landing-hero-container {
+    padding: 44px 16px 0 !important;
+  }
+
+  .landing-hero-content {
+    max-width: 100% !important;
+  }
+
+  .landing-hero-kicker {
+    max-width: 100%;
+    margin-bottom: 14px !important;
+    padding: 6px 12px !important;
+  }
+
+  .landing-hero-kicker span {
+    font-size: 0.7rem !important;
+    line-height: 1.45;
+  }
+
+  .landing-hero-eyebrow {
+    font-size: 0.67rem !important;
+    letter-spacing: 0.12em !important;
+  }
+
+  .landing-hero-title {
+    max-width: 620px;
+    margin-bottom: 16px !important;
+    font-size: clamp(2rem, 10vw, 3rem) !important;
+    line-height: 1.12 !important;
+  }
+
+  .landing-hero-description {
+    margin-bottom: 24px !important;
+    font-size: 0.94rem !important;
+    line-height: 1.65 !important;
+  }
+
+  .landing-hero-actions {
+    align-items: stretch !important;
+    flex-direction: column !important;
+    gap: 10px !important;
+    margin-bottom: 26px !important;
+  }
+
+  .landing-hero-action {
+    width: 100%;
+    min-height: 50px;
+    padding: 12px 18px !important;
+    justify-content: center;
+  }
+
+  .landing-hero-trust {
+    align-items: flex-start !important;
+    flex-direction: column !important;
+    gap: 11px !important;
+    padding-top: 16px !important;
+  }
+
+  .landing-hero-trust-item {
+    width: 100%;
+  }
+
+  .landing-hero-proof {
+    margin-top: 34px !important;
+    padding: 14px 16px !important;
+  }
+
+  .landing-hero-proof-inner {
+    align-items: flex-start !important;
+    flex-direction: column !important;
+    font-size: 0.76rem !important;
+  }
+
+  .landing-hero-proof-primary {
+    align-items: flex-start !important;
+  }
+
+  .landing-procedure,
+  .landing-report,
+  .landing-difference,
+  .landing-pricing,
+  .landing-faq {
+    padding: 64px 16px !important;
+  }
+
+  .landing-procedure-layout {
+    grid-template-columns: 1fr !important;
+    gap: 30px !important;
+  }
+
+  .landing-procedure-title,
+  .landing-report-title,
+  .landing-difference-title,
+  .landing-pricing-title,
+  .landing-faq-title {
+    margin-top: 14px !important;
+    margin-bottom: 14px !important;
+    font-size: clamp(1.85rem, 8.5vw, 2.55rem) !important;
+    line-height: 1.16 !important;
+  }
+
+  .landing-procedure-description,
+  .landing-report-description,
+  .landing-difference-description,
+  .landing-pricing-description {
+    margin-bottom: 22px !important;
+    font-size: 0.94rem !important;
+  }
+
+  .landing-procedure-toggle {
+    display: grid !important;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px !important;
+  }
+
+  .landing-procedure-toggle-button {
+    min-width: 0;
+    min-height: 44px;
+    padding: 9px 10px !important;
+  }
+
+  .landing-procedure-point {
+    padding: 13px 0 !important;
+    font-size: 0.84rem !important;
+  }
+
+  .landing-procedure-meta {
+    align-items: flex-start !important;
+    flex-direction: column !important;
+    gap: 5px;
+  }
+
+  .landing-procedure-frame {
+    width: 100% !important;
+    height: auto !important;
+    min-height: 0 !important;
+    aspect-ratio: 4 / 5;
+    border-radius: 22px !important;
+    touch-action: pan-y !important;
+  }
+
+  .landing-procedure-image-label {
+    top: 10px !important;
+    padding: 5px 9px !important;
+    font-size: 0.65rem !important;
+  }
+
+  .landing-procedure-image-label--after {
+    right: 10px !important;
+  }
+
+  .landing-procedure-image-label--before {
+    left: 10px !important;
+  }
+
+  .landing-procedure-handle {
+    width: 38px !important;
+    height: 38px !important;
+  }
+
+  .landing-report-header,
+  .landing-difference-header,
+  .landing-pricing-header {
+    margin-bottom: 34px !important;
+  }
+
+  .landing-report-feature-grid {
+    grid-template-columns: 1fr !important;
+    gap: 22px !important;
+    margin-bottom: 34px !important;
+    padding: 26px 0 !important;
+  }
+
+  .landing-report-dashboard {
+    padding: 14px !important;
+    border-radius: 20px !important;
+  }
+
+  .landing-report-dashboard-grid {
+    grid-template-columns: 1fr !important;
+    gap: 16px !important;
+  }
+
+  .landing-report-radar-panel {
+    padding: 14px !important;
+    border-radius: 18px !important;
+  }
+
+  .landing-report-radar {
+    height: auto !important;
+    max-height: 280px;
+  }
+
+  .landing-report-metric-group {
+    min-width: 0;
+  }
+
+  .landing-report-footer {
+    align-items: stretch !important;
+    flex-direction: column !important;
+  }
+
+  .landing-report-action {
+    width: 100%;
+    min-height: 48px;
+    justify-content: center;
+  }
+
+  .landing-difference-grid {
+    grid-template-columns: 1fr !important;
+  }
+
+  .landing-difference-column {
+    padding: 24px 18px !important;
+  }
+
+  .landing-difference-column--before {
+    border-right: 0 !important;
+    border-bottom: 1px solid #e8e4dc;
+  }
+
+  .landing-difference-item {
+    padding: 13px 0 !important;
+    font-size: 0.87rem !important;
+  }
+
+  .landing-credibility {
+    padding: 34px 16px !important;
+  }
+
+  .landing-credibility-panel {
+    padding: 22px 18px !important;
+    border-radius: 20px !important;
+  }
+
+  .landing-credibility-grid {
+    grid-template-columns: 1fr !important;
+    gap: 0 !important;
+  }
+
+  .landing-credibility-item {
+    padding: 18px 0;
+    display: grid !important;
+    grid-template-columns: 44px 1fr;
+    gap: 5px 12px !important;
+    border-bottom: 1px solid #e8e4dc;
+  }
+
+  .landing-credibility-item:last-child {
+    border-bottom: 0;
+  }
+
+  .landing-credibility-icon {
+    grid-row: 1 / span 2;
+  }
+
+  .landing-pricing-grid,
+  .landing-pricing-grid-3col {
+    display: grid !important;
+    grid-template-columns: repeat(3, 1fr) !important;
+    gap: 6px !important;
+    margin-bottom: 24px !important;
+  }
+
+  .pricing-compact-card {
+    padding: 10px 6px !important;
+    border-radius: 14px !important;
+  }
+
+  .landing-pricing-card {
+    min-height: 0 !important;
+    padding: 12px 8px !important;
+    border-right: 0 !important;
+    border-bottom: 1px solid #e8e4dc;
+  }
+
+  .plan-card-title {
+    font-size: 0.82rem !important;
+  }
+
+  .plan-card-price {
+    font-size: 1.35rem !important;
+  }
+
+  .plan-card-blurb {
+    font-size: 0.62rem !important;
+    min-height: 24px !important;
+    line-height: 1.2 !important;
+  }
+
+  .landing-pricing-card:last-child {
+    border-bottom: 0;
+  }
+
+  .landing-pricing-blurb {
+    min-height: 0 !important;
+  }
+
+  .landing-pricing-action {
+    width: 100%;
+    min-height: 48px;
+    justify-content: center;
+  }
+
+  .landing-pricing-funnel-title {
+    font-size: 1.45rem !important;
+  }
+
+  .landing-pricing-funnel-list {
+    grid-template-columns: 1fr !important;
+  }
+
+  .landing-pricing-funnel-item {
+    border-right: 0 !important;
+    border-bottom: 1px solid #e8e4dc;
+    padding: 16px 10px !important;
+  }
+
+  .landing-pricing-funnel-item:last-child {
+    border-bottom: 0;
+  }
+
+  .landing-faq-layout {
+    grid-template-columns: 1fr !important;
+    gap: 34px !important;
+  }
+
+  .landing-faq-trust-list {
+    margin-top: 22px !important;
+  }
+
+  .landing-faq-trust-item {
+    padding: 14px 0 !important;
+    font-size: 0.88rem !important;
+  }
+
+  .landing-faq-question {
+    min-height: 62px;
+    padding: 17px 0 !important;
+  }
+
+  .landing-faq-question-text,
+  .landing-faq-answer {
+    font-size: 0.9rem !important;
+  }
+
+  .landing-footer {
+    padding-bottom: 26px !important;
+  }
+
+  .landing-footer-cta-wrap {
+    padding: 0 16px 36px !important;
+  }
+
+  .landing-footer-cta-card {
+    border-radius: 22px !important;
+    padding: 30px 18px !important;
+  }
+
+  .landing-footer-cta-main {
+    grid-template-columns: 1fr !important;
+    gap: 24px !important;
+    margin-bottom: 28px !important;
+  }
+
+  .landing-footer-title {
+    font-size: clamp(2rem, 9vw, 2.75rem) !important;
+    line-height: 1.12 !important;
+  }
+
+  .landing-footer-description {
+    font-size: 0.94rem !important;
+  }
+
+  .landing-footer-action {
+    width: 100%;
+    min-height: 50px;
+    justify-content: center;
+  }
+
+  .landing-footer-guide-list {
+    flex-direction: column;
+    gap: 10px !important;
+  }
+
+  .landing-footer-bottom {
+    padding: 0 16px !important;
+    align-items: flex-start !important;
+    flex-direction: column !important;
+  }
+
+  .landing-footer-copyright {
+    align-items: flex-start !important;
+  }
+
+  .landing-footer-legal {
+    flex-wrap: wrap;
+    gap: 10px 16px !important;
+  }
+}
+
+/* Face customizer: require portrait phones to rotate before editing. */
+@media (max-width: 768px) and (orientation: portrait) {
+  .app-shell.is-studio-editor .dashboard-sidebar,
+  .app-shell.is-studio-editor .app-language-switcher {
+    display: none !important;
+  }
+
+  .app-shell.is-studio-editor .dashboard-main {
+    padding: 0 !important;
+    overflow: hidden !important;
+  }
+
+  .app-shell.is-studio-editor .studio-editor {
+    position: fixed;
+    inset: 0;
+    z-index: 190;
+    width: 100vw;
+    height: 100dvh !important;
+    min-height: 0;
+    padding:
+      max(20px, env(safe-area-inset-top))
+      max(22px, env(safe-area-inset-right))
+      max(20px, env(safe-area-inset-bottom))
+      max(22px, env(safe-area-inset-left));
+    background:
+      radial-gradient(circle at 82% 14%, rgba(181, 165, 255, 0.42), transparent 31%),
+      radial-gradient(circle at 8% 86%, rgba(255, 218, 239, 0.55), transparent 33%),
+      #f8f5fb;
+  }
+
+  .app-shell.is-studio-editor .studio-editor > :not(.studio-rotate-gate) {
+    visibility: hidden;
+    pointer-events: none;
+  }
+
+  .app-shell.is-studio-editor .studio-rotate-gate {
+    position: absolute;
+    inset: 0;
+    z-index: 2;
+    padding: 28px 24px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 32px;
+    text-align: center;
+  }
+}
+
+/* Game-like two-panel workspace on phones held in landscape. */
+@media (orientation: landscape) and (max-height: 600px) and (max-width: 1100px) and (hover: none) and (pointer: coarse) {
+  html,
+  body,
+  #root {
+    height: 100%;
+    overflow: hidden !important;
+  }
+
+  .app-shell.is-studio-editor .dashboard-sidebar,
+  .app-shell.is-studio-editor .app-language-switcher {
+    display: none !important;
+  }
+
+  .app-shell.is-studio-editor,
+  .app-shell.is-studio-editor .dashboard-main {
+    width: 100vw !important;
+    height: 100dvh !important;
+    max-height: 100dvh !important;
+  }
+
+  .app-shell.is-studio-editor .dashboard-main {
+    margin-left: 0 !important;
+    padding:
+      max(5px, env(safe-area-inset-top))
+      max(7px, env(safe-area-inset-right))
+      max(5px, env(safe-area-inset-bottom))
+      max(7px, env(safe-area-inset-left)) !important;
+    overflow: hidden !important;
+  }
+
+  .app-shell.is-studio-editor .studio-editor {
+    width: 100%;
+    height: 100% !important;
+    min-height: 0 !important;
+    gap: 0;
+    overflow: hidden !important;
+  }
+
+  .app-shell.is-studio-editor .studio-editor-nav {
+    position: relative;
+    z-index: 45;
+    min-height: 42px;
+    padding: 4px 6px;
+    border: 1px solid rgba(116, 87, 215, 0.16);
+    border-radius: 14px;
+    background: linear-gradient(135deg, rgba(255, 255, 255, 0.96), rgba(245, 241, 255, 0.92));
+    box-shadow: 0 5px 16px rgba(65, 44, 105, 0.08);
+    display: flex;
+    flex: 0 0 42px;
+    align-items: center;
+    justify-content: space-between;
+    gap: 7px;
+  }
+
+  .app-shell.is-studio-editor .studio-editor-nav > strong {
+    color: #4d3d61;
+    font-size: 0.7rem;
+    font-weight: 850;
+  }
+
+  .app-shell.is-studio-editor .studio-editor-nav > div {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+  }
+
+  .app-shell.is-studio-editor .studio-editor-nav .studio-function-menu-shell {
+    position: relative;
+    z-index: 2;
+  }
+
+  .app-shell.is-studio-editor .studio-editor-nav button {
+    min-height: 32px;
+    padding: 0 9px;
+    border: 1px solid #e0d6f2;
+    border-radius: 10px;
+    background: rgba(255, 255, 255, 0.92);
+    color: #68588a;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 5px;
+    font: inherit;
+    font-size: 0.58rem;
+    font-weight: 800;
+    cursor: pointer;
+  }
+
+  .app-shell.is-studio-editor .studio-editor-nav button:hover {
+    border-color: #bba8e7;
+    background: #eee8ff;
+    color: #4d369c;
+  }
+
+  .app-shell.is-studio-editor .studio-editor-nav .studio-editor-back {
+    border-color: #7457d7;
+    background: #7457d7;
+    color: #fff;
+  }
+
+  .app-shell.is-studio-editor .studio-editor-nav .studio-function-trigger > svg:last-child {
+    margin-left: 1px;
+    transition: transform 160ms ease;
+  }
+
+  .app-shell.is-studio-editor .studio-editor-nav .studio-function-trigger > svg:last-child.is-open {
+    transform: rotate(180deg);
+  }
+
+  .app-shell.is-studio-editor .studio-editor-nav .studio-function-menu {
+    position: absolute;
+    top: calc(100% + 7px);
+    left: 0;
+    z-index: 60;
+    width: min(226px, calc(100vw - 18px));
+    padding: 7px;
+    border: 1px solid rgba(116, 87, 215, 0.2);
+    border-radius: 14px;
+    background: rgba(255, 255, 255, 0.98);
+    box-shadow: 0 18px 42px rgba(48, 31, 83, 0.22);
+    display: grid;
+    gap: 4px;
+  }
+
+  .app-shell.is-studio-editor .studio-editor-nav .studio-function-menu-label {
+    padding: 4px 7px 6px;
+    color: #8a7a9e;
+    font-size: 0.58rem;
+    font-weight: 800;
+    letter-spacing: 0.04em;
+  }
+
+  .app-shell.is-studio-editor .studio-editor-nav .studio-function-menu button {
+    width: 100%;
+    min-height: 34px;
+    padding: 0 9px;
+    border-color: transparent;
+    background: transparent;
+    color: #4f4264;
+    justify-content: flex-start;
+    font-size: 0.65rem;
+  }
+
+  .app-shell.is-studio-editor .studio-editor-nav .studio-function-menu button:hover {
+    background: #f2edff;
+  }
+
+  .app-shell.is-studio-editor .studio-editor-nav .studio-function-menu button.is-active {
+    background: #eee8ff;
+    color: #5739b3;
+  }
+
+  .app-shell.is-studio-editor .studio-editor-nav .studio-function-menu button > svg:last-child {
+    margin-left: auto;
+  }
+
+  .app-shell.is-studio-editor .studio-editor-nav .studio-inline-language {
+    min-height: 32px;
+    padding: 3px 6px;
+    border: 1px solid #e0d6f2;
+    border-radius: 10px;
+    background: rgba(255, 255, 255, 0.92);
+    color: #786890;
+    display: flex;
+    align-items: center;
+    gap: 3px;
+  }
+
+  .app-shell.is-studio-editor .studio-editor-nav .studio-inline-language > svg {
+    margin-right: 2px;
+    color: #7457d7;
+  }
+
+  .app-shell.is-studio-editor .studio-editor-nav .studio-inline-language button {
+    width: auto;
+    min-width: 26px;
+    min-height: 24px;
+    padding: 0 4px;
+    border: 0;
+    border-radius: 7px;
+    background: transparent;
+    color: #9a8da9;
+    font-size: 0.57rem;
+  }
+
+  .app-shell.is-studio-editor .studio-editor-nav .studio-inline-language button.is-active {
+    background: #7457d7;
+    color: #fff;
+  }
+
+  .app-shell.is-studio-editor .studio-editor-nav .studio-inline-language > span {
+    color: #c0b7ca;
+    font-size: 0.55rem;
+  }
+
+  .app-shell.is-studio-editor .studio-editor > .studio-header,
+  .app-shell.is-studio-editor .studio-editor > .studio-phase-bar,
+  .app-shell.is-studio-editor .studio-categories {
+    display: none !important;
+  }
+
+  .app-shell.is-studio-editor .studio-layout {
+    width: 100%;
+    min-height: 0 !important;
+    display: grid !important;
+    grid-template-columns: minmax(0, 58%) minmax(290px, 42%) !important;
+    gap: 6px;
+    overflow: hidden !important;
+  }
+
+  .app-shell.is-studio-editor .studio-preview {
+    position: relative;
+    top: auto;
+    z-index: 1;
+    width: auto;
+    height: 100% !important;
+    min-height: 0 !important;
+    padding: 6px;
+    display: flex;
+    overflow: hidden !important;
+    border-radius: 17px;
+  }
+
+  .app-shell.is-studio-editor .studio-preview-heading {
+    min-height: 32px;
+    flex: 0 0 32px;
+  }
+
+  .app-shell.is-studio-editor .studio-preview-heading > strong {
+    display: none;
+  }
+
+  .app-shell.is-studio-editor .studio-preview-tools {
+    width: 100%;
+    justify-content: space-between;
+  }
+
+  .app-shell.is-studio-editor .studio-angle-switcher button,
+  .app-shell.is-studio-editor .studio-mobile-compare button {
+    min-width: 0;
+    min-height: 28px;
+    padding: 0 7px;
+    font-size: 0.6rem;
+  }
+
+  .app-shell.is-studio-editor .studio-preview-stage {
+    height: auto;
+    min-height: 0 !important;
+    flex: 1;
+    border-radius: 13px;
+  }
+
+  .app-shell.is-studio-editor .studio-lock-strip {
+    min-height: 24px;
+    flex: 0 0 24px;
+    padding: 0 4px;
+    font-size: 0.58rem;
+  }
+
+  .app-shell.is-studio-editor .studio-lock-strip b,
+  .app-shell.is-studio-editor .studio-lock-strip small {
+    display: none;
+  }
+
+  .app-shell.is-studio-editor .studio-sheet {
+    position: relative !important;
+    inset: auto !important;
+    z-index: 1;
+    width: auto !important;
+    height: 100% !important;
+    min-height: 0 !important;
+    padding: 0;
+    gap: 0;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden !important;
+    border-radius: 17px;
+    transform: none !important;
+  }
+
+  .app-shell.is-studio-editor .studio-sheet-peek {
+    min-height: 46px;
+    padding: 4px 6px 4px 9px;
+    display: flex;
+    flex: 0 0 46px;
+    align-items: center;
+    gap: 6px;
+    border-bottom: 1px solid rgba(116, 87, 215, 0.12);
+    background: linear-gradient(135deg, rgba(250, 248, 255, 0.98), rgba(242, 237, 255, 0.86));
+  }
+
+  .app-shell.is-studio-editor .studio-sheet-handle {
+    min-width: 0;
+    min-height: 40px;
+    padding: 2px 3px;
+    border: 0;
+    border-radius: 11px;
+    background: transparent;
+    color: #50445f;
+    display: flex;
+    flex: 1;
+    align-items: center;
+    gap: 7px;
+    font: inherit;
+    text-align: left;
+    cursor: default;
+    touch-action: manipulation;
+  }
+
+  .app-shell.is-studio-editor .studio-sheet-handle > svg {
+    display: none;
+  }
+
+  .app-shell.is-studio-editor .studio-sheet-handle > span {
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+  }
+
+  .app-shell.is-studio-editor .studio-sheet-handle strong,
+  .app-shell.is-studio-editor .studio-sheet-handle small {
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .app-shell.is-studio-editor .studio-sheet-handle strong {
+    color: #41344f;
+    font-size: 0.69rem;
+    font-weight: 850;
+  }
+
+  .app-shell.is-studio-editor .studio-sheet-handle small {
+    color: #92879d;
+    font-size: 0.52rem;
+    font-weight: 650;
+  }
+
+  .app-shell.is-studio-editor .studio-sheet-primary-action {
+    min-width: 66px;
+    min-height: 36px;
+    padding: 0 11px;
+    border: 1px solid #7457d7;
+    border-radius: 11px;
+    background: linear-gradient(145deg, #8064df, #6748c4);
+    color: #fff;
+    box-shadow: 0 6px 16px rgba(92, 66, 178, 0.24), inset 0 1px 0 rgba(255, 255, 255, 0.24);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+    font: inherit;
+    font-size: 0.63rem;
+    font-weight: 850;
+    white-space: nowrap;
+    cursor: pointer;
+  }
+
+  .app-shell.is-studio-editor .studio-sheet-reset-all {
+    width: 36px;
+    min-width: 36px;
+    height: 36px;
+    padding: 0;
+    border: 1px solid #d8cdef;
+    border-radius: 11px;
+    background: rgba(255, 255, 255, 0.92);
+    color: #6855a3;
+    box-shadow: 0 3px 10px rgba(73, 51, 111, 0.07);
+    display: grid;
+    place-items: center;
+    font: inherit;
+    cursor: pointer;
+  }
+
+  .app-shell.is-studio-editor .studio-sheet-reset-all:hover {
+    border-color: #a993df;
+    background: #eee8ff;
+  }
+
+  .app-shell.is-studio-editor .studio-sheet-reset-all span {
+    display: none;
+  }
+
+  .app-shell.is-studio-editor .studio-sheet-categories {
+    min-height: 55px;
+    padding: 4px 5px;
+    display: flex;
+    flex: 0 0 55px;
+    gap: 4px;
+    overflow-x: auto;
+    border-bottom: 1px solid rgba(116, 87, 215, 0.1);
+    background: rgba(251, 249, 255, 0.88);
+    scrollbar-width: none;
+  }
+
+  .app-shell.is-studio-editor .studio-sheet-categories::-webkit-scrollbar {
+    display: none;
+  }
+
+  .app-shell.is-studio-editor .studio-sheet-categories > button {
+    position: relative;
+    min-width: 48px;
+    min-height: 46px;
+    padding: 3px 5px;
+    border: 1px solid #e3daf4;
+    border-radius: 11px;
+    background: rgba(255, 255, 255, 0.92);
+    color: #71657d;
+    box-shadow: 0 2px 7px rgba(70, 52, 104, 0.05);
+    display: flex;
+    flex: 1 0 48px;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 1px;
+    font: inherit;
+    cursor: pointer;
+    transition: border-color 140ms ease, background 140ms ease, color 140ms ease, transform 140ms ease;
+  }
+
+  .app-shell.is-studio-editor .studio-sheet-categories > button:hover {
+    border-color: #bda9ed;
+    background: #f5f1ff;
+  }
+
+  .app-shell.is-studio-editor .studio-sheet-categories > button:active {
+    transform: scale(0.97);
+  }
+
+  .app-shell.is-studio-editor .studio-sheet-categories > button.is-active {
+    border-color: #9e85e5;
+    background: linear-gradient(145deg, #f1ecff, #e8dfff);
+    color: #4d369c;
+    box-shadow: inset 0 0 0 1px rgba(116, 87, 215, 0.08);
+  }
+
+  .app-shell.is-studio-editor .studio-sheet-categories > button > span,
+  .app-shell.is-studio-editor .studio-sheet-categories > button > svg {
+    font-size: 0.88rem;
+  }
+
+  .app-shell.is-studio-editor .studio-sheet-categories > button > small {
+    max-width: 48px;
+    overflow: hidden;
+    color: inherit;
+    font-size: 0.5rem;
+    font-weight: 750;
+    line-height: 1.15;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .app-shell.is-studio-editor .studio-sheet-categories > button > i {
+    position: absolute;
+    top: 4px;
+    right: 4px;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: #7457d7;
+    box-shadow: 0 0 0 2px #fff;
+  }
+
+  .app-shell.is-studio-editor .studio-sheet-primary-action:focus-visible,
+  .app-shell.is-studio-editor .studio-sheet-categories > button:focus-visible {
+    outline: 2px solid rgba(116, 87, 215, 0.38);
+    outline-offset: 1px;
+  }
+
+  .app-shell.is-studio-editor .studio-sheet-scroll,
+  .app-shell.is-studio-editor .studio-sheet.is-peek .studio-sheet-scroll {
+    min-height: 0;
+    padding: 7px;
+    display: block;
+    flex: 1;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+
+  .app-shell.is-studio-editor .studio-sheet-scroll > * + * {
+    margin-top: 8px;
+  }
+
+  .app-shell.is-studio-editor .studio-export-bar {
+    min-height: 58px;
+    padding: 6px;
+    flex: 0 0 58px;
+    gap: 5px;
+  }
+
+  .app-shell.is-studio-editor .studio-export-bar > button {
+    min-height: 44px;
+    padding: 5px 7px;
+    border-radius: 11px;
+    gap: 6px;
+  }
+
+  .app-shell.is-studio-editor .studio-export-bar > button strong {
+    font-size: 0.61rem;
+  }
+
+  .app-shell.is-studio-editor .studio-recommendations > button {
+    min-height: 42px;
+  }
+
+  .app-shell.is-studio-editor .studio-recommendations > button small {
+    max-width: 210px;
+  }
+
+  .app-shell.is-studio-editor .studio-presets > div {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .app-shell.is-studio-editor .studio-mini-face {
+    height: 78px;
+  }
+
+  .app-shell.is-studio-editor .studio-drawer-backdrop {
+    inset: 0;
+    z-index: 210;
+  }
+}
+
+@media (orientation: landscape) and (max-height: 600px) and (max-width: 760px) and (hover: none) and (pointer: coarse) {
+  .app-shell.is-studio-editor .studio-editor-nav > strong,
+  .app-shell.is-studio-editor .studio-editor-nav > div button span {
+    display: none;
+  }
+
+  .app-shell.is-studio-editor .studio-editor-nav button {
+    width: 32px;
+    padding: 0;
+  }
+
+  .app-shell.is-studio-editor .studio-editor-nav .studio-editor-back {
+    width: auto;
+    padding: 0 9px;
+  }
+
+  .app-shell.is-studio-editor .studio-editor-nav .studio-function-menu button {
+    width: 100%;
+    padding: 0 9px;
+  }
+
+  .app-shell.is-studio-editor .studio-editor-nav .studio-function-menu button span {
+    display: inline !important;
+  }
+}
+
+/* App functions outside the customizer are portrait-first on phones. */
+@media (orientation: landscape) and (max-height: 600px) and (max-width: 1100px) and (hover: none) and (pointer: coarse) {
+  .app-shell:not(.is-studio-editor) .portrait-route-gate {
+    position: fixed;
+    inset: 0;
+    z-index: 240;
+    padding: 24px;
+    background:
+      radial-gradient(circle at 78% 18%, rgba(181, 165, 255, 0.42), transparent 30%),
+      radial-gradient(circle at 12% 88%, rgba(255, 218, 239, 0.5), transparent 33%),
+      #f8f5fb;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    color: #3f3452;
+  }
+
+  .portrait-route-gate-device {
+    width: 52px;
+    height: 88px;
+    margin-bottom: 17px;
+    border: 3px solid #7457d7;
+    border-radius: 14px;
+    background: rgba(255, 255, 255, 0.72);
+    box-shadow: 0 15px 34px rgba(83, 58, 139, 0.17);
+  }
+
+  .portrait-route-gate h2 {
+    margin: 0;
+    font-size: 1.18rem;
+  }
+
+  .portrait-route-gate p {
+    max-width: 360px;
+    margin: 7px 0 0;
+    color: #756986;
+    font-size: 0.75rem;
+    line-height: 1.5;
+  }
+}
+
+/* Procedure-like Try-On: one main preview with an on-demand tool sheet. */
+@media (max-width: 768px) and (orientation: portrait) {
+  .tryon-workspace {
+    position: relative;
+    width: 100% !important;
+    height: 100% !important;
+    min-height: 0 !important;
+    gap: 6px !important;
+    overflow: hidden !important;
+  }
+
+  .tryon-workspace-header,
+  .tryon-header {
+    min-height: 54px !important;
+    flex: 0 0 54px;
+    padding: 7px 76px 7px 9px !important;
+    border-radius: 16px !important;
+    flex-wrap: nowrap !important;
+  }
+
+  .tryon-header > div:first-child > div:last-child p {
+    display: none;
+  }
+
+  .tryon-header > div:first-child > div:last-child h1 {
+    max-width: 210px;
+    overflow: hidden;
+    font-size: 0.78rem !important;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .tryon-reset,
+  .tryon-workspace-header > button {
+    position: absolute;
+    top: 10px;
+    right: 8px;
+    z-index: 3;
+    width: 34px !important;
+    min-height: 34px !important;
+    padding: 0 !important;
+    border-radius: 11px !important;
+    overflow: hidden;
+    justify-content: center !important;
+    font-size: 0 !important;
+  }
+
+  .tryon-workspace-layout,
+  .tryon-grid {
+    position: relative;
+    flex: 1;
+    height: auto !important;
+    min-height: 0 !important;
+    display: flex !important;
+    flex-direction: column !important;
+    gap: 6px !important;
+    overflow: hidden !important;
+  }
+
+  .tryon-category-panel,
+  .tryon-categories {
+    order: 1;
+    flex: 0 0 70px;
+    height: 70px !important;
+    min-height: 70px !important;
+    padding: 5px 6px !important;
+    border-radius: 16px !important;
+    overflow: hidden !important;
+  }
+
+  .tryon-categories > div:first-child,
+  .tryon-categories > .tryon-palette {
+    display: none !important;
+  }
+
+  .tryon-category-list {
+    height: 58px;
+    margin: 0 !important;
+    padding: 0;
+    display: grid !important;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 5px !important;
+    overflow: hidden !important;
+  }
+
+  .tryon-category-button {
+    width: 100% !important;
+    min-width: 0 !important;
+    min-height: 58px !important;
+    height: 58px;
+    padding: 5px !important;
+    border-radius: 13px !important;
+    flex: none !important;
+    justify-content: center;
+    text-align: center !important;
+  }
+
+  .tryon-category-button > span:first-child {
+    width: 27px !important;
+    height: 27px !important;
+    border-radius: 9px !important;
+  }
+
+  .tryon-category-button > span:nth-child(2) {
+    flex: 0 !important;
+  }
+
+  .tryon-category-button > span:nth-child(2) > span:first-child {
+    font-size: 0.56rem !important;
+    white-space: nowrap;
+  }
+
+  .tryon-category-button > span:nth-child(2) > span:last-child,
+  .tryon-category-button > span:last-child {
+    display: none !important;
+  }
+
+  .tryon-preview-panel,
+  .tryon-preview {
+    order: 2;
+    flex: 1;
+    height: auto !important;
+    min-height: 0 !important;
+    padding: 6px !important;
+    border-radius: 17px !important;
+    overflow: hidden !important;
+  }
+
+  .tryon-preview-toolbar {
+    min-height: 31px;
+    flex-wrap: nowrap !important;
+  }
+
+  .tryon-preview-toolbar > div:first-child {
+    max-width: 116px;
+    overflow: hidden;
+    font-size: 0.62rem !important;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .tryon-preview-toolbar button {
+    min-height: 30px !important;
+    padding: 4px 6px !important;
+    font-size: 0.53rem !important;
+  }
+
+  .tryon-image-stage {
+    flex: 1 !important;
+    width: 100%;
+    min-height: 0 !important;
+    aspect-ratio: auto !important;
+    border-radius: 15px !important;
+  }
+
+  .tryon-look-summary {
+    display: none !important;
+  }
+
+  .tryon-controls-panel,
+  .tryon-composer {
+    display: none !important;
+  }
+
+  .tryon-workspace.is-composer-open .tryon-composer {
+    position: absolute;
+    right: 5px;
+    bottom: 5px;
+    left: 5px;
+    z-index: 16;
+    width: auto !important;
+    height: min(52%, 340px) !important;
+    min-height: 250px !important;
+    padding: 15px 8px 8px !important;
+    border-radius: 22px 22px 16px 16px !important;
+    display: flex !important;
+    overflow: hidden !important;
+    box-shadow: 0 -16px 42px rgba(67, 45, 82, 0.19) !important;
+  }
+
+  .tryon-workspace.is-composer-open .tryon-composer::before {
+    position: absolute;
+    top: 6px;
+    left: 50%;
+    width: 38px;
+    height: 4px;
+    border-radius: 999px;
+    background: #d7cedf;
+    content: '';
+    transform: translateX(-50%);
+  }
+
+  .tryon-composer > div:first-child > div > div:last-child {
+    display: none;
+  }
+
+  .tryon-preset-grid {
+    flex: 0 0 43px;
+  }
+
+  .tryon-preset-grid button {
+    padding: 4px !important;
+  }
+
+  .tryon-option-panel {
+    flex: 1 !important;
+    min-height: 0 !important;
+    padding: 7px !important;
+    overflow-y: auto !important;
+  }
+
+  .tryon-option-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  }
+
+  .tryon-option-grid button {
+    min-height: 46px !important;
+  }
+
+  .tryon-intensity {
+    padding: 7px 9px !important;
+  }
+
+  .tryon-intensity > div:last-child {
+    display: none !important;
+  }
+
+  .tryon-save {
+    min-height: 38px !important;
+  }
+
+  .tryon-mobile-composer-toggle {
+    position: absolute;
+    right: 14px;
+    bottom: 12px;
+    z-index: 22;
+    min-height: 42px;
+    padding: 9px 14px;
+    border: 0;
+    border-radius: 15px;
+    background: #17151c;
+    color: #fff;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 7px;
+    font: inherit;
+    font-size: 0.7rem;
+    font-weight: 800;
+    box-shadow: 0 12px 28px rgba(23, 21, 28, 0.22);
+  }
+
+  .tryon-workspace.is-composer-open .tryon-mobile-composer-toggle {
+    right: 18px;
+    bottom: calc(min(52%, 340px) + 12px);
+    min-height: 36px;
+    padding: 7px 10px;
+    background: rgba(23, 21, 28, 0.88);
+    font-size: 0.62rem;
+  }
+}
+
+@media (max-width: 430px) {
+  .landing-header-brand .font-wordmark {
+    font-size: 1.02rem !important;
+  }
+
+  .scan-view-header-actions,
+  .scan-workspace-header > div:last-child,
+  .consult-report-actions,
+  .report-workspace-header > div:last-child {
+    grid-template-columns: 1fr;
+  }
+
+  .tryon-option-grid {
+    grid-template-columns: 1fr !important;
+  }
+
+  .deep-report-kpis {
+    grid-template-columns: 1fr !important;
+  }
+
+  .skin-panel,
+  .report-active-content,
+  .consult-report-main,
+  .history-card,
+  .settings-hero,
+  .settings-profile-card,
+  .settings-card,
+  .pricing-plan-card {
+    border-radius: 18px !important;
+  }
+
+  .skin-panel,
+  .settings-hero,
+  .settings-profile-card,
+  .settings-card {
+    padding: 13px;
+  }
+}
+
+@media (max-width: 768px) {
+  .landing-header,
+  .landing-mobile-menu,
+  .dashboard-sidebar,
+  .app-language-switcher > button,
+  .scan-workspace-header,
+  .scan-view-card,
+  .tryon-workspace-header,
+  .tryon-category-panel,
+  .tryon-controls-panel,
+  .tryon-preview-panel,
+  .history-card,
+  .settings-hero,
+  .settings-profile-card,
+  .settings-card,
+  .pricing-compact-card,
+  .landing-report-dashboard,
+  .skin-scan-header,
+  .skin-panel {
+    background:
+      linear-gradient(145deg, rgba(255, 255, 255, 0.88), rgba(255, 255, 255, 0.56)) !important;
+    border-color: rgba(255, 255, 255, 0.78) !important;
+    box-shadow: 0 12px 34px rgba(84, 72, 122, 0.12), inset 0 1px 0 rgba(255, 255, 255, 0.9) !important;
+    backdrop-filter: blur(24px) saturate(145%) !important;
+    -webkit-backdrop-filter: blur(24px) saturate(145%) !important;
+  }
+
+  .landing-mobile-menu-button,
+  .dashboard-sidebar-nav > button,
+  .landing-mobile-menu nav button,
+  .landing-language-button,
+  .btn-brand-secondary {
+    background: rgba(255, 255, 255, 0.58) !important;
+    border-color: rgba(255, 255, 255, 0.76) !important;
+    color: var(--glass-lilac) !important;
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.88) !important;
+  }
+
+  .btn-brand-primary,
+  .landing-mobile-start,
+  .pricing-compact-card button {
+    background: #17151c !important;
+    color: #ffffff !important;
+    border-color: rgba(255, 255, 255, 0.22) !important;
+  }
+
+  .landing-hero-title {
+    font-family: var(--font-serif) !important;
+    letter-spacing: 0 !important;
+  }
+
+  .landing-hero-proof {
+    background: rgba(255, 255, 255, 0.62) !important;
+    border-color: rgba(255, 255, 255, 0.78) !important;
+    box-shadow: 0 10px 30px rgba(84, 72, 122, 0.1), inset 0 1px 0 rgba(255, 255, 255, 0.88) !important;
+  }
+}
+
+/* Try-On is a landscape workspace, matching the face customizer interaction. */
+@media (max-width: 768px) and (orientation: portrait) {
+  .app-shell.is-tryon-editor .dashboard-sidebar,
+  .app-shell.is-tryon-editor .app-language-switcher {
+    display: none !important;
+  }
+
+  .app-shell.is-tryon-editor .dashboard-main {
+    padding: 0 !important;
+    overflow: hidden !important;
+  }
+
+  .app-shell.is-tryon-editor .tryon-workspace {
+    position: fixed !important;
+    inset: 0;
+    z-index: 190;
+    width: 100vw !important;
+    height: 100dvh !important;
+    padding:
+      max(20px, env(safe-area-inset-top))
+      max(22px, env(safe-area-inset-right))
+      max(20px, env(safe-area-inset-bottom))
+      max(22px, env(safe-area-inset-left));
+    background:
+      radial-gradient(circle at 82% 14%, rgba(181, 165, 255, 0.42), transparent 31%),
+      radial-gradient(circle at 8% 86%, rgba(255, 218, 239, 0.55), transparent 33%),
+      #f8f5fb;
+  }
+
+  .app-shell.is-tryon-editor .tryon-workspace > :not(.tryon-rotate-gate) {
+    visibility: hidden;
+    pointer-events: none;
+  }
+
+  .app-shell.is-tryon-editor .tryon-rotate-gate {
+    position: absolute;
+    inset: 0;
+    z-index: 2;
+    padding: 28px 24px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 28px;
+    text-align: center;
+  }
+
+  .tryon-rotate-device {
+    position: relative;
+    width: 58px;
+    height: 96px;
+    margin: 0 auto 22px;
+    border: 3px solid #7457d7;
+    border-radius: 16px;
+    background: rgba(255, 255, 255, 0.72);
+    box-shadow: 0 16px 36px rgba(83, 58, 139, 0.18);
+    animation: tryonRotateDevice 1.8s ease-in-out infinite alternate;
+  }
+
+  .tryon-rotate-device > span {
+    position: absolute;
+    bottom: 7px;
+    left: 50%;
+    width: 16px;
+    height: 3px;
+    border-radius: 999px;
+    background: #7457d7;
+    transform: translateX(-50%);
+  }
+
+  @keyframes tryonRotateDevice {
+    to { transform: rotate(90deg); }
+  }
+
+  .tryon-rotate-gate > div:last-child > span {
+    color: #7457d7;
+    font-size: 0.68rem;
+    font-weight: 850;
+    letter-spacing: 0.08em;
+  }
+
+  .tryon-rotate-gate h2 {
+    margin: 7px 0;
+    color: #382d49;
+    font-size: 1.35rem;
+  }
+
+  .tryon-rotate-gate p {
+    max-width: 360px;
+    margin: 0 auto;
+    color: #756986;
+    font-size: 0.76rem;
+    line-height: 1.55;
+  }
+
+  .tryon-rotate-gate button {
+    min-height: 44px;
+    margin-top: 18px;
+    padding: 10px 16px;
+    border: 0;
+    border-radius: 14px;
+    background: #7457d7;
+    color: #fff;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    font: inherit;
+    font-size: 0.75rem;
+    font-weight: 800;
+    box-shadow: 0 11px 26px rgba(116, 87, 215, 0.24);
+  }
+}
+
+@media (orientation: landscape) and (max-height: 600px) and (max-width: 1100px) and (hover: none) and (pointer: coarse) {
+  .app-shell.is-tryon-editor,
+  .app-shell.is-tryon-editor .dashboard-main {
+    height: 100dvh !important;
+    max-height: 100dvh !important;
+  }
+
+  .app-shell.is-tryon-editor .dashboard-main {
+    margin-left: 58px !important;
+    padding:
+      max(5px, env(safe-area-inset-top))
+      max(6px, env(safe-area-inset-right))
+      max(5px, env(safe-area-inset-bottom))
+      4px !important;
+    overflow: hidden !important;
+  }
+
+  .app-shell.is-tryon-editor .dashboard-sidebar {
+    top: 5px !important;
+    right: auto !important;
+    bottom: 5px !important;
+    left: 5px !important;
+    width: 50px !important;
+    height: calc(100dvh - 10px) !important;
+    padding: 5px 4px !important;
+    border: 1px solid rgba(255, 255, 255, 0.78) !important;
+    border-radius: 15px !important;
+    flex-direction: column !important;
+  }
+
+  .app-shell.is-tryon-editor .dashboard-sidebar-main {
+    width: 100% !important;
+    flex-direction: column !important;
+  }
+
+  .app-shell.is-tryon-editor .dashboard-sidebar-brand,
+  .app-shell.is-tryon-editor .dashboard-sidebar-profile {
+    display: none !important;
+  }
+
+  .app-shell.is-tryon-editor .dashboard-sidebar-nav {
+    width: 100% !important;
+    height: 100% !important;
+    margin: 0 !important;
+    display: flex !important;
+    flex-direction: column !important;
+    justify-content: space-around !important;
+    gap: 3px !important;
+    overflow: hidden !important;
+  }
+
+  .app-shell.is-tryon-editor .dashboard-sidebar-nav > button {
+    width: 40px !important;
+    min-width: 40px !important;
+    height: 40px !important;
+    min-height: 40px !important;
+    padding: 0 !important;
+    border-radius: 12px !important;
+  }
+
+  .app-shell.is-tryon-editor .dashboard-sidebar-nav > button > span {
+    display: none !important;
+  }
+
+  .app-shell.is-tryon-editor .app-language-switcher {
+    top: 7px !important;
+    right: 8px !important;
+  }
+
+  .app-shell.is-tryon-editor .tryon-workspace {
+    width: 100% !important;
+    height: 100% !important;
+    min-height: 0 !important;
+    gap: 5px !important;
+    overflow: hidden !important;
+  }
+
+  .app-shell.is-tryon-editor .tryon-rotate-gate {
+    display: none !important;
+  }
+
+  .app-shell.is-tryon-editor .tryon-header {
+    min-height: 32px !important;
+    flex: 0 0 32px;
+    padding: 2px 6px !important;
+    border-radius: 12px !important;
+    flex-wrap: nowrap !important;
+  }
+
+  .app-shell.is-tryon-editor .tryon-header > div:first-child > div:first-child {
+    width: 27px !important;
+    height: 27px !important;
+    border-radius: 8px !important;
+  }
+
+  .app-shell.is-tryon-editor .tryon-header h1 {
+    max-width: 390px;
+    overflow: hidden;
+    font-size: 0.64rem !important;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .app-shell.is-tryon-editor .tryon-header p {
+    display: none;
+  }
+
+  .app-shell.is-tryon-editor .tryon-reset {
+    width: 28px !important;
+    min-width: 28px;
+    height: 28px !important;
+    min-height: 28px !important;
+    padding: 0 !important;
+    overflow: hidden;
+    justify-content: center !important;
+    font-size: 0 !important;
+  }
+
+  .app-shell.is-tryon-editor .tryon-grid {
+    min-height: 0 !important;
+    display: grid !important;
+    grid-template:
+      "steps steps" 42px
+      "preview composer" minmax(0, 1fr)
+      / minmax(0, 58%) minmax(260px, 42%) !important;
+    gap: 5px !important;
+    overflow: hidden !important;
+  }
+
+  .app-shell.is-tryon-editor .tryon-categories {
+    grid-area: steps;
+    width: 100% !important;
+    height: 42px !important;
+    min-height: 42px !important;
+    padding: 3px 5px !important;
+    border-radius: 12px !important;
+    overflow: hidden !important;
+  }
+
+  .app-shell.is-tryon-editor .tryon-categories > div:first-child,
+  .app-shell.is-tryon-editor .tryon-categories > .tryon-palette {
+    display: none !important;
+  }
+
+  .app-shell.is-tryon-editor .tryon-category-list {
+    height: 36px;
+    margin: 0 !important;
+    display: grid !important;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 5px !important;
+    overflow: hidden !important;
+  }
+
+  .app-shell.is-tryon-editor .tryon-category-button {
+    width: 100% !important;
+    min-width: 0 !important;
+    min-height: 36px !important;
+    height: 36px !important;
+    padding: 3px 6px !important;
+    border-radius: 10px !important;
+    flex: none !important;
+  }
+
+  .app-shell.is-tryon-editor .tryon-category-button > span:first-child {
+    width: 22px !important;
+    height: 22px !important;
+    border-radius: 7px !important;
+  }
+
+  .app-shell.is-tryon-editor .tryon-category-button > span:nth-child(2) > span:first-child {
+    font-size: 0.57rem !important;
+  }
+
+  .app-shell.is-tryon-editor .tryon-category-button > span:nth-child(2) > span:last-child {
+    display: none !important;
+  }
+
+  .app-shell.is-tryon-editor .tryon-preview {
+    grid-area: preview;
+    width: 100% !important;
+    height: 100% !important;
+    min-height: 0 !important;
+    padding: 5px !important;
+    border-radius: 15px !important;
+    gap: 4px !important;
+    overflow: hidden !important;
+  }
+
+  .app-shell.is-tryon-editor .tryon-preview-toolbar {
+    min-height: 24px;
+    flex: 0 0 24px;
+  }
+
+  .app-shell.is-tryon-editor .tryon-preview-toolbar > div:first-child {
+    max-width: 170px;
+    overflow: hidden;
+    font-size: 0.62rem !important;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .app-shell.is-tryon-editor .tryon-preview-toolbar button {
+    min-height: 23px !important;
+    padding: 2px 5px !important;
+    font-size: 0.48rem !important;
+  }
+
+  .app-shell.is-tryon-editor .tryon-image-stage {
+    flex: 1 !important;
+    min-height: 0 !important;
+    aspect-ratio: auto !important;
+    border-radius: 13px !important;
+  }
+
+  .app-shell.is-tryon-editor .tryon-preview-intensity {
+    right: 7px;
+    bottom: 6px;
+    left: 7px;
+    border-radius: 10px;
+    padding: 3px 7px 2px;
+  }
+
+  .app-shell.is-tryon-editor .tryon-preview-intensity-heading {
+    min-height: 12px;
+    margin-bottom: 0;
+    font-size: 0.49rem;
+    line-height: 1;
+  }
+
+  .app-shell.is-tryon-editor .tryon-preview-intensity-heading svg {
+    width: 10px;
+    height: 10px;
+  }
+
+  .app-shell.is-tryon-editor .tryon-preview-intensity input[type="range"] {
+    height: 12px;
+  }
+
+  .app-shell.is-tryon-editor .tryon-look-summary {
+    display: none !important;
+  }
+
+  .app-shell.is-tryon-editor .tryon-composer {
+    grid-area: composer;
+    position: relative !important;
+    inset: auto !important;
+    z-index: 1;
+    width: 100% !important;
+    height: 100% !important;
+    min-height: 0 !important;
+    padding: 7px !important;
+    border-radius: 15px !important;
+    display: flex !important;
+    gap: 5px !important;
+    overflow: hidden !important;
+  }
+
+  .app-shell.is-tryon-editor .tryon-composer > div:first-child > div > div:last-child {
+    display: none;
+  }
+
+  .app-shell.is-tryon-editor .tryon-preset-grid {
+    flex: 0 0 40px;
+  }
+
+  .app-shell.is-tryon-editor .tryon-preset-grid button {
+    padding: 3px !important;
+  }
+
+  .app-shell.is-tryon-editor .tryon-option-panel {
+    flex: 1 !important;
+    min-height: 0 !important;
+    padding: 6px !important;
+    overflow-y: auto !important;
+  }
+
+  .app-shell.is-tryon-editor .tryon-option-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  }
+
+  .app-shell.is-tryon-editor .tryon-option-grid button {
+    min-height: 44px !important;
+  }
+
+  .app-shell.is-tryon-editor .tryon-intensity {
+    padding: 6px 8px !important;
+  }
+
+  .app-shell.is-tryon-editor .tryon-intensity > div:last-child {
+    display: none !important;
+  }
+
+  .app-shell.is-tryon-editor .tryon-save {
+    min-height: 36px !important;
+  }
+
+  .app-shell.is-tryon-editor .tryon-mobile-composer-toggle {
+    display: none !important;
+  }
+}

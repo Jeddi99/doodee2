@@ -1,0 +1,377 @@
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { useMutation, useQuery } from '@tanstack/react-query';
+import { Activity, ArrowLeft, Camera, CheckCircle2, Globe2, RotateCcw, ScanFace, ShieldCheck } from 'lucide-react';
+import { advanceCaptureTimer, evaluateCapture, startCaptureTimer } from '@doodee/shared';
+
+import { createSimulation, deleteScan, getProcedures, getScan, getSimulation, uploadScan } from '../lib/api';
+import { nextSlowInferenceStreak, shouldDisableAutoCapture } from '../lib/capturePerformance';
+import '../capture-flow.css';
+
+const VIEWS = [
+  ['front', 'หน้าตรง สีหน้าปกติ', 'Front neutral'],
+  ['front_smile', 'หน้าตรง ยิ้ม', 'Front smile'],
+  ['left_oblique', 'เฉียงซ้าย 45°', 'Left oblique 45°'],
+  ['right_oblique', 'เฉียงขวา 45°', 'Right oblique 45°'],
+  ['left_profile', 'ด้านซ้าย 60–75°', 'Left profile 60–75°'],
+  ['right_profile', 'ด้านขวา 60–75°', 'Right profile 60–75°'],
+  ['basal', 'เงยเห็นฐานจมูก', 'Basal nose view'],
+];
+const REGION_PARAMETERS = {
+  eyes: { outer_corner_lift: 20, eyelid_definition: 20 },
+  nose: { bridge_height: 20, tip_projection: 15, tip_rotation: 10, alar_width: -10 },
+  lips: { fullness: 15, lip_height: 10, corner_lift: 10 },
+  cheeks: { projection: 15, volume: 15 },
+  jaw: { width: -15, definition: 20 },
+  chin: { projection: 15, height: 10, width: 0 },
+};
+const QUALITY_TEXT = {
+  no_face: ['จัดใบหน้าให้อยู่ในกรอบ', 'Position your face in the guide'],
+  multiple_faces: ['ต้องมีหนึ่งใบหน้าเท่านั้น', 'Only one face can be visible'],
+  too_dark: ['แสงน้อยเกินไป', 'Move to brighter light'],
+  too_bright: ['แสงจ้าหรือย้อนแสงเกินไป', 'Reduce glare or backlight'],
+  too_far: ['เข้าใกล้กล้องอีกนิด', 'Move closer'],
+  too_close: ['ถอยจากกล้องอีกนิด', 'Move farther away'],
+  off_center: ['จัดใบหน้าให้อยู่กลางกรอบ', 'Center your face'],
+  wrong_pose: ['ปรับศีรษะตามมุมที่ระบุ', 'Match the requested angle'],
+  wrong_expression: ['ปรับสีหน้าตามที่ระบุ', 'Match the requested expression'],
+  not_stable: ['อยู่นิ่งสักครู่', 'Hold still'],
+  ready: ['ดีมาก อยู่นิ่งไว้', 'Good — hold still'],
+};
+
+const canvasBlob = (canvas, quality) => new Promise((resolve, reject) => {
+  canvas.toBlob((blob) => blob ? resolve(blob) : reject(new Error('capture_failed')), 'image/jpeg', quality);
+});
+
+async function captureFiles(video, view) {
+  const scale = Math.min(1, 1600 / Math.max(video.videoWidth, video.videoHeight));
+  const width = Math.round(video.videoWidth * scale);
+  const height = Math.round(video.videoHeight * scale);
+  const canvas = document.createElement('canvas');
+  canvas.width = width;
+  canvas.height = height;
+  canvas.getContext('2d').drawImage(video, 0, 0, width, height);
+  const thumbnail = document.createElement('canvas');
+  thumbnail.width = 280;
+  thumbnail.height = Math.round(280 * height / width);
+  thumbnail.getContext('2d').drawImage(canvas, 0, 0, thumbnail.width, thumbnail.height);
+  const [fullBlob, thumbnailBlob] = await Promise.all([canvasBlob(canvas, .9), canvasBlob(thumbnail, .78)]);
+  return { file: new File([fullBlob], `${view}.jpg`, { type: 'image/jpeg' }), thumbnail: thumbnailBlob };
+}
+
+function SimulationPanel({ scanId, isMinor, lang }) {
+  const isTh = lang === 'th';
+  const [region, setRegion] = useState('nose');
+  const [parameters, setParameters] = useState(REGION_PARAMETERS.nose);
+  const [consented, setConsented] = useState(false);
+  const [simulationId, setSimulationId] = useState(null);
+  const procedures = useQuery({ queryKey: ['procedures', region], queryFn: () => getProcedures(region) });
+  const mutation = useMutation({
+    mutationFn: () => createSimulation(scanId, region, parameters, '2026.1'),
+    onSuccess: (simulation) => setSimulationId(simulation.id),
+  });
+  const simulation = useQuery({
+    queryKey: ['simulation', simulationId],
+    queryFn: () => getSimulation(simulationId),
+    enabled: Boolean(simulationId),
+    refetchInterval: (query) => ['completed', 'failed'].includes(query.state.data?.status) ? false : 1500,
+  });
+
+  if (isMinor) {
+    return <section className="skin-panel"><h2>{isTh ? 'โหมดผู้เยาว์' : 'Minor mode'}</h2><p>{isTh ? 'ไม่มีคำแนะนำหัตถการหรือภาพจำลอง และข้อมูลทั้งหมดจะถูกลบภายใน 24 ชั่วโมง' : 'Procedures and simulations are unavailable. All session data is deleted within 24 hours.'}</p></section>;
+  }
+
+  const changeRegion = (next) => {
+    setRegion(next);
+    setParameters(REGION_PARAMETERS[next]);
+    setSimulationId(null);
+  };
+  const result = simulation.data;
+
+  return (
+    <section className="skin-panel skin-findings-panel">
+      <div className="skin-panel-heading"><div><span className="skin-step">EDUCATIONAL PREVIEW</span><h2>{isTh ? 'สำรวจการเปลี่ยนแปลงเพื่อคุยกับแพทย์' : 'Explore changes to discuss with a clinician'}</h2></div><span className="skin-count-badge">NOT A PREDICTION</span></div>
+      <div className="onboarding-choice-row">{Object.keys(REGION_PARAMETERS).map((item) => <button type="button" key={item} className={region === item ? 'is-selected' : ''} onClick={() => changeRegion(item)}>{item}</button>)}</div>
+      <div className="face-metric-list">{Object.entries(parameters).map(([key, value]) => <label key={key}><strong>{key.replaceAll('_', ' ')}</strong><input type="range" min="-100" max="100" value={value} onChange={(event) => setParameters((current) => ({ ...current, [key]: Number(event.target.value) }))} /><span>{value}</span></label>)}</div>
+      {procedures.data?.map((procedure) => <details key={procedure.id}><summary>{isTh ? procedure.name_th : procedure.name_en}</summary><p>{procedure.summary_th}</p><p>{procedure.limitations_th}</p><a href={procedure.source} target="_blank" rel="noreferrer">Source</a></details>)}
+      <label><input type="checkbox" checked={consented} onChange={(event) => setConsented(event.target.checked)} /> {isTh ? 'ฉันยินยอมให้ส่งภาพไปยัง Gemini เพื่อสร้างภาพจำลอง และเข้าใจว่านี่ไม่ใช่ผลผ่าตัดจริง' : 'I consent to sending this image to Gemini and understand this is not a surgical outcome.'}</label>
+      <button type="button" disabled={!consented || mutation.isPending || (result && !['completed', 'failed'].includes(result.status))} onClick={() => mutation.mutate()}>{mutation.isPending || result?.status === 'processing' ? <Activity size={18} /> : <ScanFace size={18} />}{isTh ? 'สร้างภาพจำลอง' : 'Create simulation'}</button>
+      {(mutation.error || simulation.error || result?.status === 'failed') ? <small role="alert">{mutation.error?.message || simulation.error?.message || result.error_message}</small> : null}
+      {result?.status === 'completed' ? <div className="compare-stage"><img src={result.before_url} alt={isTh ? 'ภาพต้นฉบับ' : 'Before'} /><img src={result.after_url} alt={isTh ? 'ภาพจำลอง มีลายน้ำ' : 'Watermarked simulation'} /></div> : null}
+    </section>
+  );
+}
+
+export default function FacialAnalysisView({ lang, setLang, onboardingData, onBack }) {
+  const isTh = lang === 'th';
+  const isMinor = onboardingData?.age === 'under18';
+  const [files, setFiles] = useState({});
+  const [thumbnails, setThumbnails] = useState({});
+  const [scanId, setScanId] = useState(null);
+  const [error, setError] = useState('');
+  const [consentChecked, setConsentChecked] = useState(false);
+  const [consented, setConsented] = useState(false);
+  const [activeView, setActiveView] = useState(null);
+  const [cameraError, setCameraError] = useState('');
+  const [cameraReady, setCameraReady] = useState(false);
+  const [detectorReady, setDetectorReady] = useState(false);
+  const [autoDisabled, setAutoDisabled] = useState(false);
+  const [qualityStatus, setQualityStatus] = useState('no_face');
+  const [timer, setTimer] = useState(() => startCaptureTimer(0));
+  const videoRef = useRef(null);
+  const streamRef = useRef(null);
+  const timerRef = useRef(timer);
+  const filesRef = useRef(files);
+  const previousObservationRef = useRef(null);
+  const captureRef = useRef(null);
+  const capturingRef = useRef(false);
+  const failedScanRef = useRef(null);
+  const liveModuleRef = useRef(null);
+  const detectorRef = useRef(null);
+  const cameraOpen = Boolean(activeView);
+  const allCaptured = VIEWS.every(([key]) => files[key]);
+  const currentIndex = Math.max(0, VIEWS.findIndex(([key]) => key === activeView));
+  const previews = useMemo(() => Object.fromEntries(Object.entries(thumbnails).map(([key, blob]) => [key, URL.createObjectURL(blob)])), [thumbnails]);
+
+  useEffect(() => () => Object.values(previews).forEach(URL.revokeObjectURL), [previews]);
+  useEffect(() => () => {
+    streamRef.current?.getTracks().forEach((track) => track.stop());
+    liveModuleRef.current?.then((module) => module.closeLiveFaceLandmarker());
+  }, []);
+
+  useEffect(() => {
+    if (!cameraOpen) return undefined;
+    let cancelled = false;
+    setCameraError('');
+    if (!navigator.mediaDevices?.getUserMedia) {
+      setCameraError(isTh ? 'กล้องต้องเปิดผ่าน HTTPS หรือ localhost' : 'Camera access requires HTTPS or localhost.');
+      return undefined;
+    }
+    navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user', width: { ideal: 1280 }, height: { ideal: 960 } }, audio: false })
+      .then((stream) => {
+        if (cancelled) return stream.getTracks().forEach((track) => track.stop());
+        streamRef.current = stream;
+        if (videoRef.current) videoRef.current.srcObject = stream;
+        setCameraReady(true);
+      })
+      .catch(() => setCameraError(isTh ? 'เปิดกล้องไม่ได้ กรุณาอนุญาต Camera ให้ localhost' : 'Could not open the camera. Allow Camera access for localhost.'));
+    return () => {
+      cancelled = true;
+      streamRef.current?.getTracks().forEach((track) => track.stop());
+      streamRef.current = null;
+      setCameraReady(false);
+    };
+  }, [cameraOpen, isTh]);
+
+  useEffect(() => {
+    if (!activeView) return undefined;
+    const nextTimer = { ...startCaptureTimer(performance.now()), manualAvailable: autoDisabled };
+    timerRef.current = nextTimer;
+    setTimer(nextTimer);
+    setQualityStatus('no_face');
+    previousObservationRef.current = null;
+    capturingRef.current = false;
+    const fallback = window.setTimeout(() => {
+      const available = { ...timerRef.current, manualAvailable: true };
+      timerRef.current = available;
+      setTimer(available);
+    }, 10_000);
+    return () => window.clearTimeout(fallback);
+  }, [activeView, autoDisabled]);
+
+  useEffect(() => {
+    if (!cameraOpen || !cameraReady || !activeView || autoDisabled) return undefined;
+    let cancelled = false;
+    let frameCallback;
+    let timeout;
+    let lastRun = 0;
+    let slowStreak = 0;
+    const detectCanvas = document.createElement('canvas');
+    detectCanvas.width = 640;
+    detectCanvas.height = 480;
+    const lightCanvas = document.createElement('canvas');
+    lightCanvas.width = 40;
+    lightCanvas.height = 30;
+    const video = videoRef.current;
+
+    const cancelScheduled = () => {
+      if (frameCallback != null && video?.cancelVideoFrameCallback) video.cancelVideoFrameCallback(frameCallback);
+      window.clearTimeout(timeout);
+    };
+    const schedule = (tick) => {
+      if (video?.requestVideoFrameCallback) frameCallback = video.requestVideoFrameCallback(tick);
+      else timeout = window.setTimeout(() => tick(performance.now()), 333);
+    };
+
+    setDetectorReady(Boolean(detectorRef.current));
+    liveModuleRef.current ||= import('../lib/liveFace');
+    liveModuleRef.current.then(async (liveFace) => {
+      const task = detectorRef.current || await liveFace.getLiveFaceLandmarker();
+      detectorRef.current = task;
+      if (cancelled) return;
+      setDetectorReady(true);
+      const tick = (now) => {
+        if (cancelled) return;
+        if (now - lastRun < 333 || video?.readyState < 2) return schedule(tick);
+        lastRun = now;
+        try {
+          const observation = liveFace.observeVideo(task, video, detectCanvas, lightCanvas, previousObservationRef.current, now);
+          slowStreak = nextSlowInferenceStreak(slowStreak, observation.inferenceMs);
+          if (shouldDisableAutoCapture(slowStreak)) {
+            cancelled = true;
+            setAutoDisabled(true);
+            setDetectorReady(false);
+            setCameraError(isTh ? 'เครื่องใช้เวลาตรวจนาน จึงปิดโหมดอัตโนมัติและเปิดให้ถ่ายเอง' : 'Automatic guidance was disabled because detection is too slow.');
+            const manual = { ...timerRef.current, manualAvailable: true };
+            timerRef.current = manual;
+            setTimer(manual);
+            return;
+          }
+          const status = evaluateCapture(activeView, observation);
+          previousObservationRef.current = observation;
+          const nextTimer = advanceCaptureTimer(timerRef.current, status, now);
+          timerRef.current = nextTimer;
+          setQualityStatus(status);
+          setTimer(nextTimer);
+          if (nextTimer.shouldCapture && !capturingRef.current) captureRef.current?.();
+        } catch {
+          cancelled = true;
+          setAutoDisabled(true);
+          setCameraError(isTh ? 'ตัวตรวจใบหน้าหยุดทำงาน ใช้ปุ่มถ่ายเองได้' : 'Face guidance stopped. Manual capture is available.');
+        }
+        schedule(tick);
+      };
+      schedule(tick);
+    }).catch(() => {
+      setAutoDisabled(true);
+      setDetectorReady(false);
+      setCameraError(isTh ? 'โหลดตัวตรวจใบหน้าไม่สำเร็จ ใช้ปุ่มถ่ายเองได้' : 'Face guidance failed to load. Manual capture is available.');
+    });
+    return () => {
+      cancelled = true;
+      cancelScheduled();
+    };
+  }, [activeView, autoDisabled, cameraOpen, cameraReady, isTh]);
+
+  const scan = useQuery({
+    queryKey: ['scan', scanId],
+    queryFn: () => getScan(scanId),
+    enabled: Boolean(scanId),
+    refetchInterval: (query) => ['completed', 'failed'].includes(query.state.data?.status) ? false : 1500,
+  });
+  const upload = useMutation({
+    mutationFn: () => uploadScan(files, isMinor ? 'minor' : 'adult', '2026.1'),
+    onSuccess: (queued) => setScanId(queued.id),
+  });
+  const result = scan.data;
+  const metrics = result?.analysis_data?.metrics || [];
+  const isScanning = upload.isPending || (result && !['completed', 'failed'].includes(result.status));
+
+  useEffect(() => {
+    if (result?.status !== 'failed' || failedScanRef.current === result.id) return;
+    failedScanRef.current = result.id;
+    const failedView = VIEWS.find(([key]) => result.error_code?.includes(key))?.[0];
+    setError(result.error_message || (isTh ? 'ภาพไม่ผ่านการตรวจ กรุณาถ่ายใหม่' : 'A photo failed validation. Please retake it.'));
+    const nextFiles = failedView ? Object.fromEntries(Object.entries(filesRef.current).filter(([key]) => key !== failedView)) : {};
+    filesRef.current = nextFiles;
+    setFiles(nextFiles);
+    setThumbnails((current) => failedView ? Object.fromEntries(Object.entries(current).filter(([key]) => key !== failedView)) : {});
+    deleteScan(result.id).catch(() => {});
+    setScanId(null);
+    setActiveView(failedView || VIEWS[0][0]);
+  }, [isTh, result]);
+
+  useEffect(() => {
+    if (result?.status !== 'completed') return;
+    filesRef.current = {};
+    setFiles({});
+    setThumbnails({});
+  }, [result?.status]);
+
+  const startCapture = () => {
+    if (!consentChecked) return;
+    setConsented(true);
+    setActiveView(VIEWS.find(([key]) => !filesRef.current[key])?.[0] || VIEWS[0][0]);
+  };
+  const analyze = () => {
+    setError('');
+    if (!consented) return setError(isTh ? 'กรุณายืนยันความยินยอมก่อนวิเคราะห์' : 'Analysis consent is required.');
+    liveModuleRef.current?.then((module) => module.closeLiveFaceLandmarker());
+    detectorRef.current = null;
+    upload.mutate(undefined, { onError: (uploadError) => setError(uploadError.message) });
+  };
+  const retake = (view) => {
+    setError('');
+    setActiveView(view);
+  };
+
+  async function capture() {
+    const video = videoRef.current;
+    if (!video?.videoWidth || !activeView || capturingRef.current) return;
+    capturingRef.current = true;
+    try {
+      const captured = await captureFiles(video, activeView);
+      const nextFiles = { ...filesRef.current, [activeView]: captured.file };
+      filesRef.current = nextFiles;
+      setFiles(nextFiles);
+      setThumbnails((current) => ({ ...current, [activeView]: captured.thumbnail }));
+      setActiveView(VIEWS.find(([key]) => !nextFiles[key])?.[0] || null);
+    } catch {
+      setCameraError(isTh ? 'ถ่ายภาพไม่สำเร็จ กรุณาลองใหม่' : 'Capture failed. Please try again.');
+    } finally {
+      capturingRef.current = false;
+    }
+  }
+  captureRef.current = capture;
+
+  const currentLabel = VIEWS[currentIndex]?.[isTh ? 1 : 2];
+  const phase = result?.status === 'completed' ? 'result' : cameraOpen ? 'camera' : allCaptured ? 'review' : 'consent';
+
+  return (
+    <div className="capture-page">
+      <header className="capture-topbar">
+        <button type="button" className="capture-icon-button" onClick={onBack} aria-label={isTh ? 'ย้อนกลับ' : 'Back'}><ArrowLeft /></button>
+        <div className="capture-brand"><ScanFace /><strong>DOODEE</strong><span>{isTh ? 'วิเคราะห์ใบหน้า 7 มุม' : 'Seven-view facial analysis'}</span></div>
+        <button type="button" className="capture-language" onClick={() => setLang(isTh ? 'en' : 'th')}><Globe2 />{isTh ? 'TH' : 'EN'}</button>
+      </header>
+
+      <main className={`capture-main is-${phase}`}>
+        {phase === 'consent' ? <section className="capture-consent-card">
+          <span className="capture-eyebrow">PRIVATE FACE CAPTURE</span>
+          <h1>{isTh ? 'เตรียมถ่ายใบหน้า 7 มุม' : 'Prepare for seven face views'}</h1>
+          <p>{isTh ? 'ระบบจะตรวจแสง ระยะ และท่าทางบนเครื่อง แล้วถ่ายให้อัตโนมัติเมื่อภาพพร้อม' : 'Lighting, distance, and pose are checked on this device before automatic capture.'}</p>
+          <div className="capture-consent-points"><div><Camera /><span><strong>{isTh ? 'ทีละมุม' : 'One view at a time'}</strong>{isTh ? 'ทำตามคำแนะนำบนหน้ากล้อง' : 'Follow the instruction on camera'}</span></div><div><ShieldCheck /><span><strong>{isTh ? 'ข้อมูลชีวมิติส่วนตัว' : 'Private biometric data'}</strong>{isMinor ? (isTh ? 'ลบภายใน 24 ชั่วโมง' : 'Deleted within 24 hours') : (isTh ? 'ลบภายใน 30 วัน' : 'Deleted within 30 days')}</span></div></div>
+          <label className="capture-consent-check"><input type="checkbox" checked={consentChecked} onChange={(event) => setConsentChecked(event.target.checked)} /><span>{isTh ? 'ฉันยินยอมให้ Doodee เปิดกล้อง วิเคราะห์ข้อมูลชีวมิติ และเก็บภาพตามระยะเวลาที่แจ้ง' : 'I consent to camera access, biometric analysis, and the stated image retention period.'}</span></label>
+          <button type="button" className="capture-primary" disabled={!consentChecked} onClick={startCapture}>{isTh ? 'ยินยอมและเริ่มถ่าย' : 'Consent and start'}<ArrowLeft className="capture-forward" /></button>
+          <small>{isTh ? 'ยังไม่มีการส่งภาพไป Gemini การจำลองภาพจะขอความยินยอมแยกภายหลัง' : 'No image is sent to Gemini. Simulation consent is requested separately.'}</small>
+        </section> : null}
+
+        {phase === 'camera' ? <section className="capture-camera-layout">
+          <div className="capture-progress" aria-label={isTh ? `มุมที่ ${currentIndex + 1} จาก 7` : `View ${currentIndex + 1} of 7`}><span>{currentIndex + 1}/7</span><div>{VIEWS.map(([key], index) => <i key={key} className={files[key] ? 'is-done' : index === currentIndex ? 'is-current' : ''} />)}</div></div>
+          <div className="capture-instruction"><span>{isTh ? 'มุมปัจจุบัน' : 'Current view'}</span><h1>{currentLabel}</h1></div>
+          <div className="capture-camera-stage">
+            <video ref={videoRef} autoPlay muted playsInline />
+            <div className={`capture-face-guide${qualityStatus === 'ready' ? ' is-ready' : ''}`} aria-hidden="true" />
+            {!cameraReady || (!detectorReady && !autoDisabled) ? <div className="capture-preparing"><Activity /><strong>{isTh ? 'กำลังเตรียมกล้องและ AI…' : 'Preparing camera and AI…'}</strong><span>{isTh ? 'อาจใช้เวลา 2–5 วินาที' : 'This may take 2–5 seconds'}</span></div> : null}
+            <div className="capture-live-status" role="status" aria-live="polite"><span className={qualityStatus === 'ready' ? 'is-ready' : ''} />{autoDisabled ? (isTh ? 'โหมดถ่ายเอง' : 'Manual mode') : QUALITY_TEXT[qualityStatus][isTh ? 0 : 1]}{qualityStatus === 'ready' ? ` · ${Math.round(timer.progress * 100)}%` : ''}</div>
+          </div>
+          {timer.manualAvailable || autoDisabled ? <button type="button" className="capture-manual" onClick={capture}><Camera />{isTh ? 'ถ่ายภาพนี้' : 'Capture this view'}</button> : <p className="capture-hint">{isTh ? 'เมื่อแสง ระยะ และท่าทางพร้อม ระบบจะถ่ายให้เอง' : 'The photo is taken automatically when lighting, distance, and pose are ready.'}</p>}
+          {cameraError ? <p className="capture-error" role="alert">{cameraError}</p> : null}
+          {error ? <p className="capture-error" role="alert">{error}</p> : null}
+        </section> : null}
+
+        {phase === 'review' ? <section className="capture-review">
+          <span className="capture-eyebrow">REVIEW</span><h1>{isTh ? 'ตรวจรูปก่อนวิเคราะห์' : 'Review before analysis'}</h1><p>{isTh ? 'ถ่ายใหม่เฉพาะมุมที่ต้องการแก้ แล้วจึงส่งภาพทั้ง 7 มุม' : 'Retake only the views you want to correct, then submit all seven.'}</p>
+          <div className="capture-review-grid">{VIEWS.map(([key, th, en]) => <article key={key}><img src={previews[key]} alt={isTh ? th : en} /><div><span>{isTh ? th : en}</span><button type="button" onClick={() => retake(key)}><RotateCcw />{isTh ? 'ถ่ายใหม่' : 'Retake'}</button></div></article>)}</div>
+          <div className="capture-review-actions"><div><ShieldCheck /><span>{isTh ? 'ภาพจะถูกส่งเมื่อกดปุ่มนี้เท่านั้น' : 'Images are uploaded only after you press this button.'}</span></div><button type="button" className="capture-primary" disabled={isScanning} onClick={analyze}>{isScanning ? <Activity /> : <ScanFace />}{isTh ? 'อัปโหลดและเริ่มวิเคราะห์' : 'Upload and analyze'}</button></div>
+          {isScanning ? <div className="capture-processing"><Activity /><strong>{result?.progress || 0}%</strong><span>{isTh ? 'กำลังวิเคราะห์…' : 'Analyzing…'}</span></div> : null}
+          {error || upload.error || scan.error ? <p className="capture-error" role="alert">{error || upload.error?.message || scan.error?.message}</p> : null}
+        </section> : null}
+
+        {phase === 'result' ? <div className="capture-results">
+          <section className="skin-panel skin-findings-panel"><div className="skin-panel-heading"><div><span className="skin-step">MEASUREMENTS</span><h2>{metrics.length} {isTh ? 'ค่าที่วัดได้' : 'measurements'}</h2></div><span className="skin-count-badge">EXPERIMENTAL</span></div><p>{isTh ? 'ผลเป็นการทดลอง ไม่ใช่คะแนนความสวยหรือการวินิจฉัย' : 'Experimental measurements, not a beauty score or diagnosis.'}</p><div className="face-metric-list">{metrics.map((metric) => <article key={metric.key}><CheckCircle2 size={15} /><div><span><strong>{metric.key.replaceAll('_', ' ')}</strong><b>{metric.value}</b></span><small>{metric.unit} · confidence {metric.confidence} · {metric.status}</small></div></article>)}</div></section>
+          <SimulationPanel scanId={result.id} isMinor={result.age_band === 'minor'} lang={lang} />
+        </div> : null}
+      </main>
+    </div>
+  );
+}
