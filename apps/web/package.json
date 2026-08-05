@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "vite build",
     "lint": "oxlint",
-    "test": "node --test src/data/studio.test.js src/lib/capturePerformance.test.js",
+    "test": "node --test src/data/studio.test.js src/lib/capturePerformance.test.js src/lib/facePose.test.js",
     "preview": "vite preview"
   },
   "dependencies": {

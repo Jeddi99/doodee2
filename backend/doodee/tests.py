@@ -1,4 +1,5 @@
 from datetime import timedelta
+import os
 from unittest.mock import patch
 
 import cv2
@@ -6,13 +7,14 @@ import numpy as np
 from django.contrib.auth.models import User
 from django.core.management import call_command
 from django.core.files.uploadedfile import SimpleUploadedFile
-from django.test import TestCase, override_settings
+from django.test import SimpleTestCase, TestCase, override_settings
 from django.utils import timezone
 from rest_framework.test import APIClient
 
 from .models import ConsentEvent, Scan, Simulation
 from .analysis_engine import _validate_pose_set, analyze_images
 from .simulation_engine import constrain_region_and_watermark, validate_parameters
+from .storage import _headers
 from .views import SCAN_VIEWS
 
 
@@ -22,6 +24,14 @@ def image_file(name):
     ok, encoded = cv2.imencode(".jpg", image)
     assert ok
     return SimpleUploadedFile(f"{name}.jpg", encoded.tobytes(), content_type="image/jpeg")
+
+
+class StorageHeadersTest(SimpleTestCase):
+    def test_secret_and_legacy_keys_use_their_supported_headers(self):
+        with patch.dict(os.environ, {"SUPABASE_SECRET_KEY": "sb_secret_test"}):
+            self.assertEqual(_headers(), {"apikey": "sb_secret_test"})
+        with patch.dict(os.environ, {"SUPABASE_SECRET_KEY": "legacy.jwt"}):
+            self.assertEqual(_headers(), {"apikey": "legacy.jwt", "Authorization": "Bearer legacy.jwt"})
 
 
 @override_settings(SIMULATION_ENABLED=True)
@@ -113,13 +123,25 @@ class PoseQualityTest(TestCase):
             analyze_images(images)
 
     def test_rejects_front_images_reused_as_profiles(self):
-        front = np.zeros((478, 3), dtype=np.float64)
-        front[234, 0], front[454, 0], front[1, 0] = 0.2, 0.8, 0.5
-        front[33, :2], front[133, :2] = (.3, .4), (.4, .4)
-        front[362, :2], front[263, :2] = (.6, .4), (.7, .4)
-        points = {view: front.copy() for view in SCAN_VIEWS}
-        with self.assertRaisesRegex(ValueError, "pose_left_oblique"):
-            _validate_pose_set(points)
+        poses = {
+            view: {"yaw": 0, "pitch": 20 if view == "basal" else 0, "roll": 0}
+            for view in SCAN_VIEWS
+        }
+        with self.assertRaisesRegex(ValueError, r"pose_left_oblique:yaw:-30"):
+            _validate_pose_set(poses)
+
+    def test_pose_error_names_axis_and_rounded_correction(self):
+        poses = {
+            "front": {"yaw": 0, "pitch": 0, "roll": 0},
+            "front_smile": {"yaw": 0, "pitch": 0, "roll": 0},
+            "left_oblique": {"yaw": -40, "pitch": 0, "roll": 0},
+            "right_oblique": {"yaw": 40, "pitch": 0, "roll": 0},
+            "left_profile": {"yaw": -68, "pitch": 0, "roll": 0},
+            "right_profile": {"yaw": 68, "pitch": 0, "roll": 0},
+            "basal": {"yaw": 13, "pitch": 20, "roll": 0},
+        }
+        with self.assertRaisesRegex(ValueError, r"pose_basal:yaw:-5"):
+            _validate_pose_set(poses)
 
 
 class RetentionTest(TestCase):

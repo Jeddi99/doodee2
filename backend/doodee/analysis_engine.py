@@ -1,4 +1,5 @@
-from math import hypot
+from math import asin, atan2, degrees, hypot
+import json
 import os
 from pathlib import Path
 from functools import lru_cache
@@ -7,6 +8,7 @@ from functools import lru_cache
 FORMULA_VERSION = "2026.1"
 MEDIAPIPE_SOURCE = "https://ai.google.dev/edge/mediapipe/solutions/vision/face_landmarker"
 ANTHROPOMETRY_SOURCE = "https://pubmed.ncbi.nlm.nih.gov/37487528/"
+POSE_TARGETS = json.loads((Path(__file__).parent / "pose_targets.json").read_text())
 
 FRONT_METRICS = (
     ("upper_face_height_ratio", "harmony", 10, 168, "height"),
@@ -54,6 +56,7 @@ def _face_landmarker():
         num_faces=2,
         min_face_detection_confidence=0.6,
         min_face_presence_confidence=0.6,
+        output_facial_transformation_matrixes=True,
     )
     return mp.tasks.vision.FaceLandmarker.create_from_options(options)
 
@@ -65,9 +68,15 @@ def _landmarks(image):
 
     rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
     result = _face_landmarker().detect(mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb))
-    if len(result.face_landmarks) != 1:
+    if len(result.face_landmarks) != 1 or len(result.facial_transformation_matrixes) != 1:
         raise ValueError("face_count")
-    return np.array([(p.x, p.y, p.z) for p in result.face_landmarks[0]], dtype=np.float64)
+    matrix = np.asarray(result.facial_transformation_matrixes[0], dtype=np.float64).reshape(-1)
+    pose = {
+        "yaw": degrees(asin(max(-1, min(1, -matrix[8])))),
+        "pitch": degrees(atan2(matrix[9], matrix[10])),
+        "roll": degrees(atan2(matrix[4], matrix[0])),
+    }
+    return np.array([(p.x, p.y, p.z) for p in result.face_landmarks[0]], dtype=np.float64), pose
 
 
 def _distance(points, a, b):
@@ -91,33 +100,17 @@ def _point_line_distance(points, point, line_a, line_b):
     return abs(float(np.cross(line, p - a))) / length
 
 
-def _pose_offset(points):
-    left, right, nose = points[234, 0], points[454, 0], points[1, 0]
-    width = abs(right - left)
-    if width <= 0:
-        raise ValueError("invalid_face_dimensions")
-    return (nose - (left + right) / 2) / width
-
-
-def _validate_pose_set(points):
-    for view in ("front", "front_smile", "basal"):
-        if abs(_pose_offset(points[view])) > 0.14:
-            raise ValueError(f"pose_{view}")
-    for view in ("left_oblique", "right_oblique"):
-        if not 0.04 <= abs(_pose_offset(points[view])) <= 0.38:
-            raise ValueError(f"pose_{view}")
-    profile_offsets = [_pose_offset(points[view]) for view in ("left_profile", "right_profile")]
-    for view, offset in zip(("left_profile", "right_profile"), profile_offsets):
-        if abs(offset) < 0.12:
-            raise ValueError(f"pose_{view}")
-    if profile_offsets[0] * profile_offsets[1] >= 0:
-        raise ValueError("pose_profiles")
-
-    front = points["front"]
-    eye_dx = abs(((front[33, 0] + front[133, 0]) / 2) - ((front[362, 0] + front[263, 0]) / 2))
-    eye_dy = abs(((front[33, 1] + front[133, 1]) / 2) - ((front[362, 1] + front[263, 1]) / 2))
-    if eye_dx <= 0 or eye_dy / eye_dx > 0.10:
-        raise ValueError("pose_front_roll")
+def _validate_pose_set(poses):
+    for view, pose in poses.items():
+        target = POSE_TARGETS[view]
+        corrections = {}
+        for axis in ("yaw", "pitch", "roll"):
+            low, high = target[axis]
+            value = pose[axis]
+            corrections[axis] = low - value if value < low else high - value if value > high else 0
+        axis, delta = max(corrections.items(), key=lambda item: abs(item[1]))
+        if delta:
+            raise ValueError(f"pose_{view}:{axis}:{delta:+.0f}")
 
 
 def _metric(key, category, value, confidence=0.72, source=ANTHROPOMETRY_SOURCE):
@@ -161,6 +154,7 @@ def analyze_images(images, age_band="adult"):
 
     decoded = {}
     points = {}
+    poses = {}
     for view, data in images.items():
         try:
             decoded[view] = _decode(data)
@@ -168,10 +162,10 @@ def analyze_images(images, age_band="adult"):
             raise ValueError(f"{exc}:{view}") from exc
     for view, image in decoded.items():
         try:
-            points[view] = _landmarks(image)
+            points[view], poses[view] = _landmarks(image)
         except ValueError as exc:
             raise ValueError(f"{exc}:{view}") from exc
-    _validate_pose_set(points)
+    _validate_pose_set(poses)
     front = points["front"]
     width, height = _distance(front, 234, 454), _distance(front, 10, 152)
     metrics = [_metric("face_width_to_height", "harmony", _ratio(width, height))]

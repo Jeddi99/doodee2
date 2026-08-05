@@ -13,7 +13,10 @@ def _url(object_name):
 
 def _headers():
     key = os.environ["SUPABASE_SECRET_KEY"]
-    return {"apikey": key, "Authorization": f"Bearer {key}"}
+    headers = {"apikey": key}
+    if not key.startswith("sb_secret_"):
+        headers["Authorization"] = f"Bearer {key}"
+    return headers
 
 
 def upload_image(object_name, data, content_type):
@@ -52,4 +55,3 @@ def signed_url(object_name, expires_in=900):
     with urlopen(request, timeout=30) as response:
         path = json.loads(response.read())["signedURL"]
     return path if path.startswith("http") else f"{os.environ['SUPABASE_URL'].rstrip('/')}/storage/v1{path}"
-

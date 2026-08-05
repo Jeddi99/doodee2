@@ -2,6 +2,8 @@ import { FaceLandmarker } from '@mediapipe/tasks-vision';
 import wasmLoaderPath from '@mediapipe/tasks-vision/vision_wasm_internal.js?url';
 import wasmBinaryPath from '@mediapipe/tasks-vision/vision_wasm_internal.wasm?url';
 
+import { poseFromMatrix } from './facePose';
+
 const modelAssetPath = new URL('../../../../backend/doodee/assets/face_landmarker.task', import.meta.url).href;
 let taskPromise;
 
@@ -33,9 +35,6 @@ export async function closeLiveFaceLandmarker() {
   task?.close();
 }
 
-const degrees = (radians) => radians * 180 / Math.PI;
-const clamp = (value) => Math.max(-1, Math.min(1, value));
-
 function lightStats(video, canvas) {
   const context = canvas.getContext('2d', { willReadFrequently: true });
   context.drawImage(video, 0, 0, canvas.width, canvas.height);
@@ -62,10 +61,10 @@ export function observeVideo(task, video, detectCanvas, lightCanvas, previous, t
   const xs = points.map((point) => point.x);
   const ys = points.map((point) => point.y);
   const left = Math.min(...xs), right = Math.max(...xs), top = Math.min(...ys), bottom = Math.max(...ys);
-  const matrix = result.facialTransformationMatrixes[0]?.data || [];
-  const yaw = matrix.length >= 11 ? degrees(Math.asin(clamp(-matrix[8]))) : 0;
-  const pitch = matrix.length >= 11 ? degrees(Math.atan2(matrix[9], matrix[10])) : 0;
-  const roll = matrix.length >= 5 ? degrees(Math.atan2(matrix[4], matrix[0])) : 0;
+  const { yaw: rawYaw, pitch: rawPitch, roll: rawRoll } = poseFromMatrix(result.facialTransformationMatrixes[0]);
+  const yaw = previous ? previous.yaw * .75 + rawYaw * .25 : rawYaw;
+  const pitch = previous ? previous.pitch * .75 + rawPitch * .25 : rawPitch;
+  const roll = previous ? previous.roll * .75 + rawRoll * .25 : rawRoll;
   const blendshapes = Object.fromEntries((result.faceBlendshapes[0]?.categories || []).map((item) => [item.categoryName, item.score]));
   const smile = ((blendshapes.mouthSmileLeft || 0) + (blendshapes.mouthSmileRight || 0)) / 2;
   const centerX = (left + right) / 2;

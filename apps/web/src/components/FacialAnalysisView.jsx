@@ -1,7 +1,7 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { Activity, ArrowLeft, Camera, CheckCircle2, Globe2, RotateCcw, ScanFace, ShieldCheck } from 'lucide-react';
-import { advanceCaptureTimer, evaluateCapture, startCaptureTimer } from '@doodee/shared';
+import { advanceCaptureTimer, evaluateCapture, getPoseGuidance, startCaptureTimer } from '@doodee/shared';
 
 import { createSimulation, deleteScan, getProcedures, getScan, getSimulation, uploadScan } from '../lib/api';
 import { nextSlowInferenceStreak, shouldDisableAutoCapture } from '../lib/capturePerformance';
@@ -37,6 +37,32 @@ const QUALITY_TEXT = {
   not_stable: ['อยู่นิ่งสักครู่', 'Hold still'],
   ready: ['ดีมาก อยู่นิ่งไว้', 'Good — hold still'],
 };
+const DIRECTION_ARROW = { left: '←', right: '→', up: '↑', down: '↓' };
+
+function poseGuidanceText(guidance, isTh) {
+  const arrow = DIRECTION_ARROW[guidance.direction];
+  if (isTh) {
+    if (guidance.centerFirst) return `กลับหน้าตรงตามลูกศร ${arrow} อีกประมาณ ${guidance.degrees}°`;
+    if (guidance.axis === 'pitch') return `${guidance.delta > 0 ? 'เงย' : 'ก้ม'}อีกประมาณ ${guidance.degrees}° ${arrow}`;
+    if (guidance.axis === 'roll') return `เอียงศีรษะตามลูกศร ${arrow} อีกประมาณ ${guidance.degrees}°`;
+    return `หันตามลูกศร ${arrow} อีกประมาณ ${guidance.degrees}°`;
+  }
+  if (guidance.centerFirst) return `Return to center ${arrow} about ${guidance.degrees}°`;
+  const action = guidance.axis === 'pitch' ? (guidance.delta > 0 ? 'Tilt up' : 'Tilt down') : guidance.axis === 'roll' ? 'Tilt your head' : 'Turn';
+  return `${action} ${arrow} about ${guidance.degrees}°`;
+}
+
+function scanFailureText(errorCode, fallback, isTh) {
+  if (!errorCode?.startsWith('pose_')) return fallback;
+  const [viewCode, axis, rawDelta] = errorCode.split(':');
+  const view = viewCode.slice(5);
+  const label = VIEWS.find(([key]) => key === view)?.[isTh ? 1 : 2] || view;
+  const delta = Number(rawDelta);
+  if (!axis || !Number.isFinite(delta)) return isTh ? `${label} ไม่ผ่านการตรวจ กรุณาถ่ายใหม่` : `${label} failed validation. Please retake it.`;
+  const direction = axis === 'pitch' ? (delta < 0 ? 'down' : 'up') : delta < 0 ? 'left' : 'right';
+  const guidance = { axis, delta, direction, degrees: Math.max(5, Math.round(Math.abs(delta) / 5) * 5), centerFirst: false };
+  return isTh ? `${label} ไม่ผ่าน: ${poseGuidanceText(guidance, true)}` : `${label} failed: ${poseGuidanceText(guidance, false)}`;
+}
 
 const canvasBlob = (canvas, quality) => new Promise((resolve, reject) => {
   canvas.toBlob((blob) => blob ? resolve(blob) : reject(new Error('capture_failed')), 'image/jpeg', quality);
@@ -116,6 +142,7 @@ export default function FacialAnalysisView({ lang, setLang, onboardingData, onBa
   const [detectorReady, setDetectorReady] = useState(false);
   const [autoDisabled, setAutoDisabled] = useState(false);
   const [qualityStatus, setQualityStatus] = useState('no_face');
+  const [poseGuidance, setPoseGuidance] = useState(null);
   const [timer, setTimer] = useState(() => startCaptureTimer(0));
   const videoRef = useRef(null);
   const streamRef = useRef(null);
@@ -162,20 +189,16 @@ export default function FacialAnalysisView({ lang, setLang, onboardingData, onBa
     };
   }, [cameraOpen, isTh]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!activeView) return undefined;
     const nextTimer = { ...startCaptureTimer(performance.now()), manualAvailable: autoDisabled };
     timerRef.current = nextTimer;
     setTimer(nextTimer);
     setQualityStatus('no_face');
+    setPoseGuidance(null);
     previousObservationRef.current = null;
     capturingRef.current = false;
-    const fallback = window.setTimeout(() => {
-      const available = { ...timerRef.current, manualAvailable: true };
-      timerRef.current = available;
-      setTimer(available);
-    }, 10_000);
-    return () => window.clearTimeout(fallback);
+    return undefined;
   }, [activeView, autoDisabled]);
 
   useEffect(() => {
@@ -220,13 +243,15 @@ export default function FacialAnalysisView({ lang, setLang, onboardingData, onBa
             cancelled = true;
             setAutoDisabled(true);
             setDetectorReady(false);
-            setCameraError(isTh ? 'เครื่องใช้เวลาตรวจนาน จึงปิดโหมดอัตโนมัติและเปิดให้ถ่ายเอง' : 'Automatic guidance was disabled because detection is too slow.');
+            setPoseGuidance(null);
+            setCameraError(isTh ? 'เครื่องใช้เวลาตรวจนาน กรุณาลองเปิดตัวตรวจใหม่หรือเปลี่ยนอุปกรณ์' : 'Guidance is too slow. Retry it or use another device.');
             const manual = { ...timerRef.current, manualAvailable: true };
             timerRef.current = manual;
             setTimer(manual);
             return;
           }
           const status = evaluateCapture(activeView, observation);
+          setPoseGuidance(observation.faceCount === 1 ? getPoseGuidance(activeView, observation) : null);
           previousObservationRef.current = observation;
           const nextTimer = advanceCaptureTimer(timerRef.current, status, now);
           timerRef.current = nextTimer;
@@ -236,7 +261,7 @@ export default function FacialAnalysisView({ lang, setLang, onboardingData, onBa
         } catch {
           cancelled = true;
           setAutoDisabled(true);
-          setCameraError(isTh ? 'ตัวตรวจใบหน้าหยุดทำงาน ใช้ปุ่มถ่ายเองได้' : 'Face guidance stopped. Manual capture is available.');
+          setCameraError(isTh ? 'ตัวตรวจใบหน้าหยุดทำงาน กรุณาลองเปิดตัวตรวจใหม่' : 'Face guidance stopped. Please retry it.');
         }
         schedule(tick);
       };
@@ -244,7 +269,7 @@ export default function FacialAnalysisView({ lang, setLang, onboardingData, onBa
     }).catch(() => {
       setAutoDisabled(true);
       setDetectorReady(false);
-      setCameraError(isTh ? 'โหลดตัวตรวจใบหน้าไม่สำเร็จ ใช้ปุ่มถ่ายเองได้' : 'Face guidance failed to load. Manual capture is available.');
+      setCameraError(isTh ? 'โหลดตัวตรวจใบหน้าไม่สำเร็จ กรุณาลองเปิดตัวตรวจใหม่' : 'Face guidance failed to load. Please retry it.');
     });
     return () => {
       cancelled = true;
@@ -270,7 +295,7 @@ export default function FacialAnalysisView({ lang, setLang, onboardingData, onBa
     if (result?.status !== 'failed' || failedScanRef.current === result.id) return;
     failedScanRef.current = result.id;
     const failedView = VIEWS.find(([key]) => result.error_code?.includes(key))?.[0];
-    setError(result.error_message || (isTh ? 'ภาพไม่ผ่านการตรวจ กรุณาถ่ายใหม่' : 'A photo failed validation. Please retake it.'));
+    setError(scanFailureText(result.error_code, result.error_message || (isTh ? 'ภาพไม่ผ่านการตรวจ กรุณาถ่ายใหม่' : 'A photo failed validation. Please retake it.'), isTh));
     const nextFiles = failedView ? Object.fromEntries(Object.entries(filesRef.current).filter(([key]) => key !== failedView)) : {};
     filesRef.current = nextFiles;
     setFiles(nextFiles);
@@ -302,6 +327,15 @@ export default function FacialAnalysisView({ lang, setLang, onboardingData, onBa
   const retake = (view) => {
     setError('');
     setActiveView(view);
+  };
+  const retryDetector = () => {
+    setCameraError('');
+    setDetectorReady(false);
+    const close = liveModuleRef.current?.then((module) => module.closeLiveFaceLandmarker()) || Promise.resolve();
+    close.finally(() => {
+      detectorRef.current = null;
+      setAutoDisabled(false);
+    });
   };
 
   async function capture() {
@@ -352,16 +386,16 @@ export default function FacialAnalysisView({ lang, setLang, onboardingData, onBa
             <video ref={videoRef} autoPlay muted playsInline />
             <div className={`capture-face-guide${qualityStatus === 'ready' ? ' is-ready' : ''}`} aria-hidden="true" />
             {!cameraReady || (!detectorReady && !autoDisabled) ? <div className="capture-preparing"><Activity /><strong>{isTh ? 'กำลังเตรียมกล้องและ AI…' : 'Preparing camera and AI…'}</strong><span>{isTh ? 'อาจใช้เวลา 2–5 วินาที' : 'This may take 2–5 seconds'}</span></div> : null}
-            <div className="capture-live-status" role="status" aria-live="polite"><span className={qualityStatus === 'ready' ? 'is-ready' : ''} />{autoDisabled ? (isTh ? 'โหมดถ่ายเอง' : 'Manual mode') : QUALITY_TEXT[qualityStatus][isTh ? 0 : 1]}{qualityStatus === 'ready' ? ` · ${Math.round(timer.progress * 100)}%` : ''}</div>
+            <div className="capture-live-status" role="status" aria-live="polite"><span className={qualityStatus === 'ready' ? 'is-ready' : ''} /><div><strong>{autoDisabled ? (isTh ? 'ตัวตรวจหยุดทำงาน' : 'Guidance stopped') : qualityStatus === 'wrong_pose' && poseGuidance ? poseGuidanceText(poseGuidance, isTh) : QUALITY_TEXT[qualityStatus][isTh ? 0 : 1]}{qualityStatus === 'ready' ? ` · ${Math.round(timer.progress * 100)}%` : ''}</strong>{!autoDisabled && poseGuidance && qualityStatus !== 'wrong_pose' ? <small>{isTh ? 'มุมต่อไป: ' : 'Next: '}{poseGuidanceText(poseGuidance, isTh)}</small> : null}</div></div>
           </div>
-          {timer.manualAvailable || autoDisabled ? <button type="button" className="capture-manual" onClick={capture}><Camera />{isTh ? 'ถ่ายภาพนี้' : 'Capture this view'}</button> : <p className="capture-hint">{isTh ? 'เมื่อแสง ระยะ และท่าทางพร้อม ระบบจะถ่ายให้เอง' : 'The photo is taken automatically when lighting, distance, and pose are ready.'}</p>}
+          {autoDisabled ? <button type="button" className="capture-manual" onClick={retryDetector}><RotateCcw />{isTh ? 'ลองเปิดตัวตรวจใหม่' : 'Retry guidance'}</button> : <p className="capture-hint">{isTh ? 'ระบบจะถ่ายให้เองเมื่อพร้อม · องศาเป็นค่าประมาณ ไม่ใช่การวัดทางการแพทย์' : 'Captured automatically when ready · Angles are estimates, not medical measurements.'}</p>}
           {cameraError ? <p className="capture-error" role="alert">{cameraError}</p> : null}
           {error ? <p className="capture-error" role="alert">{error}</p> : null}
         </section> : null}
 
         {phase === 'review' ? <section className="capture-review">
           <span className="capture-eyebrow">REVIEW</span><h1>{isTh ? 'ตรวจรูปก่อนวิเคราะห์' : 'Review before analysis'}</h1><p>{isTh ? 'ถ่ายใหม่เฉพาะมุมที่ต้องการแก้ แล้วจึงส่งภาพทั้ง 7 มุม' : 'Retake only the views you want to correct, then submit all seven.'}</p>
-          <div className="capture-review-grid">{VIEWS.map(([key, th, en]) => <article key={key}><img src={previews[key]} alt={isTh ? th : en} /><div><span>{isTh ? th : en}</span><button type="button" onClick={() => retake(key)}><RotateCcw />{isTh ? 'ถ่ายใหม่' : 'Retake'}</button></div></article>)}</div>
+          <div className="capture-review-grid">{VIEWS.map(([key, th, en]) => <article key={key}><img src={previews[key]} alt={isTh ? th : en} /><div><span>{isTh ? th : en}<small><CheckCircle2 />{isTh ? 'ผ่าน' : 'Passed'}</small></span><button type="button" onClick={() => retake(key)}><RotateCcw />{isTh ? 'ถ่ายใหม่' : 'Retake'}</button></div></article>)}</div>
           <div className="capture-review-actions"><div><ShieldCheck /><span>{isTh ? 'ภาพจะถูกส่งเมื่อกดปุ่มนี้เท่านั้น' : 'Images are uploaded only after you press this button.'}</span></div><button type="button" className="capture-primary" disabled={isScanning} onClick={analyze}>{isScanning ? <Activity /> : <ScanFace />}{isTh ? 'อัปโหลดและเริ่มวิเคราะห์' : 'Upload and analyze'}</button></div>
           {isScanning ? <div className="capture-processing"><Activity /><strong>{result?.progress || 0}%</strong><span>{isTh ? 'กำลังวิเคราะห์…' : 'Analyzing…'}</span></div> : null}
           {error || upload.error || scan.error ? <p className="capture-error" role="alert">{error || upload.error?.message || scan.error?.message}</p> : null}
