@@ -64,19 +64,25 @@ export function observeVideo(task, video, detectCanvas, lightCanvas, previous, t
   const xs = points.map((point) => point.x);
   const ys = points.map((point) => point.y);
   const left = Math.min(...xs), right = Math.max(...xs), top = Math.min(...ys), bottom = Math.max(...ys);
-  const { yaw: rawYaw, pitch: rawPitch, roll: rawRoll } = poseFromMatrix(result.facialTransformationMatrixes[0]);
-  const yaw = previous ? previous.yaw * .75 + rawYaw * .25 : rawYaw;
-  const pitch = previous ? previous.pitch * .75 + rawPitch * .25 : rawPitch;
-  const roll = previous ? previous.roll * .75 + rawRoll * .25 : rawRoll;
+  // The pose that gates capture is the raw one, because that is the frame the file will hold
+  // and the server re-measures. Smoothing is kept only to judge whether the head is holding
+  // still; gating on the smoothed value let borderline poses pass here and fail validation.
+  const { yaw, pitch, roll } = poseFromMatrix(result.facialTransformationMatrixes[0]);
+  const previousSmooth = previous?.smooth;
+  const smooth = {
+    yaw: previousSmooth ? previousSmooth.yaw * .75 + yaw * .25 : yaw,
+    pitch: previousSmooth ? previousSmooth.pitch * .75 + pitch * .25 : pitch,
+    roll: previousSmooth ? previousSmooth.roll * .75 + roll * .25 : roll,
+  };
   const blendshapes = Object.fromEntries((result.faceBlendshapes[0]?.categories || []).map((item) => [item.categoryName, item.score]));
   const smile = ((blendshapes.mouthSmileLeft || 0) + (blendshapes.mouthSmileRight || 0)) / 2;
   const centerX = (left + right) / 2;
   const centerY = (top + bottom) / 2;
   // Sampled every ~333ms, so a hand-held phone drifts a few degrees between frames by nature.
-  const stable = !previous || (
+  const stable = !previousSmooth || (
     Math.hypot(centerX - previous.centerX, centerY - previous.centerY) < .03
-    && Math.abs(yaw - previous.yaw) < 6
-    && Math.abs(pitch - previous.pitch) < 6
+    && Math.abs(smooth.yaw - previousSmooth.yaw) < 6
+    && Math.abs(smooth.pitch - previousSmooth.pitch) < 6
   );
   return {
     faceCount: result.faceLandmarks.length,
@@ -91,6 +97,7 @@ export function observeVideo(task, video, detectCanvas, lightCanvas, previous, t
     yaw,
     pitch,
     roll,
+    smooth,
     smile,
     stable,
     inferenceMs,

@@ -12,7 +12,9 @@ from django.utils import timezone
 from rest_framework.test import APIClient
 
 from .models import ConsentEvent, Scan, Simulation
-from .analysis_engine import POSE_TARGETS, SCAN_VIEW_MODES, _validate_pose_set, analyze_images, pose_from_matrix
+from .analysis_engine import (
+    POSE_TARGETS, SCAN_VIEW_MODES, _validate_pose_set, analyze_images, measured_views, pose_from_matrix,
+)
 from .simulation_engine import constrain_region_and_watermark, validate_parameters
 from .storage import _headers
 from .views import SCAN_VIEWS
@@ -137,21 +139,30 @@ class PoseQualityTest(TestCase):
             view: {"yaw": 0, "pitch": 20 if view == "basal" else 0, "roll": 0}
             for view in SCAN_VIEWS
         }
-        with self.assertRaisesRegex(ValueError, r"pose_left_oblique:yaw:-30"):
-            _validate_pose_set(poses)
+        with self.assertRaisesRegex(ValueError, r"pose_left_profile:yaw:-60"):
+            _validate_pose_set(poses, "full")
 
     def test_pose_error_names_axis_and_rounded_correction(self):
+        poses = {"front": {"yaw": 13, "pitch": 0, "roll": 0}}
+        with self.assertRaisesRegex(ValueError, r"pose_front:yaw:-5"):
+            _validate_pose_set(poses, "fast")
+
+    def test_a_view_that_produces_no_metrics_is_reported_but_does_not_fail_the_scan(self):
+        """An oblique contributes no landmarks to any metric, so a tilted one is not fatal.
+
+        A real 3-view scan was thrown away over right_oblique roll +7.1 against a 6 degree
+        limit, on a photo the engine never measures.
+        """
         poses = {
             "front": {"yaw": 0, "pitch": 0, "roll": 0},
-            "front_smile": {"yaw": 0, "pitch": 0, "roll": 0},
             "left_oblique": {"yaw": -40, "pitch": 0, "roll": 0},
-            "right_oblique": {"yaw": 40, "pitch": 0, "roll": 0},
-            "left_profile": {"yaw": -68, "pitch": 0, "roll": 0},
-            "right_profile": {"yaw": 68, "pitch": 0, "roll": 0},
-            "basal": {"yaw": -13, "pitch": 20, "roll": 0},
+            "right_oblique": {"yaw": 40, "pitch": 0, "roll": 30},
         }
-        with self.assertRaisesRegex(ValueError, r"pose_basal:yaw:\+5"):
-            _validate_pose_set(poses)
+        self.assertEqual(_validate_pose_set(poses, "fast"), ["pose_right_oblique:roll:-20"])
+
+    def test_measured_views_follow_the_metrics_the_engine_computes(self):
+        self.assertEqual(measured_views("fast"), {"front"})
+        self.assertEqual(measured_views("full"), {"front", "left_profile", "right_profile"})
 
 
 class PoseCoordinateParityTest(TestCase):

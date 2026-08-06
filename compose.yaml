@@ -32,6 +32,7 @@ services:
       GOOGLE_APPLICATION_CREDENTIALS: /run/secrets/firebase-service-account.json
     volumes:
       - ./firebase-service-account.json:/run/secrets/firebase-service-account.json:ro
+      - ./backend:/app/backend
     ports: ["8001:8000"]
     depends_on:
       postgres: {condition: service_healthy}
@@ -47,6 +48,8 @@ services:
     environment:
       DATABASE_URL: postgresql://postgres:postgres@postgres:5432/doodee
       REDIS_URL: redis://redis:6379/0
+    volumes:
+      - ./backend:/app/backend
     depends_on:
       postgres: {condition: service_healthy}
       redis: {condition: service_healthy}

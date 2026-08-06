@@ -119,17 +119,40 @@ def _point_line_distance(points, point, line_a, line_b):
     return abs(float(np.cross(line, p - a))) / length
 
 
-def _validate_pose_set(poses):
+def _pose_error(view, pose):
+    target = POSE_TARGETS[view]
+    corrections = {}
+    for axis in ("yaw", "pitch", "roll"):
+        low, high = target[axis]
+        value = pose[axis]
+        corrections[axis] = low - value if value < low else high - value if value > high else 0
+    axis, delta = max(corrections.items(), key=lambda item: abs(item[1]))
+    return f"pose_{view}:{axis}:{delta:+.0f}" if delta else None
+
+
+def measured_views(scan_mode):
+    """Views whose landmarks actually produce metrics.
+
+    Everything else is captured for context only, so an off-target pose there is reported but
+    does not throw the whole scan away.
+    """
+    views = {"front"}
+    if scan_mode == "full":
+        views |= {"left_profile", "right_profile"}
+    return views
+
+
+def _validate_pose_set(poses, scan_mode=DEFAULT_SCAN_MODE):
+    measured = measured_views(scan_mode)
+    advisories = []
     for view, pose in poses.items():
-        target = POSE_TARGETS[view]
-        corrections = {}
-        for axis in ("yaw", "pitch", "roll"):
-            low, high = target[axis]
-            value = pose[axis]
-            corrections[axis] = low - value if value < low else high - value if value > high else 0
-        axis, delta = max(corrections.items(), key=lambda item: abs(item[1]))
-        if delta:
-            raise ValueError(f"pose_{view}:{axis}:{delta:+.0f}")
+        error = _pose_error(view, pose)
+        if not error:
+            continue
+        if view in measured:
+            raise ValueError(error)
+        advisories.append(error)
+    return advisories
 
 
 def _metric(key, category, value, confidence=0.72, source=ANTHROPOMETRY_SOURCE):
@@ -188,7 +211,7 @@ def analyze_images(images, age_band="adult", scan_mode=DEFAULT_SCAN_MODE):
             points[view], poses[view] = _landmarks(image)
         except ValueError as exc:
             raise ValueError(f"{exc}:{view}") from exc
-    _validate_pose_set(poses)
+    pose_advisories = _validate_pose_set(poses, scan_mode)
     front = points["front"]
     width, height = _distance(front, 234, 454), _distance(front, 10, 152)
     metrics = [_metric("face_width_to_height", "harmony", _ratio(width, height))]
@@ -226,4 +249,5 @@ def analyze_images(images, age_band="adult", scan_mode=DEFAULT_SCAN_MODE):
         "minor_restricted": age_band == "minor",
         "analysis_tier": analysis_tier,
         "missing_optional_views": missing_optional_views,
+        "pose_advisories": pose_advisories,
     }

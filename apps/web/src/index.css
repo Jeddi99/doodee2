@@ -649,25 +649,31 @@ a:focus-visible {
   display: flex;
   align-items: center;
   gap: 8px;
+  flex-wrap: wrap;
 }
 
 .skin-panel-heading h2 {
   margin: 0;
-  font-size: 0.94rem;
+  font-size: 0.98rem;
   font-weight: 700;
-  color: #3e5145;
+  color: #2c2536;
 }
 
 .skin-step {
-  width: 28px;
-  height: 28px;
-  border-radius: 10px;
-  display: grid;
-  place-items: center;
-  background: #f5f5f7;
-  color: #0066cc;
-  font-size: 0.66rem;
+  min-width: 28px;
+  width: auto;
+  height: auto;
+  padding: 3px 8px;
+  border-radius: 8px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(118, 87, 239, 0.12);
+  color: #6549d8;
+  font-size: 0.62rem;
   font-weight: 800;
+  letter-spacing: 0.05em;
+  white-space: nowrap;
 }
 
 .skin-live-badge,

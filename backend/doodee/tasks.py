@@ -1,3 +1,4 @@
+import logging
 import os
 
 from celery import shared_task
@@ -8,6 +9,9 @@ from .analysis_engine import analyze_images
 from .models import Scan, Simulation
 from .simulation_engine import constrain_region_and_watermark, generate_image
 from .storage import delete_image, download_image, upload_image
+
+
+logger = logging.getLogger(__name__)
 
 
 def _image_type(data):
@@ -36,10 +40,14 @@ def process_scan(scan_id):
         scan.status, scan.progress = Scan.Status.FAILED, 100
         scan.error_code = str(exc)[:40]
         scan.error_message = "The scan could not be measured reliably. Retake the indicated images."
+        # The client deletes a failed scan as soon as it shows the message, so the database row is
+        # the only record of why and it does not survive. Log it or the reason is unrecoverable.
+        logger.warning("scan %s failed validation: %s", scan_id, scan.error_code)
     except Exception:
         scan.status, scan.progress = Scan.Status.FAILED, 100
         scan.error_code = "analysis_failed"
         scan.error_message = "Analysis failed. Please try again."
+        logger.exception("scan %s raised an unexpected error", scan_id)
     scan.save()
 
 

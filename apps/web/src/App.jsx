@@ -32,9 +32,7 @@ export default function App() {
   const location = useLocation();
   const navigate = useNavigate();
   const routePaths = { landing: '/', onboarding: '/onboarding', 'face-scan': '/scan', tryon: '/try-on', history: '/history', pricing: '/pricing', settings: '/settings' };
-  const currentRoute = location.pathname.startsWith('/studio/')
-    ? 'face-scan'
-    : Object.entries(routePaths).find(([, path]) => path === location.pathname)?.[0] || 'landing';
+  const currentRoute = Object.entries(routePaths).find(([, path]) => path === location.pathname)?.[0] || 'landing';
   const setCurrentRoute = (route) => navigate(routePaths[route] || '/scan');
   const [lang, setLang] = useState('th'); // 'th' | 'en'
   const [selectedModel, setSelectedModel] = useState(null);
@@ -98,6 +96,7 @@ export default function App() {
             setLang={setLang}
             onboardingData={onboardingData}
             onBack={() => setCurrentRoute('onboarding')}
+            onNavigate={setCurrentRoute}
           />
         </Suspense>
       )}

@@ -934,3 +934,412 @@
     -webkit-backdrop-filter: none !important;
   }
 }
+
+/* Apple Liquid Glass Styling for Capture Results & Facial Analysis View */
+.capture-results-glass {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 10px 0 40px;
+}
+
+.liquid-glass-hero-banner {
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.75), rgba(243, 238, 255, 0.6)) !important;
+  backdrop-filter: blur(20px) saturate(180%) !important;
+  -webkit-backdrop-filter: blur(20px) saturate(180%) !important;
+  border: 1px solid rgba(255, 255, 255, 0.8) !important;
+  border-radius: 24px !important;
+  padding: 24px 28px !important;
+  box-shadow: var(--liquid-shadow) !important;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.liquid-glass-hero-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.liquid-glass-hero-title h1 {
+  margin: 6px 0 0;
+  font-size: 1.6rem;
+  font-weight: 800;
+  color: var(--liquid-ink);
+  letter-spacing: -0.02em;
+}
+
+.liquid-glass-cta {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 14px 24px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.82);
+  background: linear-gradient(135deg, #7c5dfa 0%, #5d3ce6 100%);
+  color: #ffffff;
+  font-size: 0.95rem;
+  font-weight: 700;
+  cursor: pointer;
+  box-shadow: 0 10px 28px rgba(118, 87, 239, 0.32), inset 0 1px 0 rgba(255, 255, 255, 0.4);
+  transition: all 220ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.liquid-glass-cta:hover {
+  transform: translateY(-2px) scale(1.02);
+  box-shadow: 0 14px 36px rgba(118, 87, 239, 0.42), inset 0 1px 0 rgba(255, 255, 255, 0.6);
+}
+
+.liquid-glass-metrics-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.liquid-glass-metric-card {
+  background: rgba(255, 255, 255, 0.68) !important;
+  backdrop-filter: blur(14px) !important;
+  -webkit-backdrop-filter: blur(14px) !important;
+  border: 1px solid rgba(255, 255, 255, 0.85) !important;
+  border-radius: 18px !important;
+  padding: 14px 16px !important;
+  box-shadow: 0 4px 16px rgba(108, 89, 153, 0.05) !important;
+  transition: transform 180ms ease, box-shadow 180ms ease;
+}
+
+.liquid-glass-metric-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 8px 24px rgba(108, 89, 153, 0.1) !important;
+}
+
+.liquid-glass-metric-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.liquid-glass-metric-title {
+  font-weight: 700;
+  font-size: 0.86rem;
+  color: #2a2436;
+  text-transform: capitalize;
+}
+
+.liquid-glass-metric-val {
+  font-weight: 800;
+  font-size: 0.92rem;
+  color: #6549d8;
+  background: rgba(118, 87, 239, 0.08);
+  padding: 2px 8px;
+  border-radius: 8px;
+}
+
+/* Interactive Split Comparison Stage for Real Photo Simulations */
+.liquid-glass-split-stage {
+  position: relative;
+  width: 100%;
+  max-width: 680px;
+  aspect-ratio: 4 / 3;
+  margin: 20px auto 0;
+  border-radius: 24px;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.85);
+  box-shadow: 0 16px 40px rgba(84, 65, 126, 0.16);
+  user-select: none;
+  cursor: ew-resize;
+  touch-action: none;
+}
+
+.liquid-glass-split-stage img.split-img-before {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.split-img-after-layer {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  overflow: hidden;
+  pointer-events: none;
+  z-index: 2;
+}
+
+.split-img-after-layer img.split-img-after {
+  position: absolute;
+  top: 0;
+  right: 0;
+  height: 100%;
+  max-width: none;
+  object-fit: cover;
+  transform-origin: center center;
+  transition: transform 220ms cubic-bezier(0.2, 0.8, 0.2, 1), filter 220ms ease;
+  pointer-events: none;
+}
+
+.liquid-glass-slider-handle {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: rgba(255, 255, 255, 0.95);
+  box-shadow: 0 0 12px rgba(118, 87, 239, 0.6);
+  transform: translateX(-50%);
+  pointer-events: none;
+  z-index: 10;
+}
+
+.slider-handle-knob {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 38px;
+  height: 38px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #ffffff 0%, #f1edf7 100%);
+  border: 2px solid #7c5dfa;
+  box-shadow: 0 4px 16px rgba(118, 87, 239, 0.35);
+  display: grid;
+  place-items: center;
+  color: #6549d8;
+  font-weight: 800;
+  font-size: 1rem;
+}
+
+.split-label {
+  position: absolute;
+  bottom: 14px;
+  padding: 5px 12px;
+  border-radius: 999px;
+  background: rgba(27, 24, 34, 0.68);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  color: #ffffff;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  pointer-events: none;
+  z-index: 8;
+}
+
+.split-label-before { left: 14px; }
+.split-label-after { right: 14px; }
+
+/* 3-Column Apple Liquid Glass Dashboard Layout */
+.liquid-glass-3col-dashboard {
+  display: grid;
+  grid-template-columns: 240px minmax(0, 1.4fr) 340px;
+  gap: 16px;
+  width: 100%;
+  max-width: 1380px;
+  margin: 0 auto;
+  align-items: start;
+}
+
+@media (max-width: 1180px) {
+  .liquid-glass-3col-dashboard {
+    grid-template-columns: 210px minmax(0, 1fr);
+  }
+  .liquid-glass-col-right {
+    grid-column: 1 / -1;
+  }
+}
+
+@media (max-width: 768px) {
+  .liquid-glass-3col-dashboard {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* Left Column Categories Nav */
+.liquid-glass-categories-panel {
+  position: relative;
+  background: rgba(255, 255, 255, 0.65) !important;
+  backdrop-filter: blur(20px) saturate(180%) !important;
+  -webkit-backdrop-filter: blur(20px) saturate(180%) !important;
+  border: 1px solid rgba(255, 255, 255, 0.85) !important;
+  border-radius: 22px !important;
+  padding: 16px 12px !important;
+  box-shadow: 0 8px 32px rgba(108, 89, 153, 0.08) !important;
+}
+
+.liquid-glass-categories-panel > strong {
+  display: block;
+  font-size: 0.9rem;
+  font-weight: 800;
+  color: #261f33;
+  margin-bottom: 12px;
+  padding-left: 6px;
+}
+
+.liquid-glass-cat-list {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.liquid-glass-cat-btn {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 12px;
+  border-radius: 14px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: #534b60;
+  font-size: 0.85rem;
+  font-weight: 700;
+  cursor: pointer;
+  text-align: left;
+  transition: all 160ms ease;
+}
+
+.liquid-glass-cat-btn:hover {
+  background: rgba(255, 255, 255, 0.7);
+}
+
+.liquid-glass-cat-btn.is-active {
+  background: rgba(235, 228, 255, 0.86) !important;
+  border-color: rgba(124, 93, 250, 0.3) !important;
+  color: #6549d8 !important;
+  box-shadow: 0 4px 14px rgba(118, 87, 239, 0.12) !important;
+}
+
+.liquid-glass-cat-btn span small {
+  display: block;
+  font-size: 0.65rem;
+  color: #8c839a;
+  font-weight: 600;
+  margin-top: 1px;
+}
+
+/* Center Stage Canvas */
+.liquid-glass-center-stage {
+  position: relative;
+  background: rgba(255, 255, 255, 0.7) !important;
+  backdrop-filter: blur(20px) saturate(180%) !important;
+  -webkit-backdrop-filter: blur(20px) saturate(180%) !important;
+  border: 1px solid rgba(255, 255, 255, 0.88) !important;
+  border-radius: 24px !important;
+  padding: 16px !important;
+  box-shadow: 0 8px 32px rgba(108, 89, 153, 0.08) !important;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.liquid-glass-stage-canvas {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 4 / 4.3;
+  border-radius: 20px;
+  overflow: hidden;
+  background: #111;
+}
+
+/* Right Panel TOP 3 & Status */
+.liquid-glass-top3-card {
+  background: linear-gradient(145deg, #372378 0%, #251659 100%) !important;
+  border-radius: 22px !important;
+  padding: 18px 20px !important;
+  color: #ffffff !important;
+  box-shadow: 0 12px 32px rgba(45, 27, 95, 0.3) !important;
+  margin-bottom: 14px;
+}
+
+.liquid-glass-top3-title {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 0.88rem;
+  font-weight: 800;
+  margin-bottom: 14px;
+  color: #e5dcfc;
+}
+
+.liquid-glass-top3-item {
+  display: flex;
+  gap: 12px;
+  padding: 10px 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.liquid-glass-top3-item:last-child {
+  border-bottom: none;
+}
+
+.liquid-glass-top3-num {
+  width: 24px;
+  height: 24px;
+  flex: 0 0 24px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.18);
+  display: grid;
+  place-items: center;
+  font-size: 0.78rem;
+  font-weight: 800;
+}
+
+.liquid-glass-top3-copy strong {
+  display: block;
+  font-size: 0.85rem;
+  font-weight: 700;
+  color: #ffffff;
+}
+
+.liquid-glass-top3-copy span {
+  display: block;
+  font-size: 0.72rem;
+  color: rgba(255, 255, 255, 0.68);
+  margin-top: 2px;
+  line-height: 1.35;
+}
+
+.liquid-glass-status-card {
+  background: rgba(255, 255, 255, 0.65) !important;
+  backdrop-filter: blur(16px) !important;
+  border: 1px solid rgba(255, 255, 255, 0.85) !important;
+  border-radius: 20px !important;
+  padding: 14px 16px !important;
+  margin-bottom: 12px;
+}
+
+.status-pill-neutral {
+  padding: 3px 9px;
+  border-radius: 999px;
+  background: #f0ecf6;
+  color: #635b70;
+  font-size: 0.72rem;
+  font-weight: 700;
+}
+
+.status-pill-highlight {
+  padding: 3px 9px;
+  border-radius: 999px;
+  background: #e6f9ed;
+  color: #1b8a47;
+  font-size: 0.72rem;
+  font-weight: 700;
+}
+
+.status-pill-warning {
+  padding: 3px 9px;
+  border-radius: 999px;
+  background: #fef5e7;
+  color: #b57a18;
+  font-size: 0.72rem;
+  font-weight: 700;
+}
+
+
