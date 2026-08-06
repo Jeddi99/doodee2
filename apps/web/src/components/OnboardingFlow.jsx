@@ -79,7 +79,9 @@ export default function OnboardingFlow({ lang, onBack, onComplete }) {
       await signIn();
       setStep(1);
     } catch (error) {
-      setAuthError(error.message);
+      setAuthError(error.code === 'api_unreachable'
+        ? (isTh ? 'เชื่อมต่อเซิร์ฟเวอร์ไม่ได้ กรุณาตรวจสอบการเชื่อมต่อแล้วกดปุ่มด้านบนอีกครั้ง' : 'Could not reach the server. Check your connection and press the button above again.')
+        : error.message);
     } finally {
       setIsRedirecting(false);
     }

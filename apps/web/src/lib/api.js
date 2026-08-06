@@ -1,17 +1,27 @@
 import { getFirebaseAuth, googleSignIn } from './firebase';
 
 
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000/api/v1';
+// Matches the port compose.yaml publishes the api service on, and the mobile app's default.
+const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8001/api/v1';
 
 async function request(path, options = {}) {
   const firebaseAuth = getFirebaseAuth();
   await firebaseAuth.authStateReady();
   const token = await firebaseAuth.currentUser?.getIdToken();
   if (!token) throw new Error('Please sign in before continuing.');
-  const response = await fetch(`${API_URL}${path}`, {
-    ...options,
-    headers: { ...options.headers, Authorization: `Bearer ${token}` }
-  });
+  let response;
+  try {
+    response = await fetch(`${API_URL}${path}`, {
+      ...options,
+      headers: { ...options.headers, Authorization: `Bearer ${token}` }
+    });
+  } catch (cause) {
+    // fetch rejects with an opaque "Failed to fetch" when the API is unreachable. Tag it so
+    // callers can say something useful instead of leaking the browser's English string.
+    const error = new Error(`Cannot reach the API at ${API_URL}`, { cause });
+    error.code = 'api_unreachable';
+    throw error;
+  }
   if (!response.ok) {
     const payload = await response.json().catch(() => null);
     throw new Error(payload?.detail || `Request failed (${response.status})`);
@@ -24,11 +34,14 @@ export async function signIn() {
   return request('/session/');
 }
 
-export function uploadScan(files, ageBand, consentVersion) {
+export function uploadScan(files, ageBand, consentVersion, scanMode = 'full') {
   const body = new FormData();
-  for (const view of ['front', 'front_smile', 'left_oblique', 'right_oblique', 'left_profile', 'right_profile', 'basal']) body.append(view, files[view]);
+  for (const [view, file] of Object.entries(files)) {
+    if (file) body.append(view, file);
+  }
   body.append('age_band', ageBand);
   body.append('analysis_consent_version', consentVersion);
+  body.append('scan_mode', scanMode);
   return request('/scans/', { method: 'POST', body });
 }
 

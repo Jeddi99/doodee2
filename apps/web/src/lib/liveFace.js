@@ -41,13 +41,16 @@ function lightStats(video, canvas) {
   const pixels = context.getImageData(0, 0, canvas.width, canvas.height).data;
   let total = 0;
   let clipped = 0;
+  let dark = 0;
   for (let index = 0; index < pixels.length; index += 4) {
     const luma = .2126 * pixels[index] + .7152 * pixels[index + 1] + .0722 * pixels[index + 2];
     total += luma;
-    if (luma < 12 || luma > 243) clipped += 1;
+    // Counted separately: a dark background used to inflate clippedRatio and be reported as glare.
+    if (luma > 243) clipped += 1;
+    else if (luma < 12) dark += 1;
   }
   const count = pixels.length / 4;
-  return { brightness: total / count, clippedRatio: clipped / count };
+  return { brightness: total / count, clippedRatio: clipped / count, darkRatio: dark / count };
 }
 
 export function observeVideo(task, video, detectCanvas, lightCanvas, previous, timestamp) {
@@ -55,8 +58,8 @@ export function observeVideo(task, video, detectCanvas, lightCanvas, previous, t
   detectCanvas.getContext('2d').drawImage(video, 0, 0, detectCanvas.width, detectCanvas.height);
   const result = task.detectForVideo(detectCanvas, timestamp);
   const inferenceMs = performance.now() - startedAt;
-  const { brightness, clippedRatio } = lightStats(video, lightCanvas);
-  if (!result.faceLandmarks.length) return { faceCount: 0, confidence: 0, brightness, clippedRatio, inferenceMs };
+  const { brightness, clippedRatio, darkRatio } = lightStats(video, lightCanvas);
+  if (!result.faceLandmarks.length) return { faceCount: 0, confidence: 0, brightness, clippedRatio, darkRatio, inferenceMs };
   const points = result.faceLandmarks[0];
   const xs = points.map((point) => point.x);
   const ys = points.map((point) => point.y);
@@ -69,16 +72,19 @@ export function observeVideo(task, video, detectCanvas, lightCanvas, previous, t
   const smile = ((blendshapes.mouthSmileLeft || 0) + (blendshapes.mouthSmileRight || 0)) / 2;
   const centerX = (left + right) / 2;
   const centerY = (top + bottom) / 2;
+  // Sampled every ~333ms, so a hand-held phone drifts a few degrees between frames by nature.
   const stable = !previous || (
-    Math.hypot(centerX - previous.centerX, centerY - previous.centerY) < .015
-    && Math.abs(yaw - previous.yaw) < 3
-    && Math.abs(pitch - previous.pitch) < 3
+    Math.hypot(centerX - previous.centerX, centerY - previous.centerY) < .03
+    && Math.abs(yaw - previous.yaw) < 6
+    && Math.abs(pitch - previous.pitch) < 6
   );
   return {
     faceCount: result.faceLandmarks.length,
     confidence: 1,
     brightness,
     clippedRatio,
+    darkRatio,
+    faceBox: { left, right, top, bottom },
     faceHeightRatio: bottom - top,
     centerOffsetX: centerX - .5,
     centerOffsetY: centerY - .5,

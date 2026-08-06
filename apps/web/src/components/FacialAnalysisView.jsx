@@ -1,21 +1,27 @@
 import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { Activity, ArrowLeft, Camera, CheckCircle2, Globe2, RotateCcw, ScanFace, ShieldCheck } from 'lucide-react';
-import { advanceCaptureTimer, evaluateCapture, getPoseGuidance, startCaptureTimer } from '@doodee/shared';
+import { advanceCaptureTimer, evaluateCapture, getPoseGuidance, SCAN_VIEW_MODES, startCaptureTimer } from '@doodee/shared';
 
 import { createSimulation, deleteScan, getProcedures, getScan, getSimulation, uploadScan } from '../lib/api';
 import { nextSlowInferenceStreak, shouldDisableAutoCapture } from '../lib/capturePerformance';
+import { previewTransform } from '../lib/facePreview';
 import '../capture-flow.css';
 
-const VIEWS = [
-  ['front', 'หน้าตรง สีหน้าปกติ', 'Front neutral'],
-  ['front_smile', 'หน้าตรง ยิ้ม', 'Front smile'],
-  ['left_oblique', 'เฉียงซ้าย 45°', 'Left oblique 45°'],
-  ['right_oblique', 'เฉียงขวา 45°', 'Right oblique 45°'],
-  ['left_profile', 'ด้านซ้าย 60–75°', 'Left profile 60–75°'],
-  ['right_profile', 'ด้านขวา 60–75°', 'Right profile 60–75°'],
-  ['basal', 'เงยเห็นฐานจมูก', 'Basal nose view'],
-];
+// `name` identifies the view in review and error text; `action` is the instruction shown on
+// camera. The turn directions follow pose_targets.json, where a "left" view is a negative yaw
+// target, meaning the subject turns to their own left.
+const VIEWS = {
+  front: { name: ['หน้าตรง', 'Front'], action: ['มองตรง', 'Look straight ahead'] },
+  front_smile: { name: ['หน้าตรง ยิ้ม', 'Front smile'], action: ['มองตรงแล้วยิ้ม', 'Look straight ahead and smile'] },
+  left_oblique: { name: ['หน้าซ้าย', 'Left oblique'], action: ['หันหน้าไปทางซ้าย', 'Turn your head to your left'] },
+  right_oblique: { name: ['หน้าขวา', 'Right oblique'], action: ['หันหน้าไปทางขวา', 'Turn your head to your right'] },
+  left_profile: { name: ['โปรไฟล์ซ้าย', 'Left profile'], action: ['หันหน้าไปทางซ้ายจนสุด', 'Turn your head fully to your left'] },
+  right_profile: { name: ['โปรไฟล์ขวา', 'Right profile'], action: ['หันหน้าไปทางขวาจนสุด', 'Turn your head fully to your right'] },
+  basal: { name: ['เงยเห็นฐานจมูก', 'Basal nose view'], action: ['เงยหน้าขึ้น', 'Tilt your head up'] },
+};
+const viewText = (view, kind, isTh) => VIEWS[view]?.[kind][isTh ? 0 : 1] || view;
+
 const REGION_PARAMETERS = {
   eyes: { outer_corner_lift: 20, eyelid_definition: 20 },
   nose: { bridge_height: 20, tip_projection: 15, tip_rotation: 10, alar_width: -10 },
@@ -56,7 +62,7 @@ function scanFailureText(errorCode, fallback, isTh) {
   if (!errorCode?.startsWith('pose_')) return fallback;
   const [viewCode, axis, rawDelta] = errorCode.split(':');
   const view = viewCode.slice(5);
-  const label = VIEWS.find(([key]) => key === view)?.[isTh ? 1 : 2] || view;
+  const label = viewText(view, 'name', isTh);
   const delta = Number(rawDelta);
   if (!axis || !Number.isFinite(delta)) return isTh ? `${label} ไม่ผ่านการตรวจ กรุณาถ่ายใหม่` : `${label} failed validation. Please retake it.`;
   const direction = axis === 'pitch' ? (delta < 0 ? 'down' : 'up') : delta < 0 ? 'left' : 'right';
@@ -68,14 +74,38 @@ const canvasBlob = (canvas, quality) => new Promise((resolve, reject) => {
   canvas.toBlob((blob) => blob ? resolve(blob) : reject(new Error('capture_failed')), 'image/jpeg', quality);
 });
 
-async function captureFiles(video, view) {
-  const scale = Math.min(1, 1600 / Math.max(video.videoWidth, video.videoHeight));
-  const width = Math.round(video.videoWidth * scale);
-  const height = Math.round(video.videoHeight * scale);
+// Standard framing the crop aims for: face height fills FACE_FILL of the output, with the face
+// centre slightly above the middle. Backend metrics are all ratios normalised by face size, so
+// cropping does not change any measurement — but upscaling would blur the image past the
+// backend's sharpness check, so the crop never magnifies beyond the source pixels.
+const FACE_FILL = .6;
+const FACE_CENTRE_Y = .45;
+
+export function faceCropRect(faceBox, videoWidth, videoHeight) {
+  if (!faceBox) return { x: 0, y: 0, width: videoWidth, height: videoHeight };
+  const faceHeight = (faceBox.bottom - faceBox.top) * videoHeight;
+  if (faceHeight <= 0) return { x: 0, y: 0, width: videoWidth, height: videoHeight };
+  const aspect = videoWidth / videoHeight;
+  // Never exceed the source frame: that would mean upscaling.
+  let height = Math.min(videoHeight, faceHeight / FACE_FILL);
+  let width = Math.min(videoWidth, height * aspect);
+  height = width / aspect;
+  const centreX = (faceBox.left + faceBox.right) / 2 * videoWidth;
+  const centreY = (faceBox.top + faceBox.bottom) / 2 * videoHeight;
+  const x = Math.max(0, Math.min(videoWidth - width, centreX - width / 2));
+  const y = Math.max(0, Math.min(videoHeight - height, centreY - height * FACE_CENTRE_Y));
+  return { x, y, width, height };
+}
+
+async function captureFiles(video, view, faceBox) {
+  const crop = faceCropRect(faceBox, video.videoWidth, video.videoHeight);
+  const scale = Math.min(1, 1600 / Math.max(crop.width, crop.height));
+  const width = Math.round(crop.width * scale);
+  const height = Math.round(crop.height * scale);
   const canvas = document.createElement('canvas');
   canvas.width = width;
   canvas.height = height;
-  canvas.getContext('2d').drawImage(video, 0, 0, width, height);
+  canvas.getContext('2d').drawImage(video, crop.x, crop.y, crop.width, crop.height, 0, 0, width, height);
   const thumbnail = document.createElement('canvas');
   thumbnail.width = 280;
   thumbnail.height = Math.round(280 * height / width);
@@ -132,6 +162,7 @@ export default function FacialAnalysisView({ lang, setLang, onboardingData, onBa
   const isMinor = onboardingData?.age === 'under18';
   const [files, setFiles] = useState({});
   const [thumbnails, setThumbnails] = useState({});
+  const [scanMode, setScanMode] = useState('fast');
   const [scanId, setScanId] = useState(null);
   const [error, setError] = useState('');
   const [consentChecked, setConsentChecked] = useState(false);
@@ -143,6 +174,7 @@ export default function FacialAnalysisView({ lang, setLang, onboardingData, onBa
   const [autoDisabled, setAutoDisabled] = useState(false);
   const [qualityStatus, setQualityStatus] = useState('no_face');
   const [poseGuidance, setPoseGuidance] = useState(null);
+  const [videoTransform, setVideoTransform] = useState('scaleX(-1)');
   const [timer, setTimer] = useState(() => startCaptureTimer(0));
   const videoRef = useRef(null);
   const streamRef = useRef(null);
@@ -155,8 +187,9 @@ export default function FacialAnalysisView({ lang, setLang, onboardingData, onBa
   const liveModuleRef = useRef(null);
   const detectorRef = useRef(null);
   const cameraOpen = Boolean(activeView);
-  const allCaptured = VIEWS.every(([key]) => files[key]);
-  const currentIndex = Math.max(0, VIEWS.findIndex(([key]) => key === activeView));
+  const scanViews = SCAN_VIEW_MODES[scanMode];
+  const allCaptured = scanViews.every((key) => files[key]);
+  const currentIndex = Math.max(0, scanViews.indexOf(activeView));
   const previews = useMemo(() => Object.fromEntries(Object.entries(thumbnails).map(([key, blob]) => [key, URL.createObjectURL(blob)])), [thumbnails]);
 
   useEffect(() => () => Object.values(previews).forEach(URL.revokeObjectURL), [previews]);
@@ -191,11 +224,12 @@ export default function FacialAnalysisView({ lang, setLang, onboardingData, onBa
 
   useLayoutEffect(() => {
     if (!activeView) return undefined;
-    const nextTimer = { ...startCaptureTimer(performance.now()), manualAvailable: autoDisabled };
+    const nextTimer = { ...startCaptureTimer(performance.now()), fallbackAvailable: autoDisabled };
     timerRef.current = nextTimer;
     setTimer(nextTimer);
     setQualityStatus('no_face');
     setPoseGuidance(null);
+    setVideoTransform('scaleX(-1)');
     previousObservationRef.current = null;
     capturingRef.current = false;
     return undefined;
@@ -208,6 +242,7 @@ export default function FacialAnalysisView({ lang, setLang, onboardingData, onBa
     let timeout;
     let lastRun = 0;
     let slowStreak = 0;
+    let frameIndex = 0;
     const detectCanvas = document.createElement('canvas');
     detectCanvas.width = 640;
     detectCanvas.height = 480;
@@ -238,20 +273,22 @@ export default function FacialAnalysisView({ lang, setLang, onboardingData, onBa
         lastRun = now;
         try {
           const observation = liveFace.observeVideo(task, video, detectCanvas, lightCanvas, previousObservationRef.current, now);
-          slowStreak = nextSlowInferenceStreak(slowStreak, observation.inferenceMs);
+          slowStreak = nextSlowInferenceStreak(slowStreak, observation.inferenceMs, frameIndex);
+          frameIndex += 1;
           if (shouldDisableAutoCapture(slowStreak)) {
             cancelled = true;
             setAutoDisabled(true);
             setDetectorReady(false);
             setPoseGuidance(null);
             setCameraError(isTh ? 'เครื่องใช้เวลาตรวจนาน กรุณาลองเปิดตัวตรวจใหม่หรือเปลี่ยนอุปกรณ์' : 'Guidance is too slow. Retry it or use another device.');
-            const manual = { ...timerRef.current, manualAvailable: true };
+            const manual = { ...timerRef.current, fallbackAvailable: true };
             timerRef.current = manual;
             setTimer(manual);
             return;
           }
           const status = evaluateCapture(activeView, observation);
           setPoseGuidance(observation.faceCount === 1 ? getPoseGuidance(activeView, observation) : null);
+          setVideoTransform(previewTransform(observation.faceBox, video.videoWidth, video.videoHeight, video.clientWidth, video.clientHeight));
           previousObservationRef.current = observation;
           const nextTimer = advanceCaptureTimer(timerRef.current, status, now);
           timerRef.current = nextTimer;
@@ -284,17 +321,19 @@ export default function FacialAnalysisView({ lang, setLang, onboardingData, onBa
     refetchInterval: (query) => ['completed', 'failed'].includes(query.state.data?.status) ? false : 1500,
   });
   const upload = useMutation({
-    mutationFn: () => uploadScan(files, isMinor ? 'minor' : 'adult', '2026.1'),
+    mutationFn: () => uploadScan(files, isMinor ? 'minor' : 'adult', '2026.1', scanMode),
     onSuccess: (queued) => setScanId(queued.id),
   });
   const result = scan.data;
   const metrics = result?.analysis_data?.metrics || [];
   const isScanning = upload.isPending || (result && !['completed', 'failed'].includes(result.status));
+  const analysisTier = result?.analysis_tier || scanMode;
+  const isFastResult = analysisTier === 'fast';
 
   useEffect(() => {
     if (result?.status !== 'failed' || failedScanRef.current === result.id) return;
     failedScanRef.current = result.id;
-    const failedView = VIEWS.find(([key]) => result.error_code?.includes(key))?.[0];
+    const failedView = Object.keys(VIEWS).find((key) => result.error_code?.includes(key));
     setError(scanFailureText(result.error_code, result.error_message || (isTh ? 'ภาพไม่ผ่านการตรวจ กรุณาถ่ายใหม่' : 'A photo failed validation. Please retake it.'), isTh));
     const nextFiles = failedView ? Object.fromEntries(Object.entries(filesRef.current).filter(([key]) => key !== failedView)) : {};
     filesRef.current = nextFiles;
@@ -302,8 +341,8 @@ export default function FacialAnalysisView({ lang, setLang, onboardingData, onBa
     setThumbnails((current) => failedView ? Object.fromEntries(Object.entries(current).filter(([key]) => key !== failedView)) : {});
     deleteScan(result.id).catch(() => {});
     setScanId(null);
-    setActiveView(failedView || VIEWS[0][0]);
-  }, [isTh, result]);
+    setActiveView(failedView || scanViews[0]);
+  }, [isTh, result, scanViews]);
 
   useEffect(() => {
     if (result?.status !== 'completed') return;
@@ -312,10 +351,14 @@ export default function FacialAnalysisView({ lang, setLang, onboardingData, onBa
     setThumbnails({});
   }, [result?.status]);
 
-  const startCapture = () => {
+  // `mode` is passed explicitly by the secondary full-scan link so the first view comes from
+  // the mode being started, not from the scanMode state that has not re-rendered yet.
+  const startCapture = (mode = scanMode) => {
     if (!consentChecked) return;
+    setScanMode(mode);
     setConsented(true);
-    setActiveView(VIEWS.find(([key]) => !filesRef.current[key])?.[0] || VIEWS[0][0]);
+    const views = SCAN_VIEW_MODES[mode];
+    setActiveView(views.find((key) => !filesRef.current[key]) || views[0]);
   };
   const analyze = () => {
     setError('');
@@ -327,6 +370,20 @@ export default function FacialAnalysisView({ lang, setLang, onboardingData, onBa
   const retake = (view) => {
     setError('');
     setActiveView(view);
+  };
+  // The ten-second fallback is not a broken detector, so it deliberately leaves the landmarker
+  // alone: closing it under the live tick loop would throw and trip the autoDisabled path.
+  // Restarting the smoothed pose and the ten-second window is the whole reset.
+  const restartViewCheck = () => {
+    setCameraError('');
+    setError('');
+    const restarted = startCaptureTimer(performance.now());
+    timerRef.current = restarted;
+    setTimer(restarted);
+    setQualityStatus('no_face');
+    setPoseGuidance(null);
+    setVideoTransform('scaleX(-1)');
+    previousObservationRef.current = null;
   };
   const retryDetector = () => {
     setCameraError('');
@@ -343,12 +400,12 @@ export default function FacialAnalysisView({ lang, setLang, onboardingData, onBa
     if (!video?.videoWidth || !activeView || capturingRef.current) return;
     capturingRef.current = true;
     try {
-      const captured = await captureFiles(video, activeView);
+      const captured = await captureFiles(video, activeView, previousObservationRef.current?.faceBox);
       const nextFiles = { ...filesRef.current, [activeView]: captured.file };
       filesRef.current = nextFiles;
       setFiles(nextFiles);
       setThumbnails((current) => ({ ...current, [activeView]: captured.thumbnail }));
-      setActiveView(VIEWS.find(([key]) => !nextFiles[key])?.[0] || null);
+      setActiveView(scanViews.find((key) => !nextFiles[key]) || null);
     } catch {
       setCameraError(isTh ? 'ถ่ายภาพไม่สำเร็จ กรุณาลองใหม่' : 'Capture failed. Please try again.');
     } finally {
@@ -357,51 +414,66 @@ export default function FacialAnalysisView({ lang, setLang, onboardingData, onBa
   }
   captureRef.current = capture;
 
-  const currentLabel = VIEWS[currentIndex]?.[isTh ? 1 : 2];
+  const currentView = activeView || scanViews[currentIndex];
   const phase = result?.status === 'completed' ? 'result' : cameraOpen ? 'camera' : allCaptured ? 'review' : 'consent';
 
   return (
     <div className="capture-page">
       <header className="capture-topbar">
         <button type="button" className="capture-icon-button" onClick={onBack} aria-label={isTh ? 'ย้อนกลับ' : 'Back'}><ArrowLeft /></button>
-        <div className="capture-brand"><ScanFace /><strong>DOODEE</strong><span>{isTh ? 'วิเคราะห์ใบหน้า 7 มุม' : 'Seven-view facial analysis'}</span></div>
+        <div className="capture-brand"><ScanFace /><strong>DOODEE</strong><span>{isTh ? `วิเคราะห์ใบหน้า ${scanMode === 'fast' ? '3' : '7'} มุม` : `${scanMode === 'fast' ? '3' : '7'}-view facial analysis`}</span></div>
         <button type="button" className="capture-language" onClick={() => setLang(isTh ? 'en' : 'th')}><Globe2 />{isTh ? 'TH' : 'EN'}</button>
       </header>
 
       <main className={`capture-main is-${phase}`}>
         {phase === 'consent' ? <section className="capture-consent-card">
           <span className="capture-eyebrow">PRIVATE FACE CAPTURE</span>
-          <h1>{isTh ? 'เตรียมถ่ายใบหน้า 7 มุม' : 'Prepare for seven face views'}</h1>
-          <p>{isTh ? 'ระบบจะตรวจแสง ระยะ และท่าทางบนเครื่อง แล้วถ่ายให้อัตโนมัติเมื่อภาพพร้อม' : 'Lighting, distance, and pose are checked on this device before automatic capture.'}</p>
+          <h1>{isTh ? 'สแกน 3 มุม ใช้ประมาณ 1 นาที' : 'Scan 3 views, about one minute'}</h1>
+          <p>{isTh ? 'มองตรง หันซ้าย หันขวา ระบบจะเช็กแสง ระยะ และท่าทางเองแล้วถ่ายให้อัตโนมัติเมื่อพร้อม' : 'Look straight, turn left, turn right. Lighting, distance, and pose are checked on device and capture happens automatically when ready.'}</p>
           <div className="capture-consent-points"><div><Camera /><span><strong>{isTh ? 'ทีละมุม' : 'One view at a time'}</strong>{isTh ? 'ทำตามคำแนะนำบนหน้ากล้อง' : 'Follow the instruction on camera'}</span></div><div><ShieldCheck /><span><strong>{isTh ? 'ข้อมูลชีวมิติส่วนตัว' : 'Private biometric data'}</strong>{isMinor ? (isTh ? 'ลบภายใน 24 ชั่วโมง' : 'Deleted within 24 hours') : (isTh ? 'ลบภายใน 30 วัน' : 'Deleted within 30 days')}</span></div></div>
           <label className="capture-consent-check"><input type="checkbox" checked={consentChecked} onChange={(event) => setConsentChecked(event.target.checked)} /><span>{isTh ? 'ฉันยินยอมให้ Doodee เปิดกล้อง วิเคราะห์ข้อมูลชีวมิติ และเก็บภาพตามระยะเวลาที่แจ้ง' : 'I consent to camera access, biometric analysis, and the stated image retention period.'}</span></label>
-          <button type="button" className="capture-primary" disabled={!consentChecked} onClick={startCapture}>{isTh ? 'ยินยอมและเริ่มถ่าย' : 'Consent and start'}<ArrowLeft className="capture-forward" /></button>
+          <button type="button" className="capture-primary" disabled={!consentChecked} onClick={() => startCapture('fast')}>{isTh ? 'ยินยอมและเริ่มถ่าย' : 'Consent and start'}<ArrowLeft className="capture-forward" /></button>
+          <button type="button" className="capture-secondary-link" disabled={!consentChecked} onClick={() => startCapture('full')}>{isTh ? 'ต้องการวิเคราะห์ละเอียด 7 มุม (ประมาณ 2 นาที)' : 'I want the detailed 7-view scan (about two minutes)'}</button>
           <small>{isTh ? 'ยังไม่มีการส่งภาพไป Gemini การจำลองภาพจะขอความยินยอมแยกภายหลัง' : 'No image is sent to Gemini. Simulation consent is requested separately.'}</small>
         </section> : null}
 
         {phase === 'camera' ? <section className="capture-camera-layout">
-          <div className="capture-progress" aria-label={isTh ? `มุมที่ ${currentIndex + 1} จาก 7` : `View ${currentIndex + 1} of 7`}><span>{currentIndex + 1}/7</span><div>{VIEWS.map(([key], index) => <i key={key} className={files[key] ? 'is-done' : index === currentIndex ? 'is-current' : ''} />)}</div></div>
-          <div className="capture-instruction"><span>{isTh ? 'มุมปัจจุบัน' : 'Current view'}</span><h1>{currentLabel}</h1></div>
+          <div className="capture-progress" aria-label={isTh ? `มุมที่ ${currentIndex + 1} จาก ${scanViews.length}` : `View ${currentIndex + 1} of ${scanViews.length}`}><span>{currentIndex + 1}/{scanViews.length}</span><div style={{ gridTemplateColumns: `repeat(${scanViews.length}, 1fr)` }}>{scanViews.map((key, index) => <i key={key} className={files[key] ? 'is-done' : index === currentIndex ? 'is-current' : ''} />)}</div></div>
+          <div className="capture-instruction"><span>{viewText(currentView, 'name', isTh)}</span><h1>{viewText(currentView, 'action', isTh)}</h1></div>
           <div className="capture-camera-stage">
-            <video ref={videoRef} autoPlay muted playsInline />
+            <video ref={videoRef} autoPlay muted playsInline style={{ transform: videoTransform }} />
             <div className={`capture-face-guide${qualityStatus === 'ready' ? ' is-ready' : ''}`} aria-hidden="true" />
             {!cameraReady || (!detectorReady && !autoDisabled) ? <div className="capture-preparing"><Activity /><strong>{isTh ? 'กำลังเตรียมกล้องและ AI…' : 'Preparing camera and AI…'}</strong><span>{isTh ? 'อาจใช้เวลา 2–5 วินาที' : 'This may take 2–5 seconds'}</span></div> : null}
             <div className="capture-live-status" role="status" aria-live="polite"><span className={qualityStatus === 'ready' ? 'is-ready' : ''} /><div><strong>{autoDisabled ? (isTh ? 'ตัวตรวจหยุดทำงาน' : 'Guidance stopped') : qualityStatus === 'wrong_pose' && poseGuidance ? poseGuidanceText(poseGuidance, isTh) : QUALITY_TEXT[qualityStatus][isTh ? 0 : 1]}{qualityStatus === 'ready' ? ` · ${Math.round(timer.progress * 100)}%` : ''}</strong>{!autoDisabled && poseGuidance && qualityStatus !== 'wrong_pose' ? <small>{isTh ? 'มุมต่อไป: ' : 'Next: '}{poseGuidanceText(poseGuidance, isTh)}</small> : null}</div></div>
           </div>
-          {autoDisabled ? <button type="button" className="capture-manual" onClick={retryDetector}><RotateCcw />{isTh ? 'ลองเปิดตัวตรวจใหม่' : 'Retry guidance'}</button> : <p className="capture-hint">{isTh ? 'ระบบจะถ่ายให้เองเมื่อพร้อม · องศาเป็นค่าประมาณ ไม่ใช่การวัดทางการแพทย์' : 'Captured automatically when ready · Angles are estimates, not medical measurements.'}</p>}
+          {autoDisabled
+            ? <div className="capture-fallback-row">
+                <button type="button" className="capture-shutter" onClick={() => captureRef.current?.()}><Camera />{isTh ? 'ถ่ายเลย' : 'Take it now'}</button>
+                <button type="button" className="capture-manual" onClick={retryDetector}><RotateCcw />{isTh ? 'ลองเปิดตัวตรวจใหม่' : 'Retry guidance'}</button>
+              </div>
+            : timer.fallbackAvailable
+              ? <div className="capture-fallback-row">
+                  <button type="button" className="capture-shutter" onClick={() => captureRef.current?.()}><Camera />{isTh ? 'ถ่ายเลย' : 'Take it now'}</button>
+                  <button type="button" className="capture-manual" onClick={restartViewCheck}><RotateCcw />{isTh ? 'เริ่มตรวจมุมนี้ใหม่' : 'Restart this view'}</button>
+                </div>
+              : <p className="capture-hint">{isTh ? 'ระบบจะถ่ายให้เองเมื่อพร้อม · องศาเป็นค่าประมาณ ไม่ใช่การวัดทางการแพทย์' : 'Captured automatically when ready · Angles are estimates, not medical measurements.'}</p>}
           {cameraError ? <p className="capture-error" role="alert">{cameraError}</p> : null}
           {error ? <p className="capture-error" role="alert">{error}</p> : null}
         </section> : null}
 
         {phase === 'review' ? <section className="capture-review">
-          <span className="capture-eyebrow">REVIEW</span><h1>{isTh ? 'ตรวจรูปก่อนวิเคราะห์' : 'Review before analysis'}</h1><p>{isTh ? 'ถ่ายใหม่เฉพาะมุมที่ต้องการแก้ แล้วจึงส่งภาพทั้ง 7 มุม' : 'Retake only the views you want to correct, then submit all seven.'}</p>
-          <div className="capture-review-grid">{VIEWS.map(([key, th, en]) => <article key={key}><img src={previews[key]} alt={isTh ? th : en} /><div><span>{isTh ? th : en}<small><CheckCircle2 />{isTh ? 'ผ่าน' : 'Passed'}</small></span><button type="button" onClick={() => retake(key)}><RotateCcw />{isTh ? 'ถ่ายใหม่' : 'Retake'}</button></div></article>)}</div>
+          <span className="capture-eyebrow">REVIEW</span><h1>{isTh ? 'ตรวจรูปก่อนวิเคราะห์' : 'Review before analysis'}</h1><p>{isTh ? `แก้ไขเฉพาะมุมที่ไม่ผ่าน แล้วส่งครบ ${scanMode === 'fast' ? '3' : '7'} มุม` : `Retake any failed views, then submit all ${scanMode === 'fast' ? '3' : '7'} views.`}</p>
+          <div className="capture-review-grid">{scanViews.map((key) => <article key={key}><img src={previews[key]} alt={viewText(key, 'name', isTh)} /><div><span>{viewText(key, 'name', isTh)}<small><CheckCircle2 />{isTh ? 'ผ่าน' : 'Passed'}</small></span><button type="button" onClick={() => retake(key)}><RotateCcw />{isTh ? 'ถ่ายใหม่' : 'Retake'}</button></div></article>)}</div>
           <div className="capture-review-actions"><div><ShieldCheck /><span>{isTh ? 'ภาพจะถูกส่งเมื่อกดปุ่มนี้เท่านั้น' : 'Images are uploaded only after you press this button.'}</span></div><button type="button" className="capture-primary" disabled={isScanning} onClick={analyze}>{isScanning ? <Activity /> : <ScanFace />}{isTh ? 'อัปโหลดและเริ่มวิเคราะห์' : 'Upload and analyze'}</button></div>
           {isScanning ? <div className="capture-processing"><Activity /><strong>{result?.progress || 0}%</strong><span>{isTh ? 'กำลังวิเคราะห์…' : 'Analyzing…'}</span></div> : null}
           {error || upload.error || scan.error ? <p className="capture-error" role="alert">{error || upload.error?.message || scan.error?.message}</p> : null}
         </section> : null}
 
         {phase === 'result' ? <div className="capture-results">
+          <p className="capture-result-mode">{isFastResult ? (isTh ? 'โหมดเร็ว: ครอบคลุม 3 มุมหลัก สำหรับการตรวจเชิงสั้น' : 'Fast mode completed with 3 core views for quicker preview.') : (isTh ? 'โหมดเต็ม: ครบ 7 มุม สำหรับการวิเคราะห์ละเอียดขึ้น' : 'Full mode completed with all 7 angles for more complete analysis.')}</p>
+          {result.missing_optional_views?.length ? <p className="capture-result-missing">{isTh
+            ? `ไม่ได้วัด: ${result.missing_optional_views.map((view) => viewText(view, 'name', true)).join(', ')} — โหมดนี้จึงไม่มีค่าด้านข้าง (side profile)`
+            : `Not measured: ${result.missing_optional_views.map((view) => viewText(view, 'name', false)).join(', ')} — side profile values are unavailable in this mode`}</p> : null}
           <section className="skin-panel skin-findings-panel"><div className="skin-panel-heading"><div><span className="skin-step">MEASUREMENTS</span><h2>{metrics.length} {isTh ? 'ค่าที่วัดได้' : 'measurements'}</h2></div><span className="skin-count-badge">EXPERIMENTAL</span></div><p>{isTh ? 'ผลเป็นการทดลอง ไม่ใช่คะแนนความสวยหรือการวินิจฉัย' : 'Experimental measurements, not a beauty score or diagnosis.'}</p><div className="face-metric-list">{metrics.map((metric) => <article key={metric.key}><CheckCircle2 size={15} /><div><span><strong>{metric.key.replaceAll('_', ' ')}</strong><b>{metric.value}</b></span><small>{metric.unit} · confidence {metric.confidence} · {metric.status}</small></div></article>)}</div></section>
           <SimulationPanel scanId={result.id} isMinor={result.age_band === 'minor'} lang={lang} />
         </div> : null}
