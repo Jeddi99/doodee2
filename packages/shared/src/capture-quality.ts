@@ -5,11 +5,16 @@ export type QualityStatus =
   | 'no_face' | 'multiple_faces' | 'too_dark' | 'too_bright' | 'too_far' | 'too_close'
   | 'off_center' | 'wrong_pose' | 'wrong_expression' | 'not_stable' | 'ready';
 
+// yaw/pitch/roll must already be in pose_targets.json coordinates: positive yaw means the
+// head is turned to the subject's right. Each client converts its own detector output before
+// calling in — MediaPipe web in lib/facePose.js, Expo in apps/mobile. Nothing here re-signs it.
 export type FaceObservation = {
   faceCount: number;
   confidence: number;
   brightness: number;
   clippedRatio: number;
+  // Share of near-black pixels. Optional so clients that only sample highlights keep working.
+  darkRatio?: number;
   faceHeightRatio: number;
   centerOffsetX: number;
   centerOffsetY: number;
@@ -24,7 +29,7 @@ export type CaptureTimer = {
   startedAt: number;
   validSince: number | null;
   shouldCapture: boolean;
-  manualAvailable: boolean;
+  fallbackAvailable: boolean;
   progress: number;
 };
 
@@ -59,11 +64,14 @@ export function getPoseGuidance(view: ScanView, value: Pick<FaceObservation, Pos
 export function evaluateCapture(view: ScanView, value: FaceObservation): QualityStatus {
   if (value.faceCount === 0 || value.confidence < .7) return 'no_face';
   if (value.faceCount > 1) return 'multiple_faces';
-  if (value.brightness < 45) return 'too_dark';
+  if (value.brightness < 45 || (value.darkRatio ?? 0) > .5) return 'too_dark';
   if (value.brightness > 210 || value.clippedRatio > .2) return 'too_bright';
-  if (value.faceHeightRatio < .45) return 'too_far';
-  if (value.faceHeightRatio > .75) return 'too_close';
-  if (Math.abs(value.centerOffsetX) > .08 || Math.abs(value.centerOffsetY) > .08) return 'off_center';
+  // Framing is a floor, not a target: capture crops to the face afterwards, so these only
+  // reject frames the detector cannot work with or that a crop could not centre without
+  // upscaling. Measured portraits sit near .36-.40 face height and .12-.22 off centre.
+  if (value.faceHeightRatio < .22) return 'too_far';
+  if (value.faceHeightRatio > .92) return 'too_close';
+  if (Math.abs(value.centerOffsetX) > .24 || Math.abs(value.centerOffsetY) > .24) return 'off_center';
   const target = TARGETS[view];
   if (getPoseGuidance(view, value)) return 'wrong_pose';
   if (!within(value.smile, target.smile)) return 'wrong_expression';
@@ -71,13 +79,16 @@ export function evaluateCapture(view: ScanView, value: FaceObservation): Quality
 }
 
 export function startCaptureTimer(now: number): CaptureTimer {
-  return { startedAt: now, validSince: null, shouldCapture: false, manualAvailable: false, progress: 0 };
+  return { startedAt: now, validSince: null, shouldCapture: false, fallbackAvailable: false, progress: 0 };
 }
 
+// fallbackAvailable only means "ten seconds passed without a capture, offer a way out".
+// Each client picks the way out: web restarts the check for the current view, mobile offers a
+// manual shutter.
 export function advanceCaptureTimer(state: CaptureTimer, status: QualityStatus, now: number): CaptureTimer {
-  const manualAvailable = now - state.startedAt >= 10_000;
-  if (status !== 'ready') return { ...state, validSince: null, shouldCapture: false, manualAvailable, progress: 0 };
+  const fallbackAvailable = now - state.startedAt >= 6_000;
+  if (status !== 'ready') return { ...state, validSince: null, shouldCapture: false, fallbackAvailable, progress: 0 };
   const validSince = state.validSince ?? now;
   const elapsed = now - validSince;
-  return { ...state, validSince, manualAvailable, progress: Math.min(elapsed / 1_000, 1), shouldCapture: elapsed >= 1_000 };
+  return { ...state, validSince, fallbackAvailable, progress: Math.min(elapsed / 500, 1), shouldCapture: elapsed >= 500 };
 }

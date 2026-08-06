@@ -9,6 +9,11 @@ FORMULA_VERSION = "2026.1"
 MEDIAPIPE_SOURCE = "https://ai.google.dev/edge/mediapipe/solutions/vision/face_landmarker"
 ANTHROPOMETRY_SOURCE = "https://pubmed.ncbi.nlm.nih.gov/37487528/"
 POSE_TARGETS = json.loads((Path(__file__).parent / "pose_targets.json").read_text())
+SCAN_VIEW_MODES = {
+    "fast": ("front", "left_oblique", "right_oblique"),
+    "full": ("front", "front_smile", "left_oblique", "right_oblique", "left_profile", "right_profile", "basal"),
+}
+DEFAULT_SCAN_MODE = "full"
 
 FRONT_METRICS = (
     ("upper_face_height_ratio", "harmony", 10, 168, "height"),
@@ -61,6 +66,25 @@ def _face_landmarker():
     return mp.tasks.vision.FaceLandmarker.create_from_options(options)
 
 
+def pose_from_matrix(matrix):
+    """Read a row-major flat 4x4 MediaPipe transform into pose_targets.json coordinates.
+
+    yaw is negated so positive means the head is turned to the subject's right (verified
+    against a real right-profile photo reading +62.9). This mirrors
+    apps/web/src/lib/facePose.js element for element, including removing the uniform scale:
+    both read M[2][0], this one as matrix[8] (row-major), the web one as data[2]
+    (column-major).
+    """
+    scale = hypot(matrix[0], matrix[4], matrix[8])
+    if scale < 1e-6:
+        return {"yaw": 0.0, "pitch": 0.0, "roll": 0.0}
+    return {
+        "yaw": -degrees(asin(max(-1, min(1, -matrix[8] / scale)))),
+        "pitch": degrees(atan2(matrix[9] / scale, matrix[10] / scale)),
+        "roll": degrees(atan2(matrix[4] / scale, matrix[0] / scale)),
+    }
+
+
 def _landmarks(image):
     import cv2
     import mediapipe as mp
@@ -71,12 +95,7 @@ def _landmarks(image):
     if len(result.face_landmarks) != 1 or len(result.facial_transformation_matrixes) != 1:
         raise ValueError("face_count")
     matrix = np.asarray(result.facial_transformation_matrixes[0], dtype=np.float64).reshape(-1)
-    pose = {
-        "yaw": degrees(asin(max(-1, min(1, -matrix[8])))),
-        "pitch": degrees(atan2(matrix[9], matrix[10])),
-        "roll": degrees(atan2(matrix[4], matrix[0])),
-    }
-    return np.array([(p.x, p.y, p.z) for p in result.face_landmarks[0]], dtype=np.float64), pose
+    return np.array([(p.x, p.y, p.z) for p in result.face_landmarks[0]], dtype=np.float64), pose_from_matrix(matrix)
 
 
 def _distance(points, a, b):
@@ -147,8 +166,12 @@ def _skin_metrics(image, points):
     )
 
 
-def analyze_images(images, age_band="adult"):
-    required = {"front", "front_smile", "left_oblique", "right_oblique", "left_profile", "right_profile", "basal"}
+def scan_views_for_mode(scan_mode):
+    return SCAN_VIEW_MODES[scan_mode]
+
+
+def analyze_images(images, age_band="adult", scan_mode=DEFAULT_SCAN_MODE):
+    required = set(scan_views_for_mode(scan_mode))
     if set(images) != required:
         raise ValueError("missing_views")
 
@@ -182,19 +205,25 @@ def analyze_images(images, age_band="adult"):
         _metric("mandible_asymmetry", "symmetry", abs(_distance(front, 234, 152) - _distance(front, 454, 152)) / width, 0.65),
     ))
 
-    for view in ("left_profile", "right_profile"):
-        profile = points[view]
-        profile_height = _distance(profile, 10, 152)
-        metrics.append(_metric(f"{view}_nose_projection_ratio", "side_profile", _ratio(_distance(profile, 168, 1), profile_height), 0.58))
-        metrics.append(_metric(f"{view}_facial_convexity_ratio", "side_profile", _ratio(_point_line_distance(profile, 1, 10, 152), profile_height), 0.58))
+    if scan_mode == "full":
+        for view in ("left_profile", "right_profile"):
+            profile = points[view]
+            profile_height = _distance(profile, 10, 152)
+            metrics.append(_metric(f"{view}_nose_projection_ratio", "side_profile", _ratio(_distance(profile, 168, 1), profile_height), 0.58))
+            metrics.append(_metric(f"{view}_facial_convexity_ratio", "side_profile", _ratio(_point_line_distance(profile, 1, 10, 152), profile_height), 0.58))
 
     metrics.extend(_skin_metrics(decoded["front"], front))
     if len(metrics) > 30:
         raise AssertionError("Core metric catalog must stay at or below 30")
+
+    analysis_tier = "full" if scan_mode == "full" else "fast"
+    missing_optional_views = [view for view in SCAN_VIEW_MODES["full"] if view not in images]
     return {
         "metrics": metrics,
         "metric_count": len(metrics),
         "formula_version": FORMULA_VERSION,
         "experimental": True,
         "minor_restricted": age_band == "minor",
+        "analysis_tier": analysis_tier,
+        "missing_optional_views": missing_optional_views,
     }

@@ -25,6 +25,13 @@ const firebase = getApps().length ? getApp() : initializeApp({
 });
 const auth = getAuth(firebase);
 const api = createApi(process.env.EXPO_PUBLIC_API_URL || 'http://localhost:8001/api/v1', () => auth.currentUser?.getIdToken() || Promise.resolve(null));
+// @doodee/shared expects yaw in pose_targets.json coordinates, where positive means the head
+// is turned to the subject's right. ML Kit (which the face detector wraps) documents positive
+// yaw as the face turning toward the right side of the *image*; on an un-mirrored front-camera
+// frame that is the subject's left, so the sign is inverted here.
+// UNVERIFIED ON HARDWARE — confirm on a device before trusting mobile capture. If the first
+// oblique view never reaches `ready` while the on-screen arrow is followed, flip this to 1.
+const EXPO_YAW_SIGN = -1;
 const LABELS: Record<ScanView, string> = {
   front: 'หน้าตรง สีหน้าปกติ', front_smile: 'หน้าตรง ยิ้ม', left_oblique: 'เฉียงซ้าย 45°',
   right_oblique: 'เฉียงขวา 45°', left_profile: 'ด้านซ้าย 60–75°', right_profile: 'ด้านขวา 60–75°', basal: 'เงยเห็นฐานจมูก',
@@ -154,15 +161,16 @@ export default function Home() {
     const centerX = (face.bounds.x + face.bounds.width / 2) / face.frameWidth - 0.5;
     const centerY = (face.bounds.y + face.bounds.height / 2) / face.frameHeight - 0.5;
     const previous = previousRef.current;
+    const yaw = face.yawAngle * EXPO_YAW_SIGN;
     const stable = Boolean(previous && now - previous.at < 500
       && Math.abs(centerX - previous.centerOffsetX) < 0.025
       && Math.abs(centerY - previous.centerOffsetY) < 0.025
-      && Math.abs(face.yawAngle - previous.yaw) < 3
+      && Math.abs(yaw - previous.yaw) < 3
       && Math.abs(face.pitchAngle - previous.pitch) < 3);
     const observation: FaceObservation & { at: number } = {
       faceCount: faces.length, confidence: 1, brightness: light.brightness, clippedRatio: light.clippedRatio,
       faceHeightRatio: face.bounds.height / face.frameHeight, centerOffsetX: centerX, centerOffsetY: centerY,
-      yaw: face.yawAngle, pitch: face.pitchAngle, roll: face.rollAngle, smile: face.smilingProbability ?? 0,
+      yaw, pitch: face.pitchAngle, roll: face.rollAngle, smile: face.smilingProbability ?? 0,
       stable, at: now,
     };
     previousRef.current = observation;
@@ -182,7 +190,7 @@ export default function Home() {
     setTimer(next);
     setQuality('no_face');
     const fallback = setTimeout(() => {
-      const available = { ...timerRef.current, manualAvailable: true };
+      const available = { ...timerRef.current, fallbackAvailable: true };
       timerRef.current = available;
       setTimer(available);
     }, 10_000);
@@ -272,7 +280,7 @@ export default function Home() {
         <View pointerEvents="none" style={[styles.guide, { borderColor: quality === 'ready' ? '#22c55e' : '#f59e0b' }]} />
         <View pointerEvents="none" style={styles.guidance}><Text style={styles.guidanceText}>{brightnessRef.current ? QUALITY_TEXT[quality] : 'กำลังวัดแสง…'}{quality === 'ready' ? ` ${Math.round(timer.progress * 100)}%` : ''}</Text></View>
       </View> : <Text style={styles.error}>ไม่พบกล้องหน้า หรือยังไม่ได้อนุญาตกล้อง</Text>}
-      {timer.manualAvailable && <Button title="ถ่ายเอง" onPress={capture} />}
+      {timer.fallbackAvailable && <Button title="ถ่ายเอง" onPress={capture} />}
       {guidanceError && <Text style={styles.error}>{guidanceError}</Text>}
     </>}
     {reviewing && <View style={styles.metric}><Text style={styles.title}>ตรวจรูปก่อนวิเคราะห์</Text><Text>แตะ “ถ่ายใหม่” เฉพาะมุมที่ต้องการแก้</Text><View style={styles.grid}>{SCAN_VIEWS.map((view) => <View key={view} style={styles.thumbCard}><Image source={{ uri: photos[view] }} style={styles.thumb} /><Text>{LABELS[view]}</Text><Button title="ถ่ายใหม่" onPress={() => retake(view)} /></View>)}</View><Button title="อัปโหลดและวิเคราะห์" disabled={Boolean(isProcessing)} onPress={upload} /></View>}

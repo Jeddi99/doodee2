@@ -5,13 +5,22 @@ from .storage import signed_url
 
 
 class ScanSerializer(serializers.ModelSerializer):
+    analysis_tier = serializers.SerializerMethodField()
+    missing_optional_views = serializers.SerializerMethodField()
+
     class Meta:
         model = Scan
         fields = (
-            "id", "status", "progress", "age_band", "analysis_data", "formula_version",
-            "error_code", "error_message", "expires_at", "created_at",
+            "id", "status", "progress", "age_band", "scan_mode", "analysis_data", "formula_version",
+            "analysis_tier", "missing_optional_views", "error_code", "error_message", "expires_at", "created_at",
         )
         read_only_fields = fields
+
+    def get_analysis_tier(self, obj):
+        return (obj.analysis_data or {}).get("analysis_tier") or obj.scan_mode
+
+    def get_missing_optional_views(self, obj):
+        return (obj.analysis_data or {}).get("missing_optional_views")
 
 
 class SimulationSerializer(serializers.ModelSerializer):
@@ -40,4 +49,3 @@ class SimulationSerializer(serializers.ModelSerializer):
 
     def get_after_url(self, obj):
         return self._url(obj, "after_object")
-

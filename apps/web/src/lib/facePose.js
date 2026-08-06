@@ -7,8 +7,11 @@ export function poseFromMatrix(matrix) {
   const at = (row, column) => data[column * rows + row];
   const scale = Math.hypot(at(0, 0), at(1, 0), at(2, 0));
   if (!Number.isFinite(scale) || scale < 1e-6) return { yaw: 0, pitch: 0, roll: 0 };
+  // yaw is negated here so the result lands in pose_targets.json coordinates, matching
+  // analysis_engine._landmarks on the backend element for element. Both read M[2][0]:
+  // this file column-major as data[2], the backend row-major as matrix[8].
   return {
-    yaw: degrees(Math.asin(clamp(-at(2, 0) / scale))),
+    yaw: -degrees(Math.asin(clamp(-at(2, 0) / scale))),
     pitch: degrees(Math.atan2(at(2, 1) / scale, at(2, 2) / scale)),
     roll: degrees(Math.atan2(at(1, 0) / scale, at(0, 0) / scale)),
   };

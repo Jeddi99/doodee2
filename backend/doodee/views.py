@@ -17,12 +17,13 @@ from rest_framework.views import APIView
 from .models import ConsentEvent, Scan, Simulation
 from .procedures import PROCEDURES
 from .serializers import ScanSerializer, SimulationSerializer
+from .analysis_engine import SCAN_VIEW_MODES, DEFAULT_SCAN_MODE, scan_views_for_mode
 from .simulation_engine import validate_parameters
 from .storage import delete_image, upload_image
 from .tasks import cleanup_scan, process_scan, process_simulation, request_scan_deletion
 
 
-SCAN_VIEWS = ("front", "front_smile", "left_oblique", "right_oblique", "left_profile", "right_profile", "basal")
+SCAN_VIEWS = SCAN_VIEW_MODES["full"]
 ALLOWED_TYPES = {"image/jpeg", "image/png", "image/webp"}
 MAX_IMAGE_BYTES = 10 * 1024 * 1024
 
@@ -61,17 +62,21 @@ class ScanViewSet(viewsets.GenericViewSet, mixins.ListModelMixin, mixins.Retriev
         consent_version = str(request.data.get("analysis_consent_version", "")).strip()
         if not consent_version:
             raise ValidationError({"analysis_consent_version": "Consent is required"})
-        missing = [view for view in SCAN_VIEWS if view not in request.FILES]
+        scan_mode = str(request.data.get("scan_mode", DEFAULT_SCAN_MODE)).strip().lower() or DEFAULT_SCAN_MODE
+        if scan_mode not in SCAN_VIEW_MODES:
+            raise ValidationError({"scan_mode": "Must be fast or full"})
+        required_views = tuple(v for v in scan_views_for_mode(scan_mode))
+        missing = [view for view in required_views if view not in request.FILES]
         if missing:
             raise ValidationError({"missing_views": missing})
-        payloads = {view: _read_image(request.FILES[view]) for view in SCAN_VIEWS}
+        payloads = {view: _read_image(request.FILES[view]) for view in required_views}
         expires_at = timezone.now() + timedelta(hours=24 if age_band == Scan.AgeBand.MINOR else 30 * 24)
         uploaded = {}
         token = os.urandom(16).hex()
         upload_error = None
         with ThreadPoolExecutor(max_workers=4) as pool:
             futures = {}
-            for view in SCAN_VIEWS:
+            for view in required_views:
                 object_name = f"users/{request.user.id}/scans/{token}/{view}"
                 future = pool.submit(upload_image, object_name, payloads[view], request.FILES[view].content_type)
                 futures[future] = view
@@ -93,6 +98,7 @@ class ScanViewSet(viewsets.GenericViewSet, mixins.ListModelMixin, mixins.Retriev
                 scan = Scan.objects.create(
                     user=request.user,
                     age_band=age_band,
+                    scan_mode=scan_mode,
                     image_objects=uploaded,
                     expires_at=expires_at,
                 )

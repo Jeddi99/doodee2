@@ -1,7 +1,14 @@
 export type TokenProvider = () => Promise<string | null>;
 
-export const SCAN_VIEWS = ['front', 'front_smile', 'left_oblique', 'right_oblique', 'left_profile', 'right_profile', 'basal'] as const;
-export type ScanView = typeof SCAN_VIEWS[number];
+export const SCAN_VIEW_MODES = {
+  full: ['front', 'front_smile', 'left_oblique', 'right_oblique', 'left_profile', 'right_profile', 'basal'],
+  fast: ['front', 'left_oblique', 'right_oblique'],
+} as const;
+
+export const SCAN_VIEWS = SCAN_VIEW_MODES.full;
+
+export type ScanMode = keyof typeof SCAN_VIEW_MODES;
+export type ScanView = (typeof SCAN_VIEWS)[number];
 
 export function createApi(baseUrl: string, tokenProvider: TokenProvider) {
   async function request(path: string, options: RequestInit = {}) {

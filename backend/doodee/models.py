@@ -33,6 +33,10 @@ class Scan(models.Model):
         FAILED = "failed", "Failed"
         DELETION_PENDING = "deletion_pending", "Deletion pending"
 
+    class ScanMode(models.TextChoices):
+        FULL = "full", "7 views"
+        FAST = "fast", "3 views"
+
     class AgeBand(models.TextChoices):
         ADULT = "adult", "18 or older"
         MINOR = "minor", "Under 18"
@@ -42,6 +46,7 @@ class Scan(models.Model):
     status = models.CharField(max_length=24, choices=Status.choices, default=Status.QUEUED, db_index=True)
     progress = models.PositiveSmallIntegerField(default=0)
     age_band = models.CharField(max_length=8, choices=AgeBand.choices)
+    scan_mode = models.CharField(max_length=8, choices=ScanMode.choices, default=ScanMode.FULL)
     image_objects = models.JSONField(default=dict)
     analysis_data = models.JSONField(null=True, blank=True)
     formula_version = models.CharField(max_length=16, default="2026.1")
@@ -82,4 +87,3 @@ class Simulation(models.Model):
 
     class Meta:
         ordering = ("-created_at",)
-

@@ -12,7 +12,7 @@ from django.utils import timezone
 from rest_framework.test import APIClient
 
 from .models import ConsentEvent, Scan, Simulation
-from .analysis_engine import _validate_pose_set, analyze_images
+from .analysis_engine import POSE_TARGETS, SCAN_VIEW_MODES, _validate_pose_set, analyze_images, pose_from_matrix
 from .simulation_engine import constrain_region_and_watermark, validate_parameters
 from .storage import _headers
 from .views import SCAN_VIEWS
@@ -51,6 +51,16 @@ class ScanApiTest(TestCase):
         self.assertEqual(upload_image.call_count, 7)
         delay.assert_called_once()
         self.assertTrue(ConsentEvent.objects.filter(user=self.user, purpose="analysis").exists())
+
+    @patch("doodee.views.process_scan.delay")
+    @patch("doodee.views.upload_image", side_effect=lambda name, data, content_type: name)
+    def test_upload_allows_fast_mode(self, upload_image, delay):
+        payload = {view: image_file(view) for view in SCAN_VIEW_MODES["fast"]}
+        payload.update(age_band="adult", analysis_consent_version="2026.1", scan_mode="fast")
+        response = self.client.post("/api/v1/scans/", payload, format="multipart")
+        self.assertEqual(response.status_code, 202, response.data)
+        self.assertEqual(upload_image.call_count, 3)
+        delay.assert_called_once()
 
     @patch("doodee.views.delete_image")
     @patch("doodee.views.upload_image")
@@ -138,10 +148,90 @@ class PoseQualityTest(TestCase):
             "right_oblique": {"yaw": 40, "pitch": 0, "roll": 0},
             "left_profile": {"yaw": -68, "pitch": 0, "roll": 0},
             "right_profile": {"yaw": 68, "pitch": 0, "roll": 0},
-            "basal": {"yaw": 13, "pitch": 20, "roll": 0},
+            "basal": {"yaw": -13, "pitch": 20, "roll": 0},
         }
-        with self.assertRaisesRegex(ValueError, r"pose_basal:yaw:-5"):
+        with self.assertRaisesRegex(ValueError, r"pose_basal:yaw:\+5"):
             _validate_pose_set(poses)
+
+
+class PoseCoordinateParityTest(TestCase):
+    """Locks server pose extraction to the web client's.
+
+    The matrix below is the same one apps/web/src/lib/facePose.test.js uses, transposed from
+    the MediaPipe JS column-major layout into the row-major layout MediaPipe Python returns.
+    Both sides must land on identical angles, or on-device readiness and server validation
+    disagree and every auto-captured photo gets rejected as a pose failure.
+    """
+
+    MATRIX = [
+        0.999598742, -0.0193326753, -0.02070578, -0.028,
+        0.0188124683, 0.999509752, -0.0250305254, -5.968,
+        0.0211795289, 0.0246308949, 0.99947238, -39.293,
+        0.0, 0.0, 0.0, 1.0,
+    ]
+
+    def test_pose_matches_the_web_client_on_the_same_matrix(self):
+        pose = pose_from_matrix(self.MATRIX)
+        self.assertAlmostEqual(pose["yaw"], 1.214, places=2)
+        self.assertAlmostEqual(pose["pitch"], 1.412, places=2)
+        self.assertAlmostEqual(pose["roll"], 1.078, places=2)
+
+    def test_uniform_scale_is_removed_like_the_web_client(self):
+        scaled = [
+            value * 4 if index % 4 < 3 and index < 12 else value
+            for index, value in enumerate(self.MATRIX)
+        ]
+        self.assertEqual(pose_from_matrix(scaled), pose_from_matrix(self.MATRIX))
+
+    def test_a_degenerate_matrix_reports_no_rotation(self):
+        self.assertEqual(pose_from_matrix([0.0] * 16), {"yaw": 0.0, "pitch": 0.0, "roll": 0.0})
+
+    def test_yaw_tracks_the_sign_of_the_matrix_element_the_web_client_reads(self):
+        """A head turned to the subject's right reads positive yaw.
+
+        Verified against a real photo: apps/web/public/upgrade-assets/doodee-male-left-before.png
+        shows a head turned to the subject's right and measures yaw +62.9, inside the
+        right_profile target of [60, 75]. Degrees are not asserted here because removing the
+        uniform scale makes them depend on the whole first column, only the sign is the contract.
+        """
+        def yaw_at(value):
+            turned = list(self.MATRIX)
+            turned[8] = value
+            return pose_from_matrix(turned)["yaw"]
+
+        self.assertGreater(yaw_at(0.5), 0)
+        self.assertLess(yaw_at(-0.5), 0)
+        self.assertAlmostEqual(yaw_at(0.5), -yaw_at(-0.5), places=6)
+
+    def test_every_pose_target_midpoint_validates(self):
+        poses = {
+            view: {axis: sum(target[axis]) / 2 for axis in ("yaw", "pitch", "roll")}
+            for view, target in POSE_TARGETS.items()
+        }
+        _validate_pose_set(poses)
+
+
+class AnalyzeImagesModeTest(TestCase):
+    def test_analyze_images_fast_mode_marks_and_tracks_optional_missing_views(self):
+        images = {view: b"ok" for view in SCAN_VIEW_MODES["fast"]}
+
+        points = np.column_stack((np.linspace(0.1, 0.9, 478), np.linspace(0.2, 0.8, 478), np.zeros(478)))
+        image = np.zeros((10, 10, 3), dtype=np.uint8)
+        poses = iter([
+            {"yaw": 0, "pitch": 0, "roll": 0},
+            {"yaw": -40, "pitch": 0, "roll": 0},
+            {"yaw": 40, "pitch": 0, "roll": 0},
+        ])
+
+        with patch("doodee.analysis_engine._decode", return_value=image), patch(
+            "doodee.analysis_engine._landmarks",
+            side_effect=lambda _image: (points, next(poses)),
+        ), patch("doodee.analysis_engine._skin_metrics", return_value=[]):
+            result = analyze_images(images, scan_mode="fast")
+
+        self.assertEqual(result["analysis_tier"], "fast")
+        self.assertEqual(result["missing_optional_views"], ["front_smile", "left_profile", "right_profile", "basal"])
+        self.assertFalse(any("side_profile" in metric["key"] for metric in result["metrics"]))
 
 
 class RetentionTest(TestCase):

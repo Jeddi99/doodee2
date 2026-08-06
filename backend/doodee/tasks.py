@@ -29,7 +29,7 @@ def process_scan(scan_id):
         images = {view: download_image(name) for view, name in scan.image_objects.items()}
         scan.progress = 35
         scan.save(update_fields=("progress", "updated_at"))
-        scan.analysis_data = analyze_images(images, scan.age_band)
+        scan.analysis_data = analyze_images(images, scan.age_band, scan.scan_mode)
         scan.status, scan.progress = Scan.Status.COMPLETED, 100
         scan.error_code = scan.error_message = ""
     except ValueError as exc:
