@@ -31,7 +31,7 @@ export default function HistoryView({ lang, onNavigate }) {
         <p>{isTh ? 'แสดงเฉพาะบัญชีผู้ใหญ่ ไม่มีคะแนนความสวย และภาพต้นฉบับจะถูกลบภายใน 30 วัน' : 'Adult accounts only. No beauty scores. Source images are deleted within 30 days.'}</p>
         {loading && <p><RefreshCw size={16} /> {isTh ? 'กำลังโหลด…' : 'Loading…'}</p>}
         {error && <p role="alert">{error}</p>}
-        {!loading && scans.length === 0 && <button type="button" className="btn-brand-primary" onClick={() => onNavigate('face-scan')}>{isTh ? 'เริ่มวิเคราะห์ครั้งแรก' : 'Start your first analysis'}</button>}
+        {!loading && scans.length === 0 && <button type="button" className="btn-brand-primary" onClick={() => onNavigate('onboarding')}>{isTh ? 'เริ่มวิเคราะห์ครั้งแรก' : 'Start your first analysis'}</button>}
         <div style={{ display: 'grid', gap: 12 }}>
           {scans.map((scan) => (
             <article key={scan.id} style={{ border: '1px solid #d2d2d7', borderRadius: 14, padding: 14, display: 'flex', justifyContent: 'space-between', gap: 12 }}>

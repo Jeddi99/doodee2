@@ -1843,6 +1843,27 @@ a:focus-visible {
   gap: 7px;
 }
 
+.settings-vip-status {
+  margin: 9px 0 0;
+  padding: 8px 11px;
+  border-radius: 11px;
+  background: var(--settings-soft);
+  color: var(--settings-heading);
+  font-size: 0.72rem;
+  font-weight: 700;
+}
+
+.settings-error {
+  margin: 9px 0 0;
+  color: #b65f5a;
+  font-size: 0.72rem;
+}
+
+.settings-redeem button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
 .settings-redeem input {
   min-width: 0;
   flex: 1;

@@ -7,31 +7,31 @@ export default function DataWeUseSection({ lang }) {
   const dataItems = [
     {
       icon: Eye,
-      title: isTh ? 'โครงสร้างสัดส่วน 3D Mesh' : '3D Geometry & Facial Mesh',
+      title: isTh ? 'สัดส่วนจาก Landmark ภาพ 2D' : '2D Landmark Ratios',
       desc: isTh 
-        ? 'วิเคราะห์จุดตัดอ้างอิงบนใบหน้า (Facial Landmarks) เพื่อวัดความสมมาตรและสัดส่วน Golden Ratio'
-        : 'Measures 3D landmark points and structural balance across Asian facial ratios.'
+        ? 'วัดอัตราส่วนภายในภาพเดียวกันด้วย Facial Landmarks โดยไม่แปลงเป็นมิลลิเมตรหรือใช้ Golden Ratio เป็นคะแนนความงาม'
+        : 'Measures ratios within one image using facial landmarks, without millimetre calibration or a Golden Ratio beauty score.'
     },
     {
       icon: Cpu,
       title: isTh ? 'สัญญาณคุณภาพผิวระดับไมโคร' : 'Skin Texture & Tone Signals',
       desc: isTh 
-        ? 'ประเมินความสม่ำเสมอของสีผิว รอยแดง จุดด่างดำ และสภาพความชุ่มชื้นจากค่าการสะท้อนของแสง'
-        : 'Evaluates tone distribution, redness, pigmentation, and surface moisture reflection.'
+        ? 'สังเกตความสม่ำเสมอของโทนสี รอยแดง และพื้นผิวที่มองเห็นได้จากภาพภายใต้ข้อจำกัดของแสง'
+        : 'Observes visible tone evenness, redness, and texture with lighting limitations.'
     },
     {
       icon: Database,
-      title: isTh ? 'ฐานข้อมูลกายวิภาคคนเอเชีย' : 'Asian Aesthetic Benchmarks',
+      title: isTh ? 'ค่าอ้างอิงภาพถ่ายคนไทย' : 'Thai Photo Reference',
       desc: isTh 
-        ? 'เปรียบเทียบเชิงสถิติกับเกณฑ์สัดส่วนกายวิภาคมาตรฐานเพื่อความเป็นธรรมชาติ ไม่ใช้มาตรฐานที่ขัดกับโครงสร้างเดิม'
-        : 'Statistically references Asian aesthetic parameters to keep recommendations natural.'
+        ? 'เปรียบเทียบแบบทดลองกับ mean และ SD จากคนไทย 240 คน อายุ 18–35 ปี ไม่ใช่เกณฑ์ความสวยหรือคำแนะนำการรักษา'
+        : 'Experimental comparison with mean and SD from 240 Thai adults age 18–35; not a beauty standard or treatment advice.'
     },
     {
       icon: Lock,
-      title: isTh ? 'การเข้ารหัสข้อมูล 256-bit' : '256-bit End-to-End Encryption',
+      title: isTh ? 'พื้นที่จัดเก็บส่วนตัว' : 'Private Storage',
       desc: isTh 
-        ? 'ข้อมูลภาพสแกนทั้งหมดจะถูกบีบอัดและเข้ารหัสความปลอดภัยระดับธนาคารก่อนการประมวลผล'
-        : 'All scan uploads are encrypted and processed through secure banking-grade protocols.'
+        ? 'ไฟล์ถูกเก็บใน bucket ส่วนตัวและเปิดด้วยลิงก์ชั่วคราว ภาพผู้ใหญ่หมดอายุภายใน 30 วัน'
+        : 'Files use a private bucket and expiring signed links. Adult images expire within 30 days.'
     }
   ];
 

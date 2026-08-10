@@ -1,7 +1,7 @@
 from django.urls import path
 from rest_framework.routers import DefaultRouter
 
-from .views import ProcedureList, ScanViewSet, SimulationViewSet, delete_account, session
+from .views import ProcedureList, ScanViewSet, SimulationViewSet, delete_account, redeem, session
 
 
 router = DefaultRouter()
@@ -13,5 +13,6 @@ urlpatterns = [
     path("session/", session),
     path("procedures/", ProcedureList.as_view()),
     path("procedures/<slug:procedure_id>/", ProcedureList.as_view()),
+    path("redeem/", redeem),
     path("account/", delete_account),
 ]

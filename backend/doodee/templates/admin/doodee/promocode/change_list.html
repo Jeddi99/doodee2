@@ -1,0 +1,11 @@
+{% extends "admin/change_list.html" %}
+{% block extrahead %}
+  {{ block.super }}
+  <script>
+    document.addEventListener("DOMContentLoaded", () => {
+      document.getElementById("changelist-form")?.addEventListener("submit", event => {
+        if (event.submitter?.name === "_save" && !window.confirm("ยืนยันการบันทึกรายการนี้?")) event.preventDefault();
+      });
+    });
+  </script>
+{% endblock %}

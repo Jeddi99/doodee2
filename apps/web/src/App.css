@@ -2303,6 +2303,90 @@
   text-align: center;
 }
 
+.onboarding-plan-note {
+  margin: 0 0 18px;
+  padding: 14px 16px;
+  border: 1px solid rgba(139, 111, 246, 0.18);
+  border-radius: 14px;
+  background: var(--glass-lilac-soft);
+  text-align: left;
+}
+
+.onboarding-plan-note strong {
+  display: block;
+  margin-bottom: 5px;
+  color: var(--glass-ink);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.onboarding-plan-note p {
+  margin: 0;
+  color: var(--glass-muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.onboarding-consent-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin-bottom: 10px;
+  padding: 12px 14px;
+  border: 1px solid rgba(117, 104, 151, 0.19);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.58);
+  color: var(--glass-muted);
+  font-size: 12px;
+  line-height: 1.5;
+  text-align: left;
+  cursor: pointer;
+}
+
+.onboarding-consent-row input {
+  margin-top: 2px;
+  width: 17px;
+  height: 17px;
+  flex: none;
+  accent-color: var(--glass-lilac);
+  cursor: pointer;
+}
+
+.onboarding-age-field {
+  display: block;
+  margin-bottom: 16px;
+  text-align: left;
+}
+
+.onboarding-age-field span {
+  display: block;
+  margin-bottom: 7px;
+  color: var(--glass-faint);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+}
+
+.onboarding-age-field input {
+  width: 100%;
+  min-height: 56px;
+  padding: 0 18px;
+  border: 1px solid rgba(117, 104, 151, 0.19);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.58);
+  color: var(--glass-ink);
+  font: inherit;
+  font-size: 17px;
+}
+
+.onboarding-age-field input:focus {
+  outline: none;
+  border-color: var(--glass-lilac);
+  background: #fff;
+  box-shadow: 0 5px 16px rgba(139, 111, 246, 0.12);
+}
+
 .onboarding-fieldset {
   margin: 0 0 18px;
   padding: 0;

@@ -9,4 +9,3 @@ firebase-admin>=6.4,<8
 mediapipe==0.10.18
 opencv-python-headless>=4.10,<5
 numpy>=1.26,<3
-google-genai>=1.30,<2

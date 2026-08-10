@@ -2,8 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, Button, Image, ScrollView, StyleSheet, Switch, Text, View } from 'react-native';
 import * as Google from 'expo-auth-session/providers/google';
 import * as WebBrowser from 'expo-web-browser';
-import { getApp, getApps, initializeApp } from 'firebase/app';
-import { getAuth, GoogleAuthProvider, signInWithCredential } from 'firebase/auth';
+import { GoogleAuthProvider, signInWithCredential } from 'firebase/auth';
+import { useRouter } from 'expo-router';
 import {
   Camera, useCameraDevice, useCameraPermission, useFrameOutput, usePhotoOutput, type Frame,
 } from 'react-native-vision-camera';
@@ -11,20 +11,13 @@ import { createFaceDetectorOutput, type Face } from 'react-native-vision-camera-
 import { useResizer } from 'react-native-vision-camera-resizer';
 import { scheduleOnRN } from 'react-native-worklets';
 import {
-  advanceCaptureTimer, createApi, evaluateCapture, SCAN_VIEWS, startCaptureTimer,
+  advanceCaptureTimer, evaluateCapture, SCAN_VIEWS, startCaptureTimer,
   type CaptureTimer, type FaceObservation, type QualityStatus, type ScanView,
 } from '@doodee/shared';
+import { api, auth } from '../lib/backend';
 
 WebBrowser.maybeCompleteAuthSession();
 
-const firebase = getApps().length ? getApp() : initializeApp({
-  apiKey: process.env.EXPO_PUBLIC_FIREBASE_API_KEY,
-  authDomain: process.env.EXPO_PUBLIC_FIREBASE_AUTH_DOMAIN,
-  projectId: process.env.EXPO_PUBLIC_FIREBASE_PROJECT_ID,
-  appId: process.env.EXPO_PUBLIC_FIREBASE_APP_ID,
-});
-const auth = getAuth(firebase);
-const api = createApi(process.env.EXPO_PUBLIC_API_URL || 'http://localhost:8001/api/v1', () => auth.currentUser?.getIdToken() || Promise.resolve(null));
 // @doodee/shared expects yaw in pose_targets.json coordinates, where positive means the head
 // is turned to the subject's right. ML Kit (which the face detector wraps) documents positive
 // yaw as the face turning toward the right side of the *image*; on an un-mirrored front-camera
@@ -44,6 +37,7 @@ const QUALITY_TEXT: Record<QualityStatus, string> = {
 };
 
 export default function Home() {
+  const router = useRouter();
   const device = useCameraDevice('front');
   const { hasPermission, canRequestPermission, requestPermission } = useCameraPermission();
   const photoOutput = usePhotoOutput({ quality: 0.92, qualityPrioritization: 'quality' });
@@ -59,13 +53,12 @@ export default function Home() {
   const [reviewing, setReviewing] = useState(false);
   const [viewIndex, setViewIndex] = useState(0);
   const [photos, setPhotos] = useState<Partial<Record<ScanView, string>>>({});
-  const [adult, setAdult] = useState(true);
+  const [ageRange, setAgeRange] = useState<'under_18' | '18_35' | '36_plus'>('18_35');
+  const [referenceProfile, setReferenceProfile] = useState<'neutral' | 'masculine' | 'feminine'>('neutral');
   const [consented, setConsented] = useState(false);
   const [quality, setQuality] = useState<QualityStatus>('no_face');
   const [timer, setTimer] = useState<CaptureTimer>(() => startCaptureTimer(Date.now()));
   const [status, setStatus] = useState<any>(null);
-  const [simulationConsent, setSimulationConsent] = useState(false);
-  const [simulation, setSimulation] = useState<any>(null);
   const [error, setError] = useState('');
   const [guidanceError, setGuidanceError] = useState('');
   const brightnessRef = useRef<{ brightness: number; clippedRatio: number } | null>(null);
@@ -238,8 +231,10 @@ export default function Home() {
       if (!uri) return setError(`ขาดภาพ ${LABELS[key]}`);
       body.append(key, { uri, name: `${key}.jpg`, type: 'image/jpeg' } as any);
     }
-    body.append('age_band', adult ? 'adult' : 'minor');
-    body.append('analysis_consent_version', '2026.1');
+    body.append('age_band', ageRange === 'under_18' ? 'minor' : 'adult');
+    body.append('reference_age_band', ageRange);
+    body.append('reference_profile', referenceProfile);
+    body.append('analysis_consent_version', '2026.3');
     try {
       let scan = await api.uploadScan(body);
       setStatus(scan);
@@ -253,21 +248,8 @@ export default function Home() {
       setError(cause.message);
     }
   };
-  const simulateNose = async () => {
-    setError('');
-    try {
-      let result = await api.createSimulation(status.id, 'nose', { bridge_height: 15, tip_projection: 10, tip_rotation: 5, alar_width: -10 });
-      setSimulation(result);
-      while (!['completed', 'failed'].includes(result.status)) {
-        await new Promise((resolve) => setTimeout(resolve, 1500));
-        result = await api.getSimulation(result.id);
-        setSimulation(result);
-      }
-    } catch (cause: any) { setError(cause.message); }
-  };
-
   if (!signedIn) return <View style={styles.center}><Text style={styles.title}>DOODEE</Text><Text>เข้าสู่ระบบก่อนสแกน</Text><Button title="Continue with Google" disabled={!request} onPress={() => promptAsync()} />{error && <Text style={styles.error}>{error}</Text>}</View>;
-  if (!captureStarted) return <View style={styles.center}><Text style={styles.title}>สแกนใบหน้า 7 มุม</Text><Text style={styles.note}>ระบบตรวจแสง ระยะ และท่าทางบนอุปกรณ์ แล้วถ่ายให้อัตโนมัติ รูปผู้ใหญ่ลบใน 30 วัน ผู้เยาว์ลบใน 24 ชั่วโมง</Text><View style={styles.row}><Text>อายุ 18 ปีขึ้นไป</Text><Switch value={adult} onValueChange={setAdult} /></View><View style={styles.row}><Text style={styles.consent}>ยินยอมให้วิเคราะห์ข้อมูลชีวมิติและเก็บภาพตามระยะเวลาที่แจ้ง</Text><Switch value={consented} onValueChange={setConsented} /></View><Button title="ยินยอมและเปิดกล้อง" disabled={!consented} onPress={beginCapture} />{error && <Text style={styles.error}>{error}</Text>}</View>;
+  if (!captureStarted) return <ScrollView contentContainerStyle={styles.center}><Text style={styles.title}>สแกนใบหน้า 7 มุม</Text><Text style={styles.note}>ระบบตรวจแสง ระยะ และท่าทางบนอุปกรณ์ แล้วถ่ายให้อัตโนมัติ รูปผู้ใหญ่ลบใน 30 วัน ผู้เยาว์ลบใน 24 ชั่วโมง</Text><Text style={styles.bold}>ช่วงอายุ</Text><View style={styles.choiceRow}>{([['under_18','ต่ำกว่า 18'],['18_35','18–35'],['36_plus','36+']] as const).map(([value,label]) => <Text key={value} onPress={() => setAgeRange(value)} style={[styles.choice, ageRange === value && styles.choiceActive]}>{label}</Text>)}</View>{ageRange !== 'under_18' && <><Text style={styles.bold}>ฐานอ้างอิงที่คุณเลือกเอง</Text><View style={styles.choiceRow}>{([['neutral','เป็นกลาง'],['masculine','ลักษณะชาย'],['feminine','ลักษณะหญิง']] as const).map(([value,label]) => <Text key={value} onPress={() => setReferenceProfile(value)} style={[styles.choice, referenceProfile === value && styles.choiceActive]}>{label}</Text>)}</View></>}<View style={styles.row}><Text style={styles.consent}>ยินยอมให้วิเคราะห์ข้อมูลชีวมิติและเก็บภาพตามระยะเวลาที่แจ้ง</Text><Switch value={consented} onValueChange={setConsented} /></View><Button title="ยินยอมและเปิดกล้อง" disabled={!consented} onPress={beginCapture} />{error && <Text style={styles.error}>{error}</Text>}</ScrollView>;
 
   const currentView = SCAN_VIEWS[viewIndex];
   const isProcessing = status && !['completed', 'failed'].includes(status.status);
@@ -287,7 +269,8 @@ export default function Home() {
     {status && <Text>สถานะ: {status.status} · {status.progress}%</Text>}
     {isProcessing && <ActivityIndicator />}
     {status?.status === 'completed' && status.analysis_data.metrics.map((metric: any) => <View key={metric.key} style={styles.metric}><Text>{metric.key.replaceAll('_', ' ')}</Text><Text>{metric.value} · confidence {metric.confidence}</Text></View>)}
-    {status?.status === 'completed' && adult && <View style={styles.metric}><Text style={styles.bold}>ภาพประกอบจมูกเพื่อคุยกับแพทย์</Text><Text>ไม่ใช่การทำนายผลผ่าตัดจริง · ฟรี 3 ภาพต่อเดือน</Text><View style={styles.row}><Text style={styles.consent}>ยินยอมให้ส่งภาพไป Gemini สำหรับ simulation นี้</Text><Switch value={simulationConsent} onValueChange={setSimulationConsent} /></View><Button title="สร้าง nose morphology preview" disabled={!simulationConsent || (simulation && !['completed', 'failed'].includes(simulation.status))} onPress={simulateNose} />{simulation && <Text>Simulation: {simulation.status} · {simulation.progress}%</Text>}{simulation?.status === 'completed' && <View style={styles.row}><Image source={{ uri: simulation.before_url }} style={styles.resultImage} /><Image source={{ uri: simulation.after_url }} style={styles.resultImage} /></View>}</View>}
+    {status?.status === 'completed' && status.analysis_data.reference_scores?.overall_score != null && <View style={styles.scoreCard}><Text>ดัชนีความใกล้ค่าอ้างอิงคนไทย</Text><Text style={styles.score}>{status.analysis_data.reference_scores.overall_score}<Text style={styles.scoreUnit}>/100</Text></Text><Text style={styles.note}>ไม่ใช่คะแนนความสวย · ฐานข้อมูลอายุ 18–35 ปี</Text>{status.analysis_data.reference_scores.categories.map((item: any) => <View key={item.key} style={styles.row}><Text>{item.key}</Text><Text style={styles.bold}>{item.score}</Text></View>)}</View>}
+    {status?.status === 'completed' && ageRange !== 'under_18' && <View style={styles.metric}><Text style={styles.bold}>การจำลองอยู่ในหน้าฟังก์ชันแยก</Text><Text>เลือกได้ 6 หมวด หมวดละ 4 รูปทรง พร้อม Before / After / Compare</Text><Button title="เปิดหน้าจำลองใบหน้า" onPress={() => router.push({ pathname: '/simulation', params: { scan_id: status.id } })} /></View>}
     {error && <Text style={styles.error}>{error}</Text>}
   </ScrollView>;
 }
@@ -300,4 +283,6 @@ const styles = StyleSheet.create({
   row: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12 }, consent: { flex: 1 }, metric: { padding: 14, borderRadius: 12, backgroundColor: '#fff', gap: 10 },
   grid: { flexDirection: 'row', flexWrap: 'wrap', gap: 10 }, thumbCard: { width: '48%', gap: 6 }, thumb: { width: '100%', aspectRatio: 0.8, borderRadius: 10, backgroundColor: '#ddd' },
   resultImage: { width: '48%', aspectRatio: 1, borderRadius: 12 }, bold: { fontWeight: '700' }, error: { color: '#b42318' },
+  choiceRow: { flexDirection: 'row', gap: 8 }, choice: { flex: 1, padding: 11, borderRadius: 12, backgroundColor: '#ece9f2', textAlign: 'center', overflow: 'hidden' }, choiceActive: { backgroundColor: '#6549d8', color: '#fff', fontWeight: '700' },
+  scoreCard: { padding: 18, borderRadius: 18, backgroundColor: '#302066', gap: 10 }, score: { fontSize: 42, fontWeight: '800', color: '#fff' }, scoreUnit: { fontSize: 18, color: '#cfc4f8' },
 });

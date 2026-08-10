@@ -49,7 +49,12 @@ DATABASES = {
         conn_max_age=60,
     )
 }
-AUTH_PASSWORD_VALIDATORS = []
+AUTH_PASSWORD_VALIDATORS = [
+    {"NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator"},
+    {"NAME": "django.contrib.auth.password_validation.MinimumLengthValidator"},
+    {"NAME": "django.contrib.auth.password_validation.CommonPasswordValidator"},
+    {"NAME": "django.contrib.auth.password_validation.NumericPasswordValidator"},
+]
 LANGUAGE_CODE = "th"
 TIME_ZONE = "Asia/Bangkok"
 USE_I18N = True
@@ -57,7 +62,20 @@ USE_TZ = True
 STATIC_URL = "static/"
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 CORS_ALLOWED_ORIGINS = [item for item in os.getenv("CORS_ORIGINS", "http://localhost:5173").split(",") if item]
-SIMULATION_ENABLED = os.getenv("SIMULATION_ENABLED", "false").lower() == "true"
+# On by default so the feature is usable out of the box. data.md still requires clinician,
+# privacy and validation review before any public medical launch, so a real deployment must
+# set SIMULATION_ENABLED=false deliberately until those are done.
+SIMULATION_ENABLED = os.getenv("SIMULATION_ENABLED", "true").lower() == "true"
+# Promo codes grant paid entitlement for free and may be redeemed without limit, so anyone who
+# learns a code keeps renewing. Turn this off in any environment real users can reach.
+REDEEM_CODES_ENABLED = os.getenv("REDEEM_CODES_ENABLED", "true").lower() == "true"
+
+CACHES = {
+    "default": {
+        "BACKEND": "django.core.cache.backends.redis.RedisCache",
+        "LOCATION": os.getenv("REDIS_CACHE_URL", "redis://localhost:6379/1"),
+    }
+} if os.getenv("REDIS_CACHE_URL") else {"default": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache"}}
 
 REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": ["doodee.authentication.FirebaseAuthentication"],

@@ -1,0 +1,13 @@
+{% extends "admin/change_form.html" %}
+{% block admin_change_form_document_ready %}
+  {{ block.super }}
+  <script>
+    document.getElementById("{{ opts.model_name }}_form")?.addEventListener("submit", function (event) {
+      const membership = this.elements.membership;
+      const oldMembership = membership?.querySelector("[selected]")?.value;
+      const detail = membership && oldMembership !== membership.value
+        ? `\nสมาชิก: ${oldMembership} → ${membership.value}` : "";
+      if (!window.confirm(`ยืนยันการบันทึก ${this.elements.username?.value || "ข้อมูลนี้"}?${detail}`)) event.preventDefault();
+    });
+  </script>
+{% endblock %}

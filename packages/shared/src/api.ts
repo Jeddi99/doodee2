@@ -1,7 +1,14 @@
 export type TokenProvider = () => Promise<string | null>;
 
+// One version string for every simulation consent record, on both clients. Preview and save
+// ask for the same consent, so recording two different versions would misstate what the user
+// actually agreed to.
+export const SIMULATION_CONSENT_VERSION = '2026.3-local';
+
+// Keep in step with backend/doodee/analysis_engine.py SCAN_VIEW_MODES.
 export const SCAN_VIEW_MODES = {
   full: ['front', 'front_smile', 'left_oblique', 'right_oblique', 'left_profile', 'right_profile', 'basal'],
+  standard: ['front', 'left_profile', 'right_profile'],
   fast: ['front', 'left_oblique', 'right_oblique'],
 } as const;
 
@@ -30,10 +37,15 @@ export function createApi(baseUrl: string, tokenProvider: TokenProvider) {
     uploadScan: (body: FormData) => request('/scans/', { method: 'POST', body }),
     getScan: (id: string) => request(`/scans/${id}/status/`),
     deleteScan: (id: string) => request(`/scans/${id}/`, { method: 'DELETE' }),
-    createSimulation: (scanId: string, region: string, parameters: Record<string, number>) => request('/simulations/', {
+    getProcedures: (region: string) => request(`/procedures/?region=${encodeURIComponent(region)}`),
+    previewSimulation: (scanId: string, region: string, presetId: string) => request('/simulations/preview/', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ scan_id: scanId, region, preset_id: presetId, simulation_consent_version: SIMULATION_CONSENT_VERSION }),
+    }),
+    createSimulation: (scanId: string, region: string, presetId: string) => request('/simulations/', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ scan_id: scanId, region, parameters, simulation_consent_version: '2026.1' }),
+      body: JSON.stringify({ scan_id: scanId, region, preset_id: presetId, simulation_consent_version: SIMULATION_CONSENT_VERSION }),
     }),
     getSimulation: (id: string) => request(`/simulations/${id}/status/`),
   };

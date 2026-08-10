@@ -1,7 +1,7 @@
 import { getApps, initializeApp } from 'firebase/app';
 import {
   browserPopupRedirectResolver,
-  browserSessionPersistence,
+  browserLocalPersistence,
   GoogleAuthProvider,
   initializeAuth,
   signInWithPopup,
@@ -25,7 +25,7 @@ export function getFirebaseAuth() {
   if (!auth) {
     const app = getApps()[0] || initializeApp(config);
     auth = initializeAuth(app, {
-      persistence: browserSessionPersistence,
+      persistence: browserLocalPersistence,
       popupRedirectResolver: browserPopupRedirectResolver,
     });
   }

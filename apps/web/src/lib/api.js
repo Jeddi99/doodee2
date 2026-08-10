@@ -1,5 +1,6 @@
 import { signInAnonymously } from 'firebase/auth';
 import { getFirebaseAuth, googleSignIn } from './firebase';
+import { errorMessage } from './apiError';
 
 
 // Matches the port compose.yaml publishes the api service on, and the mobile app's default.
@@ -31,26 +32,25 @@ async function request(path, options = {}) {
   }
   if (!response.ok) {
     const payload = await response.json().catch(() => null);
-    throw new Error(payload?.detail || `Request failed (${response.status})`);
+    throw new Error(errorMessage(payload) || `Request failed (${response.status})`);
   }
   return response.status === 204 ? null : response.json();
 }
 
 export async function signIn() {
-  try {
-    await googleSignIn();
-  } catch (err) {
-    console.warn('Google sign-in skipped or unavailable, using dev session fallback:', err);
-  }
+  await googleSignIn();
   return request('/session/');
 }
 
-export function uploadScan(files, ageBand, consentVersion, scanMode = 'full') {
+export function uploadScan(files, ageBand, referenceAgeBand, referenceProfile, referencePopulation, consentVersion, scanMode = 'standard') {
   const body = new FormData();
   for (const [view, file] of Object.entries(files)) {
     if (file) body.append(view, file);
   }
   body.append('age_band', ageBand);
+  body.append('reference_age_band', referenceAgeBand);
+  body.append('reference_profile', referenceProfile);
+  body.append('reference_population', referencePopulation);
   body.append('analysis_consent_version', consentVersion);
   body.append('scan_mode', scanMode);
   return request('/scans/', { method: 'POST', body });
@@ -58,12 +58,26 @@ export function uploadScan(files, ageBand, consentVersion, scanMode = 'full') {
 
 export const getScan = (scanId) => request(`/scans/${scanId}/status/`);
 export const getScans = () => request('/scans/');
+export const getSession = () => request('/session/');
 export const deleteScan = (scanId) => request(`/scans/${scanId}/`, { method: 'DELETE' });
-export const getProcedures = (region) => request(`/procedures/?region=${encodeURIComponent(region)}`);
-export const createSimulation = (scanId, region, parameters, consentVersion) => request('/simulations/', {
+// Without a region this returns the whole catalog, which the simulation view needs: a stacked
+// selection has to name shapes and procedures for regions whose tab is not open.
+export const getProcedures = (region) => request(region ? `/procedures/?region=${encodeURIComponent(region)}` : '/procedures/');
+// `selections` is an array of `{ region, preset_id }` — one entry per region being simulated.
+export const createSimulation = (scanId, selections, consentVersion) => request('/simulations/', {
   method: 'POST',
   headers: { 'Content-Type': 'application/json' },
-  body: JSON.stringify({ scan_id: scanId, region, parameters, simulation_consent_version: consentVersion }),
+  body: JSON.stringify({ scan_id: scanId, selections, simulation_consent_version: consentVersion }),
+});
+export const previewSimulation = (scanId, selections, consentVersion) => request('/simulations/preview/', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ scan_id: scanId, selections, simulation_consent_version: consentVersion }),
 });
 export const getSimulation = (simulationId) => request(`/simulations/${simulationId}/status/`);
 export const deleteAccount = () => request('/account/', { method: 'DELETE' });
+export const redeemCode = (code) => request('/redeem/', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ code }),
+});

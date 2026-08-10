@@ -35,6 +35,80 @@ export async function closeLiveFaceLandmarker() {
   task?.close();
 }
 
+/**
+ * Region edge lists, re-exported so callers do not have to import `FaceLandmarker` themselves.
+ *
+ * Importing the class pulls in the whole vision bundle eagerly, which defeats the point of loading
+ * this module lazily. These are unordered `{start, end}` edges — see `makeupGeometry.ringsFromConnections`.
+ */
+export const LANDMARK_SETS = {
+  lips: FaceLandmarker.FACE_LANDMARKS_LIPS,
+  leftIris: FaceLandmarker.FACE_LANDMARKS_LEFT_IRIS,
+  rightIris: FaceLandmarker.FACE_LANDMARKS_RIGHT_IRIS,
+};
+
+let stillTaskPromise;
+
+function createStillTask(delegate) {
+  return FaceLandmarker.createFromOptions(
+    { wasmLoaderPath, wasmBinaryPath },
+    {
+      baseOptions: { modelAssetPath, delegate },
+      // A separate instance rather than reusing the live one: a task is fixed to one running mode,
+      // and flipping the shared singleton to IMAGE would break the live capture screen.
+      runningMode: 'IMAGE',
+      numFaces: 1,
+      minFaceDetectionConfidence: .5,
+      minFacePresenceConfidence: .5,
+    },
+  );
+}
+
+let stillDelegate = 'GPU';
+
+/** Landmarker for a single photograph. Shares the model and wasm binary with the live one. */
+export function getStillFaceLandmarker() {
+  stillTaskPromise ||= createStillTask(stillDelegate).catch(() => createStillTask('CPU'));
+  return stillTaskPromise;
+}
+
+export async function closeStillFaceLandmarker() {
+  const current = stillTaskPromise;
+  stillTaskPromise = undefined;
+  const task = await current?.catch(() => null);
+  task?.close();
+}
+
+/**
+ * The 478 landmarks of the one face in `image`, or null when there is no usable face.
+ *
+ * Null rather than an empty array so callers cannot accidentally treat "no face" as a face with no
+ * features and draw makeup at coordinate zero.
+ */
+export function detectStill(task, image) {
+  const landmarks = task.detect(image)?.faceLandmarks?.[0];
+  return landmarks?.length ? landmarks : null;
+}
+
+/**
+ * Detect on a still image, dropping to the CPU delegate if the GPU one cannot actually run.
+ *
+ * Creating a GPU task succeeds on machines where WebGL is present but unusable — a blocked or
+ * software-only GPU, a VM, WebGL switched off — and the failure only surfaces on the first GL call
+ * inside `detect`. A `.catch` around task creation therefore never reaches the CPU delegate; the
+ * fallback has to happen after a failed detection, which is what this does.
+ */
+export async function detectStillAnyDelegate(image) {
+  try {
+    return detectStill(await getStillFaceLandmarker(), image);
+  } catch (error) {
+    if (stillDelegate === 'CPU') throw error;
+    stillDelegate = 'CPU';
+    await closeStillFaceLandmarker();
+    return detectStill(await getStillFaceLandmarker(), image);
+  }
+}
+
 function lightStats(video, canvas) {
   const context = canvas.getContext('2d', { willReadFrequently: true });
   context.drawImage(video, 0, 0, canvas.width, canvas.height);

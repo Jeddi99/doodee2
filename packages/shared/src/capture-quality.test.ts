@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import poseTargets from '../../../backend/doodee/pose_targets.json' with { type: 'json' };
-import { advanceCaptureTimer, evaluateCapture, getPoseGuidance, startCaptureTimer, type FaceObservation } from './capture-quality.ts';
+import { advanceCaptureTimer, CLOSER_HINT_BELOW, evaluateCapture, getFramingHint, getPoseGuidance, startCaptureTimer, type FaceObservation } from './capture-quality.ts';
 import type { ScanView } from './api.ts';
 
 const valid: FaceObservation = {
@@ -61,8 +61,8 @@ test('pose guidance reports the largest correction in pose-target coordinates', 
   assert.deepEqual(getPoseGuidance('left_oblique', { yaw: -18, pitch: 18, roll: 0 }), {
     axis: 'yaw', delta: -12, degrees: 10, direction: 'left', centerFirst: false,
   });
-  assert.deepEqual(getPoseGuidance('basal', { yaw: 0, pitch: 8, roll: 0 }), {
-    axis: 'pitch', delta: 7, degrees: 5, direction: 'up', centerFirst: false,
+  assert.deepEqual(getPoseGuidance('basal', { yaw: 0, pitch: -8, roll: 0 }), {
+    axis: 'pitch', delta: -7, degrees: 5, direction: 'up', centerFirst: false,
   });
   assert.equal(getPoseGuidance('right_profile', { yaw: 68, pitch: 0, roll: 0 }), null);
 });
@@ -72,8 +72,22 @@ test('switching profile sides returns to center before counting the new target',
     axis: 'yaw', delta: 68, degrees: 70, direction: 'right', centerFirst: true,
   });
   assert.deepEqual(getPoseGuidance('right_profile', { yaw: 0, pitch: 0, roll: 0 }), {
-    axis: 'yaw', delta: 60, degrees: 60, direction: 'right', centerFirst: false,
+    axis: 'yaw', delta: 55, degrees: 55, direction: 'right', centerFirst: false,
   });
+});
+
+test('the basal view asks for chin up and never sends the subject the other way', () => {
+  // Reported from a real capture: the instruction said tilt up while only tilting down
+  // satisfied the target, because positive pitch is chin-down in these coordinates.
+  const target = (poseTargets as any).basal.pitch;
+  assert.ok(target[0] < 0 && target[1] < 0, 'basal must sit on the chin-up side of zero');
+  const guidance = getPoseGuidance('basal', { yaw: 0, pitch: 0, roll: 0 })!;
+  assert.equal(guidance.direction, 'up');
+  assert.ok(guidance.delta < 0);
+  // Someone already tilted too far up is sent back down, not further up.
+  assert.equal(getPoseGuidance('basal', { yaw: 0, pitch: -40, roll: 0 })!.direction, 'down');
+  // A face tilted down during a front shot is told to come up.
+  assert.equal(getPoseGuidance('front', { yaw: 0, pitch: 30, roll: 0 })!.direction, 'up');
 });
 
 test('capture requires half a second held and fallback appears after six', () => {
@@ -85,4 +99,22 @@ test('capture requires half a second held and fallback appears after six', () =>
   assert.equal(state.validSince, null);
   assert.equal(advanceCaptureTimer(state, 'off_center', 5_999).fallbackAvailable, false);
   assert.equal(advanceCaptureTimer(state, 'off_center', 6_000).fallbackAvailable, true);
+});
+
+test('a small but acceptable face is advised closer, never rejected for it', () => {
+  const at = (faceHeightRatio: number) => ({ ...valid, faceHeightRatio });
+  // The band between the reject floor and the hint threshold: capture still succeeds.
+  assert.equal(getFramingHint(at(.28)), 'move_closer');
+  assert.equal(evaluateCapture('front', at(.28)), 'ready', 'the hint must not gate the capture');
+
+  // Below the floor the loud message already covers it, so there is no second voice.
+  assert.equal(getFramingHint(at(.2)), null);
+  assert.equal(evaluateCapture('front', at(.2)), 'too_far');
+
+  // A face already large enough is left alone.
+  assert.equal(getFramingHint(at(CLOSER_HINT_BELOW)), null);
+  assert.equal(getFramingHint(at(.5)), null);
+  // Nothing to advise when there is no single face to measure.
+  assert.equal(getFramingHint({ faceCount: 0, faceHeightRatio: .28 }), null);
+  assert.equal(getFramingHint({ faceCount: 2, faceHeightRatio: .28 }), null);
 });

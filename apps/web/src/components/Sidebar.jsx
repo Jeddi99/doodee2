@@ -1,16 +1,18 @@
 import React, { useState } from 'react';
 import {
-  Palette, ScanFace, History, Settings, Menu, X
+  Palette, ScanFace, History, Settings, Menu, X, WandSparkles, House
 } from 'lucide-react';
 
 export default function Sidebar({ currentRoute, setCurrentRoute, lang }) {
   const isTh = lang === 'th';
-  const isCompactRoute = ['face-scan', 'tryon'].includes(currentRoute);
+  const isCompactRoute = ['face-scan', 'simulation', 'tryon'].includes(currentRoute);
   const [isFloatingOpen, setIsFloatingOpen] = useState(false);
   const isCollapsed = isCompactRoute && !isFloatingOpen;
 
   const navItems = [
-    { id: 'face-scan', label: isTh ? 'วิเคราะห์และจำลองใบหน้า' : 'Face Analysis & Simulation', icon: ScanFace },
+    { id: 'home', label: isTh ? 'หน้าหลัก' : 'Home', icon: House },
+    { id: 'analysis', label: isTh ? 'คะแนนวิเคราะห์' : 'Analysis Scores', icon: ScanFace },
+    { id: 'simulation', label: isTh ? 'จำลองใบหน้า' : 'Face Simulation', icon: WandSparkles },
     { id: 'tryon', label: isTh ? 'แต่งหน้า Try-On' : 'Virtual Try-On', icon: Palette },
     { id: 'history', label: isTh ? 'ประวัติและรายงาน' : 'History & Reports', icon: History },
     { id: 'settings', label: isTh ? 'การตั้งค่า' : 'Settings', icon: Settings },

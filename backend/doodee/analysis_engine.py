@@ -4,15 +4,21 @@ import os
 from pathlib import Path
 from functools import lru_cache
 
+from .reference_scoring import angle, score_observations
 
-FORMULA_VERSION = "2026.1"
+
+# 2026.4 rescales landmark x into height units before measuring. Scores from earlier versions
+# carry the photo's aspect ratio in every width-over-height ratio and are not comparable.
+FORMULA_VERSION = "2026.4-isotropic"
 MEDIAPIPE_SOURCE = "https://ai.google.dev/edge/mediapipe/solutions/vision/face_landmarker"
 ANTHROPOMETRY_SOURCE = "https://pubmed.ncbi.nlm.nih.gov/37487528/"
 POSE_TARGETS = json.loads((Path(__file__).parent / "pose_targets.json").read_text())
 SCAN_VIEW_MODES = {
     "fast": ("front", "left_oblique", "right_oblique"),
+    "standard": ("front", "left_profile", "right_profile"),
     "full": ("front", "front_smile", "left_oblique", "right_oblique", "left_profile", "right_profile", "basal"),
 }
+PROFILE_VIEWS = ("left_profile", "right_profile")
 DEFAULT_SCAN_MODE = "full"
 
 FRONT_METRICS = (
@@ -98,6 +104,25 @@ def _landmarks(image):
     return np.array([(p.x, p.y, p.z) for p in result.face_landmarks[0]], dtype=np.float64), pose_from_matrix(matrix)
 
 
+def _isotropic(points, image):
+    """Put both axes on one unit so a width may be divided by a height.
+
+    MediaPipe normalises x by image width and y by image height, so on a 4:3 photo one x unit
+    is 1.33 y units. Every ratio that mixes the two — alar width over nasion-gnathion,
+    intercanthal, eye fissure — came out scaled by the photo's aspect rather than the face's,
+    and every angle was sheared. Rescaling x into height units removes the photo's shape from
+    the measurement.
+    """
+    import numpy as np
+
+    height, width = image.shape[:2]
+    if height <= 0 or width <= 0:
+        raise ValueError("invalid_image")
+    scaled = np.array(points, dtype=np.float64, copy=True)
+    scaled[:, 0] *= width / height
+    return scaled
+
+
 def _distance(points, a, b):
     return hypot(points[a, 0] - points[b, 0], points[a, 1] - points[b, 1])
 
@@ -137,8 +162,8 @@ def measured_views(scan_mode):
     does not throw the whole scan away.
     """
     views = {"front"}
-    if scan_mode == "full":
-        views |= {"left_profile", "right_profile"}
+    captured = set(SCAN_VIEW_MODES.get(scan_mode, ()))
+    views |= {view for view in PROFILE_VIEWS if view in captured}
     return views
 
 
@@ -193,7 +218,7 @@ def scan_views_for_mode(scan_mode):
     return SCAN_VIEW_MODES[scan_mode]
 
 
-def analyze_images(images, age_band="adult", scan_mode=DEFAULT_SCAN_MODE):
+def analyze_images(images, age_band="adult", scan_mode=DEFAULT_SCAN_MODE, reference_profile="neutral", reference_age_band="18_35", reference_population="TH"):
     required = set(scan_views_for_mode(scan_mode))
     if set(images) != required:
         raise ValueError("missing_views")
@@ -206,14 +231,18 @@ def analyze_images(images, age_band="adult", scan_mode=DEFAULT_SCAN_MODE):
             decoded[view] = _decode(data)
         except ValueError as exc:
             raise ValueError(f"{exc}:{view}") from exc
+    normalized = {}
     for view, image in decoded.items():
         try:
-            points[view], poses[view] = _landmarks(image)
+            normalized[view], poses[view] = _landmarks(image)
         except ValueError as exc:
             raise ValueError(f"{exc}:{view}") from exc
+        # Measurements need square units; the skin mask below still needs raw image fractions.
+        points[view] = _isotropic(normalized[view], image)
     pose_advisories = _validate_pose_set(poses, scan_mode)
     front = points["front"]
     width, height = _distance(front, 234, 454), _distance(front, 10, 152)
+    reference_height = _distance(front, 168, 152)
     metrics = [_metric("face_width_to_height", "harmony", _ratio(width, height))]
 
     for key, category, a, b, denominator in FRONT_METRICS:
@@ -228,19 +257,44 @@ def analyze_images(images, age_band="adult", scan_mode=DEFAULT_SCAN_MODE):
         _metric("mandible_asymmetry", "symmetry", abs(_distance(front, 234, 152) - _distance(front, 454, 152)) / width, 0.65),
     ))
 
-    if scan_mode == "full":
-        for view in ("left_profile", "right_profile"):
+    has_profiles = all(view in points for view in PROFILE_VIEWS)
+    if has_profiles:
+        for view in PROFILE_VIEWS:
             profile = points[view]
             profile_height = _distance(profile, 10, 152)
             metrics.append(_metric(f"{view}_nose_projection_ratio", "side_profile", _ratio(_distance(profile, 168, 1), profile_height), 0.58))
             metrics.append(_metric(f"{view}_facial_convexity_ratio", "side_profile", _ratio(_point_line_distance(profile, 1, 10, 152), profile_height), 0.58))
 
-    metrics.extend(_skin_metrics(decoded["front"], front))
+    metrics.extend(_skin_metrics(decoded["front"], normalized["front"]))
     if len(metrics) > 30:
         raise AssertionError("Core metric catalog must stay at or below 30")
 
-    analysis_tier = "full" if scan_mode == "full" else "fast"
+    analysis_tier = scan_mode
     missing_optional_views = [view for view in SCAN_VIEW_MODES["full"] if view not in images]
+    stomion = (front[13, :2] + front[14, :2]) / 2
+    observations = {
+        "midface_height": _ratio(_distance(front, 168, 2), reference_height),
+        "lower_face_height": _ratio(_distance(front, 2, 152), reference_height),
+        "intercanthal": _ratio(_distance(front, 133, 362), reference_height),
+        "eye_fissure": _ratio((_distance(front, 33, 133) + _distance(front, 362, 263)) / 2, reference_height),
+        "alar_width": _ratio(_distance(front, 98, 327), reference_height),
+        "upper_lip_length": _ratio(_distance(front, 2, 0), reference_height),
+        "upper_vermillion": _ratio(_distance(front, 0, 13), reference_height),
+        "lower_vermillion": _ratio(_distance(front, 14, 17), reference_height),
+        "chin_height": _ratio(hypot(*(stomion - front[152, :2])), reference_height),
+    }
+    if has_profiles:
+        profile_observations = []
+        for view in PROFILE_VIEWS:
+            profile = points[view]
+            profile_observations.append({
+                "nasofrontal_angle": angle(profile, 10, 168, 1),
+                "nasolabial_angle": angle(profile, 1, 2, 0),
+                "facial_convexity_angle": abs(180 - angle(profile, 168, 2, 152)),
+            })
+        for key in profile_observations[0]:
+            observations[key] = sum(item[key] for item in profile_observations) / len(profile_observations)
+
     return {
         "metrics": metrics,
         "metric_count": len(metrics),
@@ -250,4 +304,8 @@ def analyze_images(images, age_band="adult", scan_mode=DEFAULT_SCAN_MODE):
         "analysis_tier": analysis_tier,
         "missing_optional_views": missing_optional_views,
         "pose_advisories": pose_advisories,
+        # Captured poses are kept so the widened profile yaw window (55-80) can be reviewed
+        # against real scans before it is tightened or widened again.
+        "poses": {view: {axis: round(value, 2) for axis, value in pose.items()} for view, pose in poses.items()},
+        "reference_scores": score_observations(observations, reference_profile, reference_age_band, age_band, reference_population),
     }

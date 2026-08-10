@@ -1,4 +1,5 @@
-import React, { lazy, Suspense, useState } from 'react';
+import React, { lazy, Suspense, useEffect, useState } from 'react';
+import { onAuthStateChanged } from 'firebase/auth';
 import { useLocation, useNavigate } from 'react-router-dom';
 import Header from './components/Header';
 import HeroSection from './components/HeroSection';
@@ -16,9 +17,13 @@ import FooterSection from './components/FooterSection';
 import Sidebar from './components/Sidebar';
 import AppHeaderBar from './components/AppHeaderBar';
 import OnboardingFlow from './components/OnboardingFlow';
-import { PRESET_MODELS } from './data/mockData';
+import { authRedirect } from './lib/authRouting';
+import { getFirebaseAuth } from './lib/firebase';
 
+const AnalysisDashboard = lazy(() => import('./components/AnalysisDashboard'));
+const HomeView = lazy(() => import('./components/HomeView'));
 const FacialAnalysisView = lazy(() => import('./components/FacialAnalysisView'));
+const SimulationView = lazy(() => import('./components/SimulationView'));
 const TryOnView = lazy(() => import('./components/TryOnView'));
 const HistoryView = lazy(() => import('./components/HistoryView'));
 const PricingView = lazy(() => import('./components/PricingView'));
@@ -28,15 +33,34 @@ function WorkspaceFallback({ lang }) {
   return <div className="workspace-loading" role="status">{lang === 'th' ? 'กำลังเปิดหน้า…' : 'Opening…'}</div>;
 }
 
+const ROUTE_PATHS = { landing: '/', onboarding: '/onboarding', home: '/home', analysis: '/analysis', 'face-scan': '/scan', simulation: '/simulation', tryon: '/try-on', history: '/history', pricing: '/pricing', settings: '/settings' };
+
 export default function App() {
   const location = useLocation();
   const navigate = useNavigate();
-  const routePaths = { landing: '/', onboarding: '/onboarding', 'face-scan': '/scan', tryon: '/try-on', history: '/history', pricing: '/pricing', settings: '/settings' };
-  const currentRoute = Object.entries(routePaths).find(([, path]) => path === location.pathname)?.[0] || 'landing';
-  const setCurrentRoute = (route) => navigate(routePaths[route] || '/scan');
+  const currentRoute = Object.entries(ROUTE_PATHS).find(([, path]) => path === location.pathname)?.[0] || 'landing';
+  const setCurrentRoute = (route, params = {}) => {
+    const query = params.scanId ? `?scan_id=${encodeURIComponent(params.scanId)}` : '';
+    navigate(`${ROUTE_PATHS[route] || '/analysis'}${query}`);
+  };
   const [lang, setLang] = useState('th'); // 'th' | 'en'
-  const [selectedModel, setSelectedModel] = useState(null);
   const [onboardingData, setOnboardingData] = useState(null);
+  const [authState, setAuthState] = useState({ ready: false, user: null });
+
+  useEffect(() => {
+    try {
+      return onAuthStateChanged(getFirebaseAuth(), (user) => setAuthState({ ready: true, user }));
+    } catch {
+      setAuthState({ ready: true, user: null });
+      return undefined;
+    }
+  }, []);
+
+  const isAuthenticated = Boolean(authState.user && !authState.user.isAnonymous);
+  useEffect(() => {
+    const redirect = authRedirect(authState.ready, isAuthenticated, currentRoute);
+    if (redirect) navigate(ROUTE_PATHS[redirect], { replace: true });
+  }, [authState.ready, currentRoute, isAuthenticated, navigate]);
 
   const handleStartScan = () => {
     setCurrentRoute('onboarding');
@@ -49,9 +73,13 @@ export default function App() {
     window.scrollTo({ top: 0 });
   };
 
-  const isCompactWorkspace = currentRoute === 'tryon';
+  const isCompactWorkspace = ['tryon', 'simulation'].includes(currentRoute);
   const isTryOnEditor = currentRoute === 'tryon';
   const needsPortraitGate = !isTryOnEditor;
+
+  if (!authState.ready || authRedirect(authState.ready, isAuthenticated, currentRoute)) {
+    return <WorkspaceFallback lang={lang} />;
+  }
 
   return (
     <div className={`landing-bg glass-app-bg liquid-glass-app${currentRoute !== 'landing' ? ' is-app-route' : ''}`} style={{ minHeight: '100vh', width: '100%', display: 'flex', flexDirection: 'column', overflowY: 'auto' }}>
@@ -84,7 +112,8 @@ export default function App() {
       {currentRoute === 'onboarding' && (
         <OnboardingFlow
           lang={lang}
-          onBack={() => setCurrentRoute('landing')}
+          authenticated={isAuthenticated}
+          onBack={() => setCurrentRoute(isAuthenticated ? 'home' : 'landing')}
           onComplete={handleOnboardingComplete}
         />
       )}
@@ -95,7 +124,7 @@ export default function App() {
             lang={lang}
             setLang={setLang}
             onboardingData={onboardingData}
-            onBack={() => setCurrentRoute('onboarding')}
+            onBack={() => setCurrentRoute('home')}
             onNavigate={setCurrentRoute}
           />
         </Suspense>
@@ -138,7 +167,10 @@ export default function App() {
             transition: 'margin-left 220ms ease, padding 220ms ease'
           }}>
             <Suspense fallback={<WorkspaceFallback lang={lang} />}>
-              {currentRoute === 'tryon' && <TryOnView selectedModel={selectedModel || PRESET_MODELS[0]} onSelectModel={setSelectedModel} lang={lang} />}
+              {currentRoute === 'home' && <HomeView lang={lang} onNavigate={setCurrentRoute} />}
+              {currentRoute === 'analysis' && <AnalysisDashboard lang={lang} onNavigate={setCurrentRoute} />}
+              {currentRoute === 'tryon' && <TryOnView lang={lang} />}
+              {currentRoute === 'simulation' && <SimulationView lang={lang} onNavigate={setCurrentRoute} />}
               {currentRoute === 'history' && <HistoryView lang={lang} onNavigate={setCurrentRoute} />}
               {currentRoute === 'pricing' && <PricingView lang={lang} onStartScan={handleStartScan} />}
               {currentRoute === 'settings' && <SettingsView lang={lang} setLang={setLang} setCurrentRoute={setCurrentRoute} />}

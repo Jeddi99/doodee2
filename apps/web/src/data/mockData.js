@@ -342,26 +342,6 @@ export const SIDE_PROFILE_ANALYSIS = {
   ]
 };
 
-export const TRY_ON_OPTIONS = {
-  hairColors: [
-    { id: 'h-0', name: 'สีธรรมชาติ (Natural)', hex: 'transparent', preview: '#2b2b2b' },
-    { id: 'h-1', name: 'น้ำตาลช็อกโกแลต (Warm Brown)', hex: '#4a2e1d', preview: '#4a2e1d' },
-    { id: 'h-2', name: 'บลอนด์หม่น (Ash Blonde)', hex: '#8a7d6b', preview: '#8a7d6b' },
-    { id: 'h-3', name: 'ชมพูพาสเทล (Pastel Pink)', hex: '#d4889c', preview: '#d4889c' }
-  ],
-  eyeColors: [
-    { id: 'e-0', name: 'สีตาเดิม (Original)', hex: 'transparent' },
-    { id: 'e-1', name: 'คอนแทคสีเทา (Hazel Grey)', hex: '#717d7e' },
-    { id: 'e-2', name: 'คอนแทคสีน้ำตาล (Honey Brown)', hex: '#9a7d56' }
-  ],
-  blushColors: [
-    { id: 'b-0', name: 'ไม่ปัดแก้ม (None)', hex: 'transparent' },
-    { id: 'b-1', name: 'ชมพูพีช (Coral Peach)', hex: '#f08080' },
-    { id: 'b-2', name: 'ชมพูกุหลาบ (Rose Pink)', hex: '#e86100' }
-  ],
-  lipsticks: [
-    { id: 'l-0', name: 'สีปากธรรมชาติ (Natural)', hex: 'transparent', finish: 'matte' },
-    { id: 'l-1', name: 'ส้มอิฐ (Terracotta Gloss)', hex: '#c0392b', finish: 'gloss' },
-    { id: 'l-2', name: 'ชมพูนู้ด (Nude Pink Matte)', hex: '#d98880', finish: 'matte' }
-  ]
-};
+// Try-on shades moved to `src/data/makeup.js` when the page stopped drawing CSS blobs and started
+// painting real photographs — they are no longer mock data. Hair colour was dropped with them:
+// tinting hair needs image segmentation, which the face landmarker does not provide.

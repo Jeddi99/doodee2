@@ -29,6 +29,7 @@ services:
     environment:
       DATABASE_URL: postgresql://postgres:postgres@postgres:5432/doodee
       REDIS_URL: redis://redis:6379/0
+      REDIS_CACHE_URL: redis://redis:6379/1
       GOOGLE_APPLICATION_CREDENTIALS: /run/secrets/firebase-service-account.json
     volumes:
       - ./firebase-service-account.json:/run/secrets/firebase-service-account.json:ro
@@ -37,7 +38,9 @@ services:
     depends_on:
       postgres: {condition: service_healthy}
       redis: {condition: service_healthy}
-    command: sh -c "python manage.py migrate && gunicorn config.wsgi:application --bind 0.0.0.0:8000 --workers 2 --timeout 120"
+    # --reload because ./backend is bind-mounted: without it the process keeps the code it booted
+    # with, and an edit on disk silently does nothing until someone remembers to restart.
+    command: sh -c "python manage.py migrate && gunicorn config.wsgi:application --bind 0.0.0.0:8000 --workers 2 --timeout 120 --reload"
   worker:
     build:
       context: .

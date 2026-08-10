@@ -13,7 +13,11 @@ npm install
 npm run dev:web
 ```
 
-Configure Firebase Authentication, a private Supabase `face-scans` bucket, and Gemini in `.env`. The web app runs at `http://localhost:5173`; Django runs at `http://localhost:8001`.
+Editing backend code reloads the API automatically. The Celery worker does not reload, so run `docker compose restart worker` after changing `tasks.py` or `simulation_engine.py` — otherwise saved simulations keep rendering with the code the worker booted with.
+
+Configure Firebase Authentication and a private Supabase `face-scans` bucket in `.env`. Simulations run locally with MediaPipe and OpenCV; no external image provider is used. Redis database 1 stores short-lived preview locks and fair-use counters. The web app runs at `http://localhost:5173`; Django runs at `http://localhost:8001`.
+
+Free accounts receive three simulation previews per month. To grant unlimited member previews, assign the Django user to the `pro_member` or `clinic_partner` group in Django Admin. This repository does not implement checkout or payment webhooks.
 
 For mobile, set the `EXPO_PUBLIC_*` values and create a native development build (VisionCamera does not run in Expo Go):
 

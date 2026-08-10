@@ -6,8 +6,11 @@ export type QualityStatus =
   | 'off_center' | 'wrong_pose' | 'wrong_expression' | 'not_stable' | 'ready';
 
 // yaw/pitch/roll must already be in pose_targets.json coordinates: positive yaw means the
-// head is turned to the subject's right. Each client converts its own detector output before
-// calling in — MediaPipe web in lib/facePose.js, Expo in apps/mobile. Nothing here re-signs it.
+// head is turned to the subject's right, and positive pitch means the chin is DOWN toward the
+// chest. The pitch sign was reported from a real basal capture that only passed while the
+// subject tilted down, against an instruction that said tilt up. Each client converts its own
+// detector output before calling in — MediaPipe web in lib/facePose.js, Expo in apps/mobile.
+// Nothing here re-signs it.
 export type FaceObservation = {
   faceCount: number;
   confidence: number;
@@ -57,7 +60,8 @@ export function getPoseGuidance(view: ScanView, value: Pick<FaceObservation, Pos
   }));
   const { axis, delta } = corrections.reduce((largest, item) => Math.abs(item.delta) > Math.abs(largest.delta) ? item : largest);
   if (!delta) return null;
-  const direction = axis === 'pitch' ? (delta < 0 ? 'down' : 'up') : delta < 0 ? 'left' : 'right';
+  // A positive pitch delta asks for more chin-down, so the arrow points down, not up.
+  const direction = axis === 'pitch' ? (delta < 0 ? 'up' : 'down') : delta < 0 ? 'left' : 'right';
   return { axis, delta, degrees: Math.max(5, Math.round(Math.abs(delta) / 5) * 5), direction, centerFirst: oppositeSide && axis === 'yaw' };
 }
 
@@ -76,6 +80,20 @@ export function evaluateCapture(view: ScanView, value: FaceObservation): Quality
   if (getPoseGuidance(view, value)) return 'wrong_pose';
   if (!within(value.smile, target.smile)) return 'wrong_expression';
   return value.stable ? 'ready' : 'not_stable';
+}
+
+// Above the `too_far` floor a capture is accepted, but a face this small still leaves few
+// pixels on the features a simulation later has to show a few pixels of change in. Advice, not
+// a rejection: a frame that passes today must not start failing because of it.
+export const CLOSER_HINT_BELOW = .32;
+
+export type FramingHint = 'move_closer';
+
+export function getFramingHint(value: Pick<FaceObservation, 'faceCount' | 'faceHeightRatio'>): FramingHint | null {
+  if (value.faceCount !== 1) return null;
+  // Below the floor `too_far` already says this, and louder.
+  if (value.faceHeightRatio < .22 || value.faceHeightRatio >= CLOSER_HINT_BELOW) return null;
+  return 'move_closer';
 }
 
 export function startCaptureTimer(now: number): CaptureTimer {

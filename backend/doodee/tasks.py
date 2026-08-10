@@ -1,5 +1,4 @@
 import logging
-import os
 
 from celery import shared_task
 from django.contrib.auth.models import User
@@ -7,7 +6,7 @@ from django.db import transaction
 
 from .analysis_engine import analyze_images
 from .models import Scan, Simulation
-from .simulation_engine import constrain_region_and_watermark, generate_image
+from .simulation_engine import has_profile_images, related_union, simulate, source_for_scan, validate_selections
 from .storage import delete_image, download_image, upload_image
 
 
@@ -33,7 +32,7 @@ def process_scan(scan_id):
         images = {view: download_image(name) for view, name in scan.image_objects.items()}
         scan.progress = 35
         scan.save(update_fields=("progress", "updated_at"))
-        scan.analysis_data = analyze_images(images, scan.age_band, scan.scan_mode)
+        scan.analysis_data = analyze_images(images, scan.age_band, scan.scan_mode, scan.reference_profile, scan.reference_age_band, scan.reference_population)
         scan.status, scan.progress = Scan.Status.COMPLETED, 100
         scan.error_code = scan.error_message = ""
     except ValueError as exc:
@@ -59,15 +58,14 @@ def process_simulation(simulation_id):
     try:
         simulation.status, simulation.progress = Simulation.Status.PROCESSING, 10
         simulation.save(update_fields=("status", "progress", "updated_at"))
-        source_object = simulation.scan.image_objects.get("front")
-        if not source_object:
-            raise ValueError("source_expired")
-        source = download_image(source_object)
+        # Rows saved before stacking have no `selections`, so the old columns stand in for one.
+        selections = simulation.selections or [{"region": simulation.region, "preset_id": simulation.preset_id}]
+        presets, _targets = validate_selections(simulation.scan, selections, has_profile_images(simulation.scan))
+        source, source_object, source_view = source_for_scan(simulation.scan, presets[0], download_image)
         source_type, source_extension = _image_type(source)
-        generated = generate_image(source, source_type, simulation.region, simulation.parameters)
-        simulation.progress = 70
-        simulation.save(update_fields=("progress", "updated_at"))
-        output = constrain_region_and_watermark(source, generated, simulation.region)
+        # The focus boxes are a viewer hint for the live preview; a stored simulation is served
+        # as a plain pair of images, so nothing here would read them.
+        output, measurements, _focus = simulate(source, presets)
         base = f"users/{simulation.scan.user_id}/simulations/{simulation.id}"
         before_object = f"{base}/before.{source_extension}"
         after_object = f"{base}/after.png"
@@ -79,6 +77,9 @@ def process_simulation(simulation_id):
             raise
         simulation.before_object = before_object
         simulation.after_object = after_object
+        simulation.source_view = source_view
+        simulation.measurements = measurements
+        simulation.related_procedures = related_union(presets)
         simulation.status, simulation.progress = Simulation.Status.COMPLETED, 100
         simulation.error_code = simulation.error_message = ""
     except ValueError as exc:

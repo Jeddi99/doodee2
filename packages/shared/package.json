@@ -3,6 +3,10 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "exports": { ".": "./src/index.ts" },
-  "scripts": { "test": "node --test src/capture-quality.test.ts" }
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "test": "node --test src/capture-quality.test.ts src/simulation-focus.test.ts"
+  }
 }
