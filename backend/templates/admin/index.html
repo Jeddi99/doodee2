@@ -1,0 +1,36 @@
+{% extends "admin/index.html" %}
+{# Operational overview above the stock model list. Values come from
+   DoodeeAdminSite._overview(); the card styling matches the plan summary on the user
+   changelist so the two pages read as one surface. #}
+{% block content %}
+  <style>
+    .ops-overview { display:grid; grid-template-columns:repeat(auto-fit,minmax(9rem,1fr)); gap:1rem; margin:0 0 1.5rem; }
+    .ops-overview .ops-card { background:var(--darkened-bg); border:1px solid var(--hairline-color); border-radius:4px; color:var(--body-fg); padding:1rem; text-decoration:none; display:block; }
+    .ops-overview strong { display:block; font-size:1.6rem; line-height:1.2; }
+    .ops-overview small { color:var(--body-quiet-color); }
+    .ops-card.is-alert { border-color:var(--error-fg); }
+    .ops-section-title { font-size:.8rem; letter-spacing:.08em; text-transform:uppercase; color:var(--body-quiet-color); margin:0 0 .5rem; }
+  </style>
+
+  <p class="ops-section-title">การสแกน</p>
+  <div class="ops-overview">
+    <a class="ops-card" href="{% url 'admin:doodee_scan_changelist' %}"><span>ทั้งหมด</span><strong>{{ overview.scans.total }}</strong></a>
+    <div class="ops-card"><span>7 วันล่าสุด</span><strong>{{ overview.scans.week }}</strong></div>
+    <div class="ops-card"><span>30 วันล่าสุด</span><strong>{{ overview.scans.month }}</strong></div>
+    <a class="ops-card{% if overview.scans.failed_week %} is-alert{% endif %}" href="{% url 'admin:doodee_scan_changelist' %}?status__exact=failed"><span>ล้มเหลว (7 วัน)</span><strong>{{ overview.scans.failed_week }}</strong></a>
+    <a class="ops-card{% if overview.queue_warning %} is-alert{% endif %}" href="{% url 'admin:doodee_scan_changelist' %}?status__exact=queued">
+      <span>ค้างในคิว</span><strong>{{ overview.scans.pending }}</strong>
+      {% if overview.queue_warning %}<small>คิวยาวผิดปกติ — ตรวจ Celery worker</small>{% endif %}
+    </a>
+  </div>
+
+  <p class="ops-section-title">ภาพจำลอง และสิทธิ์</p>
+  <div class="ops-overview">
+    <div class="ops-card"><span>จำลอง (7 วัน)</span><strong>{{ overview.simulations.week }}</strong></div>
+    <a class="ops-card{% if overview.simulations.failed_week %} is-alert{% endif %}" href="{% url 'admin:doodee_simulation_changelist' %}?status__exact=failed"><span>จำลองล้มเหลว (7 วัน)</span><strong>{{ overview.simulations.failed_week }}</strong></a>
+    <a class="ops-card" href="{% url 'admin:doodee_promoredemption_changelist' %}"><span>ใช้โค้ด (7 วัน)</span><strong>{{ overview.redemptions.week }}</strong></a>
+    <a class="ops-card" href="{% url 'admin:auth_user_changelist' %}?account=users&amp;plan=vip"><span>VIP ที่ยังไม่หมดอายุ</span><strong>{{ overview.redemptions.active }}</strong></a>
+  </div>
+
+  {{ block.super }}
+{% endblock %}

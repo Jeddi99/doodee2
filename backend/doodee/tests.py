@@ -1137,3 +1137,92 @@ class UserAdminTest(TestCase):
         delete = self.client.get(f"/admin/auth/user/{self.free.pk}/delete/")
         self.assertEqual(delete.status_code, 200)
         self.assertNotContains(delete, "window.confirm")
+
+
+class AdminOverviewTest(TestCase):
+    """The admin index carries operational counts. These assert the numbers are real
+    aggregates rather than a template that renders whatever it is handed."""
+
+    def setUp(self):
+        self.superuser = User.objects.create_superuser("ops", "ops@example.com", "OpsPassphrase!2026")
+        self.user = User.objects.create_user("scanner", email="scanner@example.com")
+        stale = timezone.now() - timedelta(days=40)
+        for status in (Scan.Status.COMPLETED, Scan.Status.FAILED, Scan.Status.QUEUED):
+            Scan.objects.create(user=self.user, status=status, age_band=Scan.AgeBand.ADULT,
+                                expires_at=timezone.now() + timedelta(days=30))
+        old = Scan.objects.create(user=self.user, status=Scan.Status.COMPLETED,
+                                  age_band=Scan.AgeBand.ADULT, expires_at=timezone.now() + timedelta(days=30))
+        # auto_now_add ignores an assigned value, so age it with an UPDATE.
+        Scan.objects.filter(pk=old.pk).update(created_at=stale)
+
+    def overview(self):
+        self.client.force_login(self.superuser)
+        return self.client.get("/admin/").context["overview"]
+
+    def test_counts_split_recent_from_lifetime(self):
+        overview = self.overview()
+        self.assertEqual(overview["scans"]["total"], 4)
+        self.assertEqual(overview["scans"]["week"], 3, "the 40-day-old scan must fall outside the week")
+        self.assertEqual(overview["scans"]["month"], 3)
+        self.assertEqual(overview["scans"]["failed_week"], 1)
+        self.assertEqual(overview["scans"]["pending"], 1)
+
+    def test_queue_warning_only_fires_once_the_backlog_is_real(self):
+        self.assertFalse(self.overview()["queue_warning"])
+        for _ in range(12):
+            Scan.objects.create(user=self.user, status=Scan.Status.QUEUED, age_band=Scan.AgeBand.ADULT,
+                                expires_at=timezone.now() + timedelta(days=30))
+        self.assertTrue(self.overview()["queue_warning"])
+
+    def test_index_renders_the_cards(self):
+        self.client.force_login(self.superuser)
+        self.assertContains(self.client.get("/admin/"), "ค้างในคิว")
+
+
+class AdminAuditLogTest(TestCase):
+    def setUp(self):
+        self.superuser = User.objects.create_superuser("auditor", "auditor@example.com", "AuditPassphrase!2026")
+        self.staff = User.objects.create_user("helper", is_staff=True)
+
+    def test_log_is_readable_by_superusers_and_never_writable(self):
+        self.client.force_login(self.superuser)
+        self.assertEqual(self.client.get("/admin/admin/logentry/").status_code, 200)
+        # Add and delete views must not exist at all, not merely be empty.
+        self.assertEqual(self.client.get("/admin/admin/logentry/add/").status_code, 403)
+
+    def test_staff_cannot_read_the_log(self):
+        self.client.force_login(self.staff)
+        self.assertEqual(self.client.get("/admin/admin/logentry/").status_code, 403)
+
+
+class AdminUserActionsTest(TestCase):
+    def setUp(self):
+        self.superuser = User.objects.create_superuser("boss", "boss@example.com", "BossPassphrase!2026")
+        self.member = User.objects.create_user("target", email="target@example.com")
+        FirebaseIdentity.objects.create(user=self.member, firebase_uid="target-uid")
+        self.client.force_login(self.superuser)
+
+    def act(self, action, users):
+        return self.client.post("/admin/auth/user/", {
+            "action": action, "_selected_action": [str(user.pk) for user in users],
+        }, follow=True)
+
+    def test_suspending_a_user_never_locks_out_an_operator(self):
+        self.act("deactivate_users", [self.member, self.superuser])
+        self.member.refresh_from_db()
+        self.superuser.refresh_from_db()
+        self.assertFalse(self.member.is_active)
+        self.assertTrue(self.superuser.is_active, "a superuser must not be able to suspend itself in bulk")
+
+    def test_membership_can_be_granted_and_revoked_in_bulk(self):
+        self.act("grant_member", [self.member])
+        self.assertIn("pro_member", self.member.groups.values_list("name", flat=True))
+        self.act("revoke_membership", [self.member])
+        self.assertEqual(list(self.member.groups.values_list("name", flat=True)), [])
+
+    def test_export_returns_csv_rows_for_the_selection(self):
+        response = self.act("export_csv", [self.member])
+        self.assertEqual(response["Content-Type"], "text/csv")
+        body = response.content.decode()
+        self.assertIn("target@example.com", body)
+        self.assertIn("target-uid", body)

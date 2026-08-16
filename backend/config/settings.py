@@ -10,7 +10,8 @@ DEBUG = os.getenv("DJANGO_DEBUG", "false").lower() == "true"
 ALLOWED_HOSTS = [item for item in os.getenv("DJANGO_ALLOWED_HOSTS", "localhost,127.0.0.1").split(",") if item]
 
 INSTALLED_APPS = [
-    "django.contrib.admin",
+    # Replaces django.contrib.admin so the index carries the operational overview.
+    "doodee.admin_apps.DoodeeAdminConfig",
     "django.contrib.auth",
     "django.contrib.contenttypes",
     "django.contrib.sessions",
@@ -36,7 +37,10 @@ MIDDLEWARE = [
 ROOT_URLCONF = "config.urls"
 TEMPLATES = [{
     "BACKEND": "django.template.backends.django.DjangoTemplates",
-    "DIRS": [],
+    # Searched before app directories, which is the only way to override a template contrib
+    # already ships at the same path — django.contrib.admin sits ahead of doodee in
+    # INSTALLED_APPS, so an app-level admin/index.html would never be reached.
+    "DIRS": [BASE_DIR / "templates"],
     "APP_DIRS": True,
     "OPTIONS": {"context_processors": [
         "django.template.context_processors.request",
