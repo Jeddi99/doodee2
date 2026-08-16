@@ -1,11 +1,16 @@
+import csv
+from datetime import timedelta
+
 from django import forms
-from django.contrib import admin
+from django.contrib import admin, messages
+from django.contrib.admin.models import LogEntry
 from django.contrib.auth.admin import UserAdmin as DjangoUserAdmin
 from django.contrib.auth.forms import UserChangeForm as DjangoUserChangeForm
 from django.contrib.auth.models import Group, User
 from django.core.exceptions import PermissionDenied
 from django.db import transaction
 from django.db.models import Case, CharField, Count, Exists, OuterRef, Q, Subquery, Value, When
+from django.http import HttpResponse
 from django.utils import timezone
 
 from .models import ConsentEvent, FirebaseIdentity, PromoCode, PromoRedemption, Scan, Simulation, SimulationPreviewUsage
@@ -118,6 +123,62 @@ class UserAdmin(DjangoUserAdmin):
                 output_field=CharField(),
             )
         )
+
+    actions = ("deactivate_users", "reactivate_users", "grant_member", "revoke_membership", "export_csv")
+
+    def _set_active(self, request, queryset, active):
+        """Suspending a user is the account-level kill switch: FirebaseAuthentication rejects
+        an inactive identity (authentication.py:50-51), so every API call stops immediately."""
+        protected = queryset.filter(Q(is_staff=True) | Q(is_superuser=True))
+        if protected.exists():
+            self.message_user(
+                request,
+                f"ข้าม {protected.count()} บัญชี staff/superuser — ต้องแก้ทีละรายการ",
+                level=messages.WARNING,
+            )
+        changed = queryset.exclude(Q(is_staff=True) | Q(is_superuser=True)).update(is_active=active)
+        verb = "คืนสถานะ" if active else "ระงับ"
+        self.message_user(request, f"{verb} {changed} บัญชีแล้ว")
+
+    @admin.action(description="ระงับบัญชีที่เลือก")
+    def deactivate_users(self, request, queryset):
+        self._set_active(request, queryset, False)
+
+    @admin.action(description="คืนสถานะบัญชีที่เลือก")
+    def reactivate_users(self, request, queryset):
+        self._set_active(request, queryset, True)
+
+    @admin.action(description="ให้สิทธิ์ Member กับที่เลือก")
+    def grant_member(self, request, queryset):
+        group, _ = Group.objects.get_or_create(name="pro_member")
+        for user in queryset:
+            user.groups.add(group)
+        self.message_user(request, f"ให้สิทธิ์ Member กับ {queryset.count()} บัญชีแล้ว")
+
+    @admin.action(description="ถอนสิทธิ์ถาวรของที่เลือก (VIP ที่ยังไม่หมดอายุไม่กระทบ)")
+    def revoke_membership(self, request, queryset):
+        groups = Group.objects.filter(name__in=MEMBERSHIP_GROUPS)
+        for user in queryset:
+            user.groups.remove(*groups)
+        self.message_user(request, f"ถอนสิทธิ์ถาวรของ {queryset.count()} บัญชีแล้ว")
+
+    @admin.action(description="Export CSV")
+    def export_csv(self, request, queryset):
+        response = HttpResponse(content_type="text/csv")
+        response["Content-Disposition"] = 'attachment; filename="doodee-users.csv"'
+        writer = csv.writer(response)
+        writer.writerow(("id", "email", "firebase_uid", "plan", "vip_expires_at", "is_active", "date_joined"))
+        for user in queryset:
+            writer.writerow((
+                user.id,
+                user.email,
+                getattr(getattr(user, "firebase_identity", None), "firebase_uid", ""),
+                getattr(user, "_effective_plan", ""),
+                getattr(user, "_vip_expires_at", "") or "",
+                user.is_active,
+                user.date_joined.isoformat(),
+            ))
+        return response
 
     def changelist_view(self, request, extra_context=None):
         counts = real_users(self.get_queryset(request)).aggregate(
@@ -240,6 +301,7 @@ admin.site.register(SimulationPreviewUsage, ConfirmingModelAdmin)
 class ConsentEventAdmin(ConfirmingModelAdmin):
     list_display = ("user", "purpose", "policy_version", "accepted", "created_at")
     list_filter = ("purpose", "accepted")
+    search_fields = ("user__email", "user__username", "policy_version")
     readonly_fields = tuple(field.name for field in ConsentEvent._meta.fields)
 
     def has_add_permission(self, request):
@@ -247,3 +309,41 @@ class ConsentEventAdmin(ConfirmingModelAdmin):
 
     def has_delete_permission(self, request, obj=None):
         return False
+
+    def has_change_permission(self, request, obj=None):
+        """A consent record is legal evidence of what the user agreed to and when. Every field
+        was already read-only, so the change form could not alter anything — this closes the
+        remaining gap, where saving it still wrote a misleading "changed" entry to the log."""
+        return False
+
+
+@admin.register(LogEntry)
+class LogEntryAdmin(admin.ModelAdmin):
+    """Django writes one row here for every admin add/change/delete, and has done since the
+    first migrate — it simply was not registered, so nobody could read it. Exposing it
+    read-only turns an existing table into the audit trail with no new writes."""
+
+    list_display = ("action_time", "user", "content_type", "object_repr", "action_label", "change_message")
+    list_filter = ("action_flag", "content_type", "user")
+    search_fields = ("object_repr", "change_message", "user__username", "user__email")
+    date_hierarchy = "action_time"
+    readonly_fields = tuple(field.name for field in LogEntry._meta.fields)
+
+    ACTIONS = {1: "เพิ่ม", 2: "แก้ไข", 3: "ลบ"}
+
+    @admin.display(ordering="action_flag", description="การกระทำ")
+    def action_label(self, obj):
+        return self.ACTIONS.get(obj.action_flag, obj.action_flag)
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        """Deleting the audit trail from inside the audited surface defeats it."""
+        return False
+
+    def has_view_permission(self, request, obj=None):
+        return request.user.is_superuser

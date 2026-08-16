@@ -3,6 +3,10 @@ djangorestframework>=3.16,<4
 django-cors-headers>=4.7,<5
 dj-database-url>=2.3,<3
 gunicorn>=23,<24
+# gunicorn serves no static files, so without this the admin has no CSS in any
+# environment — runserver's DEBUG-only static handler never runs under WSGI.
+whitenoise>=6.8,<7
+sentry-sdk[django]>=2.20,<3
 psycopg2-binary>=2.9.9
 celery[redis]>=5.5,<6
 firebase-admin>=6.4,<8

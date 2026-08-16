@@ -14,3 +14,7 @@ coverage/
 # Firebase admin service-account keys — never commit, whatever the filename.
 *firebase-adminsdk*.json
 apps/web/dist/
+
+# collectstatic output — rebuilt in the image, never committed.
+backend/staticfiles/
+staticfiles/

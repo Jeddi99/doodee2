@@ -22,6 +22,9 @@ INSTALLED_APPS = [
 ]
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
+    # Must sit directly after SecurityMiddleware and before everything else: gunicorn serves
+    # no static files of its own, so without this the admin renders unstyled.
+    "whitenoise.middleware.WhiteNoiseMiddleware",
     "corsheaders.middleware.CorsMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
@@ -60,6 +63,15 @@ TIME_ZONE = "Asia/Bangkok"
 USE_I18N = True
 USE_TZ = True
 STATIC_URL = "static/"
+# collectstatic writes here (see backend/Dockerfile); WhiteNoise serves from it.
+# Overridable because compose bind-mounts ./backend over /app/backend for hot reload, which
+# would hide anything collected inside it — the image points this at /app/staticfiles instead.
+STATIC_ROOT = Path(os.getenv("DJANGO_STATIC_ROOT", BASE_DIR / "staticfiles"))
+STORAGES = {
+    "default": {"BACKEND": "django.core.files.storage.FileSystemStorage"},
+    # Compresses and fingerprints admin assets so they can be cached forever.
+    "staticfiles": {"BACKEND": "whitenoise.storage.CompressedManifestStaticFilesStorage"},
+}
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 CORS_ALLOWED_ORIGINS = [item for item in os.getenv("CORS_ORIGINS", "http://localhost:5173").split(",") if item]
 # On by default so the feature is usable out of the box. data.md still requires clinician,
@@ -90,3 +102,16 @@ CELERY_ACCEPT_CONTENT = ["json"]
 CELERY_RESULT_SERIALIZER = "json"
 CELERY_TASK_TIME_LIMIT = 180
 CELERY_TASK_SOFT_TIME_LIMIT = 165
+
+# Error reporting. Off unless SENTRY_DSN is set, so local and CI runs send nothing.
+if os.getenv("SENTRY_DSN"):
+    import sentry_sdk
+
+    sentry_sdk.init(
+        dsn=os.environ["SENTRY_DSN"],
+        environment=os.getenv("SENTRY_ENVIRONMENT", "production"),
+        # This app handles face scans. send_default_pii would attach request bodies and
+        # user identifiers to every event, so it stays off.
+        send_default_pii=False,
+        traces_sample_rate=float(os.getenv("SENTRY_TRACES_SAMPLE_RATE", "0.0")),
+    )

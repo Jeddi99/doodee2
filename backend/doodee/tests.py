@@ -219,7 +219,7 @@ class PromoCodeTest(TestCase):
         self.assertEqual(self.redeem().status_code, 429, "a correct guess on attempt 11 must not win")
 
     def test_a_paying_member_is_never_demoted_by_redeeming(self):
-        self.user.groups.add(Group.objects.create(name="pro_member"))
+        self.user.groups.add(Group.objects.get(name="pro_member"))
         self.assertEqual(self.redeem().data["plan"], "member")
 
     @override_settings(REDEEM_CODES_ENABLED=False)
@@ -1059,8 +1059,9 @@ class UserAdminTest(TestCase):
         self.vip = self.firebase_user("vip", "vip-uid")
         self.member = self.firebase_user("member", "member-uid")
         self.clinic = self.firebase_user("clinic", "clinic-uid")
-        self.member.groups.add(Group.objects.create(name="pro_member"))
-        self.clinic.groups.add(self.member.groups.get(), Group.objects.create(name="clinic_partner"))
+        # Migration 0008 seeds both membership groups, so these always exist by now.
+        self.member.groups.add(Group.objects.get(name="pro_member"))
+        self.clinic.groups.add(self.member.groups.get(), Group.objects.get(name="clinic_partner"))
         promo = PromoCode.objects.create(code="ADMINVIP", days=7)
         PromoRedemption.objects.create(user=self.vip, promo_code=promo, expires_at=timezone.now() + timedelta(days=1))
         FirebaseIdentity.objects.create(user=self.staff, firebase_uid="staff-uid")
