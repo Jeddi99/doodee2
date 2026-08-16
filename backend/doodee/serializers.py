@@ -1,6 +1,6 @@
 from rest_framework import serializers
 
-from .models import Scan, Simulation
+from .models import ChatConversation, ChatMessage, Scan, Simulation
 from .storage import signed_url
 
 
@@ -73,3 +73,31 @@ class SimulationSerializer(serializers.ModelSerializer):
         from .procedures import get_preset
 
         return get_preset(obj.preset_id)
+
+
+class ChatMessageSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = ChatMessage
+        # Token counts are cost accounting, not something the user asked for; they stay in
+        # admin. `content` is already the user's own text and the model's reply.
+        fields = ("id", "role", "content", "created_at")
+        read_only_fields = fields
+
+
+class ChatConversationSerializer(serializers.ModelSerializer):
+    """List shape: enough for the sidebar without loading every message body."""
+
+    message_count = serializers.IntegerField(source="messages.count", read_only=True)
+
+    class Meta:
+        model = ChatConversation
+        fields = ("id", "title", "scan_id", "message_count", "created_at", "updated_at")
+        read_only_fields = fields
+
+
+class ChatConversationDetailSerializer(ChatConversationSerializer):
+    messages = ChatMessageSerializer(many=True, read_only=True)
+
+    class Meta(ChatConversationSerializer.Meta):
+        fields = (*ChatConversationSerializer.Meta.fields, "messages")
+        read_only_fields = fields

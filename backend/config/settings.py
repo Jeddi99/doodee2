@@ -85,6 +85,13 @@ SIMULATION_ENABLED = os.getenv("SIMULATION_ENABLED", "true").lower() == "true"
 # Promo codes grant paid entitlement for free and may be redeemed without limit, so anyone who
 # learns a code keeps renewing. Turn this off in any environment real users can reach.
 REDEEM_CODES_ENABLED = os.getenv("REDEEM_CODES_ENABLED", "true").lower() == "true"
+# Chat bills a third party per turn, so it stays off unless switched on deliberately — and it
+# reports itself unavailable anyway without ANTHROPIC_API_KEY (see doodee/chat.py).
+CHAT_ENABLED = os.getenv("CHAT_ENABLED", "true").lower() == "true"
+# Turns per calendar month. Free is a hard cap; the paid figure is a soft cap whose job is to
+# bound the bill if an account is stolen, not to ration the feature.
+CHAT_FREE_TURNS = int(os.getenv("CHAT_FREE_TURNS", "5"))
+CHAT_PAID_TURNS = int(os.getenv("CHAT_PAID_TURNS", "300"))
 
 CACHES = {
     "default": {

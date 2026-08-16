@@ -5,7 +5,6 @@ import {
   useContext,
   useEffect,
   useMemo,
-  useRef,
   useState,
   type PointerEvent,
 } from "react";
@@ -35,10 +34,8 @@ import {
   LockKeyhole,
   Menu,
   MessageCircle,
-  Paperclip,
   Plus,
   RefreshCw,
-  ScanFace,
   Search,
   Settings2,
   Share2,
@@ -108,6 +105,9 @@ export const VIEW_ROUTES: Record<AppView, string> = {
   settings: "/settings",
   scorecard: "/score-card",
 };
+
+/** The views that render the scan photograph itself, and so cannot draw without one. */
+const IMAGE_BACKED_VIEWS = new Set<AppView>(["overview", "analysis", "plan", "simulate"]);
 
 /** doodee-only destinations. They sit in their own sidebar section rather than crowding the
  *  five-item topbar nav qijek designed. */
@@ -1331,172 +1331,9 @@ const HistoryPanel = lazy(() => import("./views/HistoryPanel"));
 const PricingPanel = lazy(() => import("./views/PricingPanel"));
 const SettingsPanel = lazy(() => import("./views/SettingsPanel"));
 const ScoreCardPanel = lazy(() => import("./views/ScoreCardPanel"));
-
-function DoodeeGPT({ scanImage }: { scanImage: string }) {
-  const suggestions = [
-    "What's my harmony score?",
-    "What are my strongest features?",
-    "How can I improve first?",
-    "Explain my jaw assessment",
-    "Which options should I discuss?",
-    "Build a simple 30-day plan",
-  ];
-  const [value, setValue] = useState("");
-  const [mode, setMode] = useState("Normal");
-  const [messages, setMessages] = useState<
-    { role: "user" | "assistant"; text: string }[]
-  >([]);
-  const [fileName, setFileName] = useState("");
-  const fileRef = useRef<HTMLInputElement>(null);
-  const submit = (text = value) => {
-    const clean = text.trim();
-    if (!clean) return;
-    setMessages((items) => [...items, { role: "user", text: clean }]);
-    setValue("");
-    window.setTimeout(
-      () =>
-        setMessages((items) => [
-          ...items,
-          {
-            role: "assistant",
-            text: "Your harmony score is 7.4/10. Eye separation and mouth width are your strongest measured areas. Chin projection has the clearest opportunity, but start with low-commitment changes before considering a procedure.",
-          },
-        ]),
-      420,
-    );
-  };
-  return (
-    <div className="app-view gpt-view">
-      <GlassCard className="gpt-history">
-        <header>
-          <div className="gpt-mini-brand">
-            <ScanFace />
-            <strong>DOODEE GPT</strong>
-          </div>
-          <button type="button" onClick={() => setMessages([])}>
-            <Plus /> New chat
-          </button>
-        </header>
-        <label>
-          <Search />
-          <input placeholder="Search chats" />
-        </label>
-        <span className="eyebrow">Recent</span>
-        {messages.length ? (
-          <button className="gpt-history-item" type="button">
-            <MessageCircle />
-            <span>
-              <strong>{messages[0].text}</strong>
-              <small>Just now</small>
-            </span>
-          </button>
-        ) : (
-          <div className="gpt-history-empty">
-            <MessageCircle />
-            <p>No chat history yet</p>
-            <small>Start a conversation to see it here.</small>
-          </div>
-        )}
-        <a href="/app#overview">
-          <ArrowLeft /> Back to dashboard
-        </a>
-      </GlassCard>
-      <GlassCard className="gpt-chat">
-        <header>
-          <button
-            className="gpt-mode"
-            type="button"
-            onClick={() =>
-              setMode(mode === "Normal" ? "Deep analysis" : "Normal")
-            }
-          >
-            <SlidersHorizontal /> {mode}
-            <ChevronDown />
-          </button>
-          <div>
-            <img src={scanImage} alt="Your analysis profile" />
-            <span>
-              <strong>My analysis</strong>
-              <small>85+ measurements connected</small>
-            </span>
-          </div>
-        </header>
-        <div
-          className={`gpt-conversation ${messages.length ? "has-messages" : ""}`}
-        >
-          {messages.length ? (
-            messages.map((message, index) => (
-              <div
-                className={`gpt-message is-${message.role}`}
-                key={`${message.role}-${index}`}
-              >
-                {message.role === "assistant" && (
-                  <span>
-                    <ScanFace />
-                  </span>
-                )}
-                <p>{message.text}</p>
-              </div>
-            ))
-          ) : (
-            <div className="gpt-empty">
-              <div className="gpt-orb">
-                <MessageCircle />
-              </div>
-              <span className="eyebrow">DOODEE GPT</span>
-              <h1>Ready to understand your face?</h1>
-              <p>Ask about your measurements, plan and preview directions.</p>
-              <div className="gpt-suggestions">
-                {suggestions.map((item) => (
-                  <button type="button" onClick={() => submit(item)} key={item}>
-                    {item}
-                    <ArrowRight />
-                  </button>
-                ))}
-              </div>
-            </div>
-          )}
-        </div>
-        <form
-          onSubmit={(event) => {
-            event.preventDefault();
-            submit();
-          }}
-        >
-          <button
-            type="button"
-            onClick={() => fileRef.current?.click()}
-            aria-label="Attach file"
-          >
-            <Paperclip />
-          </button>
-          <input
-            ref={fileRef}
-            type="file"
-            hidden
-            onChange={(event) =>
-              setFileName(event.target.files?.[0]?.name ?? "")
-            }
-          />
-          <textarea
-            value={value}
-            onChange={(event) => setValue(event.target.value)}
-            placeholder={fileName || "Ask anything"}
-            aria-label="Ask DOODEE GPT"
-            rows={1}
-          />
-          <button type="submit" aria-label="Send" disabled={!value.trim()}>
-            <ArrowRight />
-          </button>
-        </form>
-        <small className="gpt-disclaimer">
-          DOODEE GPT can make mistakes. Medical decisions require a qualified
-          professional.
-        </small>
-      </GlassCard>
-    </div>
-  );
-}
+/* Chat talks to /api/v1/chat/ and runs its own queries, so it is a lazy view like the rest
+ * rather than a component threaded through DashboardPage state. */
+const ChatPanel = lazy(() => import("./views/ChatPanel"));
 
 export default function DashboardPage({ view }: { view: AppView }) {
   const navigate = useNavigate();
@@ -1596,8 +1433,10 @@ export default function DashboardPage({ view }: { view: AppView }) {
       </main>
     );
 
-  // Only the scan-backed views wait for an image; the account views render straight away.
-  if (needsScan && !scanImage)
+  // Only the views that actually put the photograph on screen wait for it. Chat is in the
+  // top nav with them but is built from the measurements, not the image — making it wait
+  // would leave it permanently blank whenever a signed URL fails, for no reason.
+  if (IMAGE_BACKED_VIEWS.has(view) && !scanImage)
     return <main className="doodee-app doodee-app--handoff" aria-busy="true" />;
   return (
     <ScanDataContext.Provider value={scanData}>
@@ -1806,7 +1645,7 @@ export default function DashboardPage({ view }: { view: AppView }) {
               <SimulationView lang={locale} onNavigate={(route: string) => navigate(`/${route}`)} />
             </Suspense>
           )}
-          {view === "doodeegpt" && <DoodeeGPT scanImage={scanImage} />}
+          {view === "doodeegpt" && <ChatPanel />}
           <Suspense fallback={<div className="app-view" aria-busy="true" />}>
             {view === "tryon" && <TryOnView lang={locale} />}
             {view === "history" && <HistoryPanel />}

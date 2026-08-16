@@ -148,3 +148,58 @@ class SimulationPreviewUsage(models.Model):
 
     class Meta:
         constraints = (models.UniqueConstraint(fields=("user", "period"), name="unique_preview_usage_period"),)
+
+
+class ChatConversation(models.Model):
+    """One DOODEE Chat thread.
+
+    `scan` is the scan whose numbers were put in front of the model. It is nullable and
+    SET_NULL rather than CASCADE: deleting a scan must not silently erase the conversation the
+    user had about it, and `Scan.expires_at` means scans go away on their own.
+    """
+
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="chat_conversations")
+    scan = models.ForeignKey("Scan", null=True, blank=True, on_delete=models.SET_NULL, related_name="chat_conversations")
+    title = models.CharField(max_length=120, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ("-updated_at",)
+        indexes = (models.Index(fields=("user", "-updated_at")),)
+
+
+class ChatMessage(models.Model):
+    class Role(models.TextChoices):
+        USER = "user", "User"
+        ASSISTANT = "assistant", "Assistant"
+
+    conversation = models.ForeignKey(ChatConversation, on_delete=models.CASCADE, related_name="messages")
+    role = models.CharField(max_length=9, choices=Role.choices)
+    content = models.TextField()
+    # Kept per message so the real cost per turn is auditable in admin rather than estimated.
+    # `cached_input_tokens` is what prompt caching actually saved; without it there is no way
+    # to tell whether the cache is being hit.
+    input_tokens = models.PositiveIntegerField(default=0)
+    cached_input_tokens = models.PositiveIntegerField(default=0)
+    output_tokens = models.PositiveIntegerField(default=0)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ("created_at", "id")
+        indexes = (models.Index(fields=("conversation", "created_at")),)
+
+
+class ChatUsage(models.Model):
+    """Turns spent this calendar month, metered the same way as SimulationPreviewUsage.
+
+    Same shape deliberately: the free tier is capped hard, and paid plans get a soft cap that
+    exists to bound the damage from a stolen account rather than to ration the feature.
+    """
+
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="chat_usage")
+    period = models.DateField()
+    count = models.PositiveIntegerField(default=0)
+
+    class Meta:
+        constraints = (models.UniqueConstraint(fields=("user", "period"), name="unique_chat_usage_period"),)

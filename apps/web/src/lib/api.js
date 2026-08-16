@@ -78,6 +78,18 @@ export const previewSimulation = (scanId, selections, consentVersion) => request
   body: JSON.stringify({ scan_id: scanId, selections, simulation_consent_version: consentVersion }),
 });
 export const getSimulation = (simulationId) => request(`/simulations/${simulationId}/status/`);
+// DOODEE Chat. Only the measurements travel upstream — the backend never sends the photos,
+// and there is deliberately no way to attach one from here.
+export const getChats = () => request('/chat/');
+export const getChat = (conversationId) => request(`/chat/${conversationId}/`);
+export const deleteChat = (conversationId) => request(`/chat/${conversationId}/`, { method: 'DELETE' });
+// 429 when the month's turns are gone, 503 without an API key, 502 when Claude is unreachable —
+// each says something different to the user, so none are collapsed into one failure here.
+export const sendChat = ({ message, conversationId, scanId }) => request('/chat/', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ message, conversation_id: conversationId, scan_id: scanId }),
+});
 export const deleteAccount = () => request('/account/', { method: 'DELETE' });
 export const redeemCode = (code) => request('/redeem/', {
   method: 'POST',

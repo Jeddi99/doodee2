@@ -15,7 +15,11 @@ from rest_framework.test import APIClient
 
 from django.core.cache import cache
 
-from .models import ConsentEvent, FirebaseIdentity, PromoCode, PromoRedemption, Scan, Simulation, SimulationPreviewUsage
+from .models import (
+    ChatConversation, ChatMessage, ChatUsage, ConsentEvent, FirebaseIdentity, PromoCode,
+    PromoRedemption, Scan, Simulation, SimulationPreviewUsage,
+)
+from .chat import MAX_QUESTION_CHARS, SYSTEM_PROMPT, scan_context
 from .analysis_engine import (
     POSE_TARGETS, SCAN_VIEW_MODES, _distance, _isotropic, _validate_pose_set, analyze_images,
     measured_views, pose_from_matrix,
@@ -1358,3 +1362,200 @@ class ScoreCardEndpointTest(TestCase):
             expires_at=timezone.now() + timedelta(days=30),
         )
         self.assertEqual(self.client.get(f"/api/v1/scans/{other.id}/score-card/").status_code, 404)
+
+
+class FakeUsage:
+    def __init__(self, cached=0):
+        self.input_tokens = 1400
+        self.cache_read_input_tokens = cached
+        self.output_tokens = 210
+
+
+class FakeBlock:
+    type = "text"
+
+    def __init__(self, text):
+        self.text = text
+
+
+class FakeMessage:
+    def __init__(self, text="Your midface ratio sits 0.4 SD from the reference mean.", cached=0):
+        self.content = [FakeBlock(text)]
+        self.usage = FakeUsage(cached)
+
+
+class ChatContextTest(SimpleTestCase):
+    """What actually leaves the building. The images must not."""
+
+    SCORES = {
+        "status": "experimental_reference_similarity",
+        "overall_score": 74,
+        "categories": [{"key": "nose", "score": 80, "metric_count": 1}],
+        "metrics": [{
+            "key": "n_sn", "category": "nose", "observed": 0.101, "reference": 0.098,
+            "normalized_deviation": 0.4, "score": 92, "unit": "ratio",
+        }],
+        "cohort_match": "within_reference_age_range",
+        "population_match": "within_reference_population",
+        "unsupported_categories": ["skin"],
+        "reference": {"sample_size": 240, "population": "Thai adults", "age_range": "18-35", "profile": "neutral"},
+    }
+
+    def test_context_carries_the_numbers_and_names_the_cohort(self):
+        scan = Scan(analysis_data={"reference_scores": self.SCORES})
+        context = scan_context(scan)
+        self.assertIn("n_sn", context)
+        self.assertIn("0.4", context)
+        self.assertIn("within_reference_age_range", context)
+        self.assertIn("skin", context)
+
+    def test_no_image_reference_of_any_kind_reaches_the_prompt(self):
+        """The privacy promise is only as good as this assertion.
+
+        A future edit that starts attaching photographs — or even signed URLs to them — is a
+        disclosure to a third party that no consent on file covers, so it fails here first.
+        """
+        scan = Scan(
+            analysis_data={"reference_scores": self.SCORES},
+            image_objects={"front": "scans/secret-front.jpg", "left_profile": "scans/secret-left.jpg"},
+        )
+        context = scan_context(scan)
+        self.assertNotIn("secret-front", context)
+        self.assertNotIn("scans/", context)
+        self.assertNotIn("http", context)
+
+    def test_an_unscored_scan_says_so_instead_of_offering_nothing(self):
+        self.assertIn("NO measurements", scan_context(Scan(analysis_data={})))
+        self.assertIn("NO measurements", scan_context(None))
+
+    def test_the_system_prompt_states_that_closeness_is_not_quality(self):
+        # The whole product rests on this distinction; if the sentence is ever dropped the
+        # model has nothing telling it that a high score is not a compliment.
+        self.assertIn("Closeness to an average is not quality", SYSTEM_PROMPT)
+
+
+@override_settings(CHAT_ENABLED=True, CHAT_FREE_TURNS=2, CHAT_PAID_TURNS=5)
+class ChatApiTest(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user("chatuser")
+        self.client = APIClient()
+        self.client.force_authenticate(self.user)
+        self.scan = Scan.objects.create(
+            user=self.user, age_band="adult", status=Scan.Status.COMPLETED,
+            analysis_data={"reference_scores": ChatContextTest.SCORES},
+            expires_at=timezone.now() + timedelta(days=30),
+        )
+        self.env = patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-key"})
+        self.env.start()
+        self.addCleanup(self.env.stop)
+
+    def post(self, **body):
+        return self.client.post("/api/v1/chat/", body, format="json")
+
+    def test_a_turn_stores_both_sides_and_the_token_counts(self):
+        with patch("doodee.chat._client") as client:
+            client.return_value.messages.create.return_value = FakeMessage(cached=1380)
+            response = self.post(message="What did you measure on my nose?")
+        self.assertEqual(response.status_code, 201)
+        conversation = ChatConversation.objects.get(id=response.data["conversation_id"])
+        self.assertEqual([m.role for m in conversation.messages.all()], ["user", "assistant"])
+        answer = conversation.messages.last()
+        self.assertEqual(answer.output_tokens, 210)
+        self.assertEqual(answer.cached_input_tokens, 1380)
+        self.assertEqual(conversation.scan, self.scan)
+
+    def test_the_scans_numbers_are_put_in_front_of_the_model(self):
+        with patch("doodee.chat._client") as client:
+            client.return_value.messages.create.return_value = FakeMessage()
+            self.post(message="Explain my nose")
+            kwargs = client.return_value.messages.create.call_args.kwargs
+        self.assertIn("n_sn", kwargs["system"][0]["text"])
+        self.assertEqual(kwargs["model"], "claude-opus-5")
+        self.assertEqual(kwargs["output_config"], {"effort": "low"})
+
+    def test_the_system_block_is_marked_cacheable_or_every_turn_pays_full_price(self):
+        with patch("doodee.chat._client") as client:
+            client.return_value.messages.create.return_value = FakeMessage()
+            self.post(message="Explain my nose")
+            kwargs = client.return_value.messages.create.call_args.kwargs
+        self.assertEqual(kwargs["system"][0]["cache_control"], {"type": "ephemeral"})
+
+    def test_history_is_replayed_so_a_follow_up_is_not_read_in_isolation(self):
+        with patch("doodee.chat._client") as client:
+            client.return_value.messages.create.return_value = FakeMessage()
+            first = self.post(message="What did you measure?")
+            self.post(message="And the second one?", conversation_id=first.data["conversation_id"])
+            messages = client.return_value.messages.create.call_args.kwargs["messages"]
+        self.assertEqual([m["role"] for m in messages], ["user", "assistant", "user"])
+        self.assertEqual(messages[-1]["content"], "And the second one?")
+
+    def test_the_free_quota_is_enforced_by_the_server(self):
+        with patch("doodee.chat._client") as client:
+            client.return_value.messages.create.return_value = FakeMessage()
+            self.assertEqual(self.post(message="one").data["chat_remaining"], 1)
+            self.assertEqual(self.post(message="two").data["chat_remaining"], 0)
+            blocked = self.post(message="three")
+        self.assertEqual(blocked.status_code, 429)
+        self.assertEqual(blocked.data["detail"], "chat_quota_exhausted")
+
+    def test_paid_plans_get_the_larger_soft_cap_not_an_unbounded_one(self):
+        self.user.groups.add(Group.objects.get(name="pro_member"))
+        self.assertEqual(self.client.get("/api/v1/session/").data["chat_remaining"], 5)
+
+    def test_an_upstream_failure_refunds_the_turn_and_writes_no_conversation(self):
+        with patch("doodee.chat._client") as client:
+            client.return_value.messages.create.side_effect = RuntimeError("connection reset")
+            response = self.post(message="anything")
+        self.assertEqual(response.status_code, 502)
+        self.assertEqual(ChatConversation.objects.count(), 0)
+        # Nobody should lose an allowance to an outage on our side.
+        self.assertEqual(self.client.get("/api/v1/session/").data["chat_remaining"], 2)
+
+    def test_chat_is_unavailable_rather_than_erroring_when_no_key_is_configured(self):
+        with patch.dict(os.environ, {"ANTHROPIC_API_KEY": ""}):
+            self.assertEqual(self.post(message="hi").status_code, 503)
+            self.assertIs(self.client.get("/api/v1/session/").data["chat_enabled"], False)
+
+    def test_another_users_conversation_is_neither_readable_nor_extendable(self):
+        stranger = ChatConversation.objects.create(user=User.objects.create_user("other"), title="theirs")
+        self.assertEqual(self.client.get(f"/api/v1/chat/{stranger.id}/").status_code, 404)
+        with patch("doodee.chat._client") as client:
+            client.return_value.messages.create.return_value = FakeMessage()
+            self.assertEqual(self.post(message="hi", conversation_id=str(stranger.id)).status_code, 404)
+
+    def test_a_scan_id_belonging_to_someone_else_is_refused(self):
+        other = Scan.objects.create(
+            user=User.objects.create_user("scanowner"), age_band="adult", status=Scan.Status.COMPLETED,
+            expires_at=timezone.now() + timedelta(days=30),
+        )
+        self.assertEqual(self.post(message="hi", scan_id=str(other.id)).status_code, 404)
+
+    def test_an_empty_message_is_rejected_before_anything_is_billed(self):
+        with patch("doodee.chat._client") as client:
+            self.assertEqual(self.post(message="   ").status_code, 400)
+            client.assert_not_called()
+
+    def test_an_oversized_message_is_truncated_rather_than_billed_in_full(self):
+        with patch("doodee.chat._client") as client:
+            client.return_value.messages.create.return_value = FakeMessage()
+            self.post(message="ก" * 5000)
+            sent = client.return_value.messages.create.call_args.kwargs["messages"][-1]["content"]
+        self.assertEqual(len(sent), MAX_QUESTION_CHARS)
+
+    def test_deleting_a_scan_leaves_the_conversation_readable(self):
+        with patch("doodee.chat._client") as client:
+            client.return_value.messages.create.return_value = FakeMessage()
+            response = self.post(message="What did you measure?")
+        self.scan.delete()
+        detail = self.client.get(f"/api/v1/chat/{response.data['conversation_id']}/")
+        self.assertEqual(detail.status_code, 200)
+        self.assertIsNone(detail.data["scan_id"])
+        self.assertEqual(len(detail.data["messages"]), 2)
+
+    def test_conversations_list_newest_first_for_the_sidebar(self):
+        with patch("doodee.chat._client") as client:
+            client.return_value.messages.create.return_value = FakeMessage()
+            self.post(message="first question")
+            self.post(message="second question")
+        titles = [item["title"] for item in self.client.get("/api/v1/chat/").data]
+        self.assertEqual(titles, ["second question", "first question"])

@@ -17,9 +17,19 @@ from rest_framework.parsers import FormParser, MultiPartParser
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from .models import ConsentEvent, PromoCode, PromoRedemption, Scan, Simulation, SimulationPreviewUsage
+from .models import (
+    ChatConversation, ChatMessage, ChatUsage, ConsentEvent, PromoCode, PromoRedemption,
+    Scan, Simulation, SimulationPreviewUsage,
+)
 from .procedures import PROCEDURES
-from .serializers import ScanSerializer, SimulationSerializer
+from .chat import (
+    HISTORY_TURNS, MAX_QUESTION_CHARS, ChatUnavailable, chat_enabled, reply as chat_reply,
+    scan_context, title_for,
+)
+from .serializers import (
+    ChatConversationDetailSerializer, ChatConversationSerializer, ChatMessageSerializer,
+    ScanSerializer, SimulationSerializer,
+)
 from .analysis_engine import PROFILE_VIEWS, SCAN_VIEW_MODES, DEFAULT_SCAN_MODE, scan_views_for_mode
 from .reference_scoring import REFERENCE_POPULATIONS
 from .percentile import score_card as build_score_card
@@ -49,6 +59,10 @@ def session(request):
         # Decided here rather than from `plan` on the client, so the entitlement rule lives in
         # one place — the same reason simulation_locked is a server field.
         "score_card_locked": plan == "free",
+        "chat_enabled": chat_enabled(),
+        # Same reasoning as preview_remaining: the client shows the counter and the upgrade
+        # prompt, but the number it shows is the one the server will actually enforce.
+        "chat_remaining": _chat_remaining(request.user),
         "vip_expires_at": _vip_expires_at(request.user),
         "preview_remaining": None if plan != "free" else max(0, 3 - (usage.count if usage else 0)),
         "saved_remaining": max(0, 3 - saved),
@@ -496,3 +510,123 @@ def delete_account(request):
     if not scans:
         user.delete()
     return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+def _chat_limit(user):
+    """Turns allowed this month. Free is a hard cap; paid is a soft cap against abuse."""
+    return settings.CHAT_FREE_TURNS if _user_plan(user) == "free" else settings.CHAT_PAID_TURNS
+
+
+def _chat_remaining(user):
+    usage = ChatUsage.objects.filter(user=user, period=timezone.localdate().replace(day=1)).first()
+    return max(0, _chat_limit(user) - (usage.count if usage else 0))
+
+
+def _claim_chat_turn(user):
+    """Reserve one turn, or None when the month's allowance is gone.
+
+    `select_for_update` for the same reason `_claim_free_preview` uses it: two requests landing
+    together would otherwise both read the old count and both spend the last turn.
+    """
+    period = timezone.localdate().replace(day=1)
+    limit = _chat_limit(user)
+    with transaction.atomic():
+        usage, _ = ChatUsage.objects.select_for_update().get_or_create(user=user, period=period)
+        if usage.count >= limit:
+            return None
+        usage.count += 1
+        usage.save(update_fields=("count",))
+        return limit - usage.count
+
+
+def _refund_chat_turn(user):
+    """Give the turn back when the model never answered — nobody pays for a 502."""
+    ChatUsage.objects.filter(user=user, period=timezone.localdate().replace(day=1), count__gt=0).update(count=F("count") - 1)
+
+
+class ChatViewSet(viewsets.GenericViewSet, mixins.ListModelMixin, mixins.RetrieveModelMixin, mixins.DestroyModelMixin):
+    """DOODEE Chat.
+
+    A turn is `POST /chat/` with `{message, conversation_id?, scan_id?}`; the reply comes back
+    on the same response because gunicorn's sync workers cannot stream (compose.yaml:43).
+    """
+
+    def get_queryset(self):
+        return ChatConversation.objects.filter(user=self.request.user)
+
+    def get_serializer_class(self):
+        return ChatConversationDetailSerializer if self.action == "retrieve" else ChatConversationSerializer
+
+    def _scan_for(self, request, scan_id):
+        """The scan whose numbers back this conversation, or None.
+
+        Restricted to the caller's own completed scans — a scan_id from the request body is
+        untrusted input, and nothing else in this method would stop it naming someone else's.
+        """
+        scans = Scan.objects.filter(user=request.user, status=Scan.Status.COMPLETED, age_band=Scan.AgeBand.ADULT)
+        if scan_id:
+            scan = scans.filter(id=scan_id).first()
+            if not scan:
+                raise NotFound("Scan not found")
+            return scan
+        return scans.order_by("-created_at").first()
+
+    def create(self, request):
+        if not chat_enabled():
+            return Response({"detail": "chat_unavailable"}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+
+        question = str(request.data.get("message", "")).strip()[:MAX_QUESTION_CHARS]
+        if not question:
+            raise ValidationError({"message": "message_required"})
+
+        conversation_id = request.data.get("conversation_id")
+        if conversation_id:
+            conversation = self.get_queryset().filter(id=conversation_id).first()
+            if not conversation:
+                raise NotFound("Conversation not found")
+        else:
+            conversation = None
+
+        scan = conversation.scan if conversation else self._scan_for(request, request.data.get("scan_id"))
+
+        remaining = _claim_chat_turn(request.user)
+        if remaining is None:
+            return Response(
+                {"detail": "chat_quota_exhausted", "chat_remaining": 0, "plan": _user_plan(request.user)},
+                status=status.HTTP_429_TOO_MANY_REQUESTS,
+            )
+
+        # History is read before the new question is stored, so the question is appended once.
+        history = []
+        if conversation:
+            for message in conversation.messages.all()[max(0, conversation.messages.count() - HISTORY_TURNS * 2):]:
+                history.append({"role": message.role, "content": message.content})
+        history.append({"role": "user", "content": question})
+
+        try:
+            answer, usage = chat_reply(scan_context(scan), history)
+        except ChatUnavailable as exc:
+            # The turn was reserved before the call; an upstream failure must not spend it.
+            _refund_chat_turn(request.user)
+            return Response(
+                {"detail": "chat_upstream_error", "reason": str(exc)[:200]},
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
+
+        # Written only after a successful reply, so a failed turn leaves no half-conversation.
+        with transaction.atomic():
+            if conversation is None:
+                conversation = ChatConversation.objects.create(user=request.user, scan=scan, title=title_for(question))
+            ChatMessage.objects.create(conversation=conversation, role=ChatMessage.Role.USER, content=question)
+            message = ChatMessage.objects.create(
+                conversation=conversation, role=ChatMessage.Role.ASSISTANT, content=answer, **usage
+            )
+            conversation.save(update_fields=("updated_at",))
+
+        return Response({
+            "conversation_id": str(conversation.id),
+            "title": conversation.title,
+            "scan_id": str(scan.id) if scan else None,
+            "message": ChatMessageSerializer(message).data,
+            "chat_remaining": remaining,
+        }, status=status.HTTP_201_CREATED)

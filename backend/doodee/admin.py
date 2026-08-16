@@ -9,11 +9,14 @@ from django.contrib.auth.forms import UserChangeForm as DjangoUserChangeForm
 from django.contrib.auth.models import Group, User
 from django.core.exceptions import PermissionDenied
 from django.db import transaction
-from django.db.models import Case, CharField, Count, Exists, OuterRef, Q, Subquery, Value, When
+from django.db.models import Case, CharField, Count, Exists, OuterRef, Q, Subquery, Sum, Value, When
 from django.http import HttpResponse
 from django.utils import timezone
 
-from .models import ConsentEvent, FirebaseIdentity, PromoCode, PromoRedemption, Scan, Simulation, SimulationPreviewUsage
+from .models import (
+    ChatConversation, ChatMessage, ChatUsage, ConsentEvent, FirebaseIdentity, PromoCode,
+    PromoRedemption, Scan, Simulation, SimulationPreviewUsage,
+)
 
 
 MEMBERSHIP_GROUPS = ("pro_member", "clinic_partner")
@@ -347,3 +350,61 @@ class LogEntryAdmin(admin.ModelAdmin):
 
     def has_view_permission(self, request, obj=None):
         return request.user.is_superuser
+
+
+class ChatMessageInline(admin.TabularInline):
+    """Read-only: a conversation is a record of what was said, not something to edit.
+
+    Editing an assistant turn here would rewrite history the user saw, and editing a user turn
+    would put words in their mouth — neither has a legitimate operational use.
+    """
+
+    model = ChatMessage
+    extra = 0
+    can_delete = False
+    fields = ("role", "content", "input_tokens", "cached_input_tokens", "output_tokens", "created_at")
+    readonly_fields = fields
+
+    def has_add_permission(self, request, obj=None):
+        return False
+
+
+@admin.register(ChatConversation)
+class ChatConversationAdmin(ConfirmingModelAdmin):
+    list_display = ("id", "user", "title", "scan", "turns", "tokens_out", "created_at", "updated_at")
+    search_fields = ("id", "title", "user__email")
+    readonly_fields = tuple(field.name for field in ChatConversation._meta.fields)
+    inlines = (ChatMessageInline,)
+
+    def get_queryset(self, request):
+        # Annotated rather than counted per row: the plain list_display version is one query
+        # per conversation, which is what makes admin list pages slow at a few thousand rows.
+        return super().get_queryset(request).annotate(
+            _turns=Count("messages"),
+            _tokens_out=Sum("messages__output_tokens"),
+        )
+
+    @admin.display(ordering="_turns", description="messages")
+    def turns(self, obj):
+        return obj._turns
+
+    @admin.display(ordering="_tokens_out", description="output tokens")
+    def tokens_out(self, obj):
+        return obj._tokens_out or 0
+
+    def has_add_permission(self, request):
+        return False
+
+
+@admin.register(ChatUsage)
+class ChatUsageAdmin(admin.ModelAdmin):
+    """Editable on purpose, unlike the conversation log.
+
+    Support needs a way to hand a turn back when a reply was unusable — the alternative is a
+    shell, and every edit through here lands in the LogEntry audit trail.
+    """
+
+    list_display = ("user", "period", "count")
+    list_filter = ("period",)
+    search_fields = ("user__email",)
+    autocomplete_fields = ("user",)
