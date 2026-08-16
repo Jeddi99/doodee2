@@ -12,7 +12,7 @@ import {
 import { useNavigate } from "react-router-dom";
 import { useLocale } from "../useLocale";
 import { useQuery } from "@tanstack/react-query";
-import { getScan, getScans } from "../lib/api";
+import { getScan, getScans, getSession } from "../lib/api";
 import { errorMessage } from "../lib/apiError";
 import type { RatioRow } from "../lib/dashboardData";
 import {
@@ -67,7 +67,8 @@ type AppView =
   | "tryon"
   | "history"
   | "pricing"
-  | "settings";
+  | "settings"
+  | "scorecard";
 type PillarId = "harmony" | "angularity" | "dimorphism" | "features";
 type FaceAngle = "front" | "side";
 type AnalysisMode = "results" | "library";
@@ -105,11 +106,13 @@ export const VIEW_ROUTES: Record<AppView, string> = {
   history: "/history",
   pricing: "/pricing",
   settings: "/settings",
+  scorecard: "/score-card",
 };
 
 /** doodee-only destinations. They sit in their own sidebar section rather than crowding the
  *  five-item topbar nav qijek designed. */
 const accountViews: { id: AppView; label: string }[] = [
+  { id: "scorecard", label: "Score card" },
   { id: "tryon", label: "Try-on" },
   { id: "history", label: "History" },
   { id: "pricing", label: "Plans" },
@@ -146,6 +149,14 @@ const ScanDataContext = createContext<ScanData>(emptyScanData);
 const useScanData = () => useContext(ScanDataContext);
 
 /** Inverse of PILLAR_CATEGORIES in lib/dashboardData, for grouping rows under a pillar tab. */
+/** Matches _user_plan() in backend/doodee/views.py. */
+const PLAN_LABELS: Record<string, string> = {
+  free: "Free plan",
+  vip: "VIP",
+  member: "Member",
+  clinic: "Clinic partner",
+};
+
 const CATEGORY_PILLAR: Record<string, PillarId> = {
   proportions: "harmony",
   chin: "angularity",
@@ -1319,6 +1330,7 @@ const TryOnView = lazy(() => import("../components/TryOnView"));
 const HistoryPanel = lazy(() => import("./views/HistoryPanel"));
 const PricingPanel = lazy(() => import("./views/PricingPanel"));
 const SettingsPanel = lazy(() => import("./views/SettingsPanel"));
+const ScoreCardPanel = lazy(() => import("./views/ScoreCardPanel"));
 
 function DoodeeGPT({ scanImage }: { scanImage: string }) {
   const suggestions = [
@@ -1493,6 +1505,7 @@ export default function DashboardPage({ view }: { view: AppView }) {
   // through ?scan_id=, which is how ScanPage hands off straight after an upload.
   const requestedScanId = new URLSearchParams(window.location.search).get("scan_id");
   const scanList = useQuery({ queryKey: ["scans"], queryFn: getScans });
+  const sessionQuery = useQuery({ queryKey: ["session"], queryFn: getSession });
   const scanId = requestedScanId || scanList.data?.[0]?.id;
   const scanQuery = useQuery({
     queryKey: ["scan", scanId],
@@ -1604,7 +1617,9 @@ export default function DashboardPage({ view }: { view: AppView }) {
           <CircleUserRound />
           <span>
             <strong>My analysis</strong>
-            <small>Free plan</small>
+            {/* qijek hardcoded "Free plan" here; showing that to a paying member is a lie the
+                sidebar tells on every page. */}
+            <small>{PLAN_LABELS[sessionQuery.data?.plan] ?? "…"}</small>
           </span>
           <Settings2 />
         </div>
@@ -1682,6 +1697,8 @@ export default function DashboardPage({ view }: { view: AppView }) {
                 <RefreshCw />
               ) : item.id === "pricing" ? (
                 <Sparkles />
+              ) : item.id === "scorecard" ? (
+                <BarChart3 />
               ) : (
                 <Settings2 />
               )}
@@ -1795,6 +1812,7 @@ export default function DashboardPage({ view }: { view: AppView }) {
             {view === "history" && <HistoryPanel />}
             {view === "pricing" && <PricingPanel />}
             {view === "settings" && <SettingsPanel />}
+            {view === "scorecard" && <ScoreCardPanel />}
           </Suspense>
         </div>
       </div>

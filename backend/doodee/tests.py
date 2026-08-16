@@ -1226,3 +1226,135 @@ class AdminUserActionsTest(TestCase):
         body = response.content.decode()
         self.assertIn("target@example.com", body)
         self.assertIn("target-uid", body)
+
+
+class SimilarityPercentileTest(SimpleTestCase):
+    """The maths behind the score card. These pin the *meaning* as much as the numbers:
+    a two-tailed z makes typicality, not attractiveness, the only defensible reading."""
+
+    @staticmethod
+    def scores(deviations, **overrides):
+        return {
+            "status": "experimental_reference_similarity",
+            "metrics": [{"key": f"m{i}", "normalized_deviation": z} for i, z in enumerate(deviations)],
+            "cohort_match": "within_reference_age_range",
+            "population_match": "within_reference_population",
+            "reference": {"sample_size": 240, "age_range": "18-35", "version": "thai-photo-2019-v1"},
+            "overall_score": 74,
+            "categories": [],
+            **overrides,
+        }
+
+    def test_chi_square_survival_matches_published_critical_values(self):
+        from .percentile import _chi_square_survival
+        for statistic, df in ((3.841, 1), (5.991, 2), (7.815, 3), (9.488, 4), (11.070, 5), (18.307, 10)):
+            self.assertAlmostEqual(_chi_square_survival(statistic, df), 0.05, places=3,
+                                   msg=f"chi2={statistic} df={df}")
+
+    def test_a_face_at_the_reference_mean_is_the_most_typical(self):
+        from .percentile import similarity_percentile
+        self.assertEqual(similarity_percentile(self.scores([0, 0, 0, 0, 0])), 100.0)
+
+    def test_typicality_falls_as_deviation_grows(self):
+        from .percentile import similarity_percentile
+        near = similarity_percentile(self.scores([0.1, -0.2, 0.1, 0.0, 0.1]))
+        far = similarity_percentile(self.scores([2.5, -2.1, 1.9, 2.2, -2.4]))
+        self.assertGreater(near, far)
+        self.assertLess(far, 1.0, "a face several SD out on every metric is rare, not top-ranked")
+
+    def test_direction_of_deviation_does_not_matter(self):
+        from .percentile import similarity_percentile
+        self.assertEqual(
+            similarity_percentile(self.scores([1.2, -0.8, 0.5, -1.1, 0.3])),
+            similarity_percentile(self.scores([-1.2, 0.8, -0.5, 1.1, -0.3])),
+        )
+
+    def test_nothing_is_reported_without_a_completed_adult_scoring_run(self):
+        from .percentile import similarity_percentile
+        self.assertIsNone(similarity_percentile(None))
+        self.assertIsNone(similarity_percentile({"status": "minor_not_scored", "metrics": []}))
+        self.assertIsNone(similarity_percentile(self.scores([0.1, 0.2])), "too few metrics to summarise")
+
+    def test_a_percentile_is_withheld_outside_the_published_cohort(self):
+        from .percentile import score_card
+        inside = score_card({"reference_scores": self.scores([0.5, 0.5, 0.5, 0.5])})
+        self.assertIsNotNone(inside["similarity_percentile"])
+        self.assertTrue(inside["cohort_comparable"])
+
+        outside = score_card({"reference_scores": self.scores(
+            [0.5, 0.5, 0.5, 0.5], population_match="outside_reference_population")})
+        self.assertIsNone(outside["similarity_percentile"],
+                          "a number computed against the wrong population is worse than none")
+        self.assertFalse(outside["cohort_comparable"])
+        self.assertEqual(outside["overall_score"], 74, "the category scores still stand")
+
+    def test_the_independence_assumption_is_declared_in_the_payload(self):
+        from .percentile import score_card
+        card = score_card({"reference_scores": self.scores([0.4, 0.4, 0.4, 0.4])})
+        self.assertTrue(card["assumes_independent_metrics"])
+        self.assertEqual(card["sample_size"], 240)
+
+
+class ScoreCardEndpointTest(TestCase):
+    """The gate itself. Hiding the route on the client is not a lock — the API has to refuse."""
+
+    SCORES = {
+        "status": "experimental_reference_similarity",
+        "overall_score": 74,
+        "categories": [{"key": "proportions", "score": 80, "metric_count": 2}],
+        "metrics": [{"key": f"m{i}", "normalized_deviation": z} for i, z in enumerate((0.4, -0.6, 0.2, 0.9))],
+        "cohort_match": "within_reference_age_range",
+        "population_match": "within_reference_population",
+        "reference": {"sample_size": 240, "age_range": "18-35", "version": "thai-photo-2019-v1"},
+    }
+
+    def setUp(self):
+        self.user = User.objects.create_user("carduser")
+        self.client = APIClient()
+        self.client.force_authenticate(self.user)
+        self.scan = Scan.objects.create(
+            user=self.user, age_band="adult", status=Scan.Status.COMPLETED,
+            analysis_data={"reference_scores": self.SCORES},
+            expires_at=timezone.now() + timedelta(days=30),
+        )
+
+    def url(self):
+        return f"/api/v1/scans/{self.scan.id}/score-card/"
+
+    def test_free_accounts_are_refused_by_the_api_not_just_the_ui(self):
+        response = self.client.get(self.url())
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.data["detail"], "score_card_requires_entitlement")
+
+    def test_session_advertises_the_lock_so_the_client_never_guesses_from_plan(self):
+        self.assertIs(self.client.get("/api/v1/session/").data["score_card_locked"], True)
+        self.user.groups.add(Group.objects.get(name="pro_member"))
+        self.assertIs(self.client.get("/api/v1/session/").data["score_card_locked"], False)
+
+    def test_entitled_accounts_get_a_card_backed_by_the_stored_scores(self):
+        self.user.groups.add(Group.objects.get(name="pro_member"))
+        response = self.client.get(self.url())
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["overall_score"], 74)
+        self.assertEqual(response.data["metric_count"], 4)
+        self.assertTrue(response.data["cohort_comparable"])
+        self.assertIsNotNone(response.data["similarity_percentile"])
+        self.assertEqual(response.data["scan_id"], str(self.scan.id))
+
+    def test_a_scan_still_processing_reports_conflict_rather_than_an_empty_card(self):
+        self.user.groups.add(Group.objects.get(name="pro_member"))
+        self.scan.analysis_data = None
+        self.scan.status = Scan.Status.PROCESSING
+        self.scan.save(update_fields=("analysis_data", "status"))
+        response = self.client.get(self.url())
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.data["scan_status"], "processing")
+
+    def test_another_users_scan_is_not_reachable(self):
+        self.user.groups.add(Group.objects.get(name="pro_member"))
+        other = Scan.objects.create(
+            user=User.objects.create_user("stranger"), age_band="adult", status=Scan.Status.COMPLETED,
+            analysis_data={"reference_scores": self.SCORES},
+            expires_at=timezone.now() + timedelta(days=30),
+        )
+        self.assertEqual(self.client.get(f"/api/v1/scans/{other.id}/score-card/").status_code, 404)

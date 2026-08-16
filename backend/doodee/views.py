@@ -22,6 +22,7 @@ from .procedures import PROCEDURES
 from .serializers import ScanSerializer, SimulationSerializer
 from .analysis_engine import PROFILE_VIEWS, SCAN_VIEW_MODES, DEFAULT_SCAN_MODE, scan_views_for_mode
 from .reference_scoring import REFERENCE_POPULATIONS
+from .percentile import score_card as build_score_card
 from .simulation_engine import has_profile_images, related_union, simulate, source_for_scan, validate_selections
 from .storage import delete_image, download_image, signed_url, upload_image
 from .tasks import cleanup_scan, process_scan, process_simulation, request_scan_deletion
@@ -45,6 +46,9 @@ def session(request):
         "simulation_enabled": settings.SIMULATION_ENABLED,
         "redeem_enabled": settings.REDEEM_CODES_ENABLED,
         "simulation_locked": plan == "free",
+        # Decided here rather than from `plan` on the client, so the entitlement rule lives in
+        # one place — the same reason simulation_locked is a server field.
+        "score_card_locked": plan == "free",
         "vip_expires_at": _vip_expires_at(request.user),
         "preview_remaining": None if plan != "free" else max(0, 3 - (usage.count if usage else 0)),
         "saved_remaining": max(0, 3 - saved),
@@ -305,6 +309,28 @@ class ScanViewSet(viewsets.GenericViewSet, mixins.ListModelMixin, mixins.Retriev
     @action(detail=True, methods=("get",))
     def status(self, request, pk=None):
         return Response(self.get_serializer(self.get_object()).data)
+
+    @action(detail=True, methods=("get",), url_path="score-card")
+    def score_card(self, request, pk=None):
+        """Entitlement-gated similarity card for one scan.
+
+        Gated on the server rather than by hiding the route on the client: a locked feature
+        that still answers over HTTP is not locked. Mirrors the 403 shape the simulation
+        endpoints use so the client can reuse its handling.
+        """
+        if _user_plan(request.user) == "free":
+            return Response(
+                {"detail": "score_card_requires_entitlement"},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        scan = self.get_object()
+        card = build_score_card(scan.analysis_data)
+        if card is None:
+            return Response(
+                {"detail": "score_card_unavailable", "scan_status": scan.status},
+                status=status.HTTP_409_CONFLICT,
+            )
+        return Response({**card, "scan_id": str(scan.id), "front_url": ScanSerializer(scan).data.get("front_url")})
 
     def destroy(self, request, pk=None):
         request_scan_deletion(self.get_object())

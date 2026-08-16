@@ -11832,3 +11832,184 @@ body:has(.results-page) {
 .history-card.is-empty strong {
   color: var(--app-ink);
 }
+
+/* ── Score card ────────────────────────────────────────────────────────────
+ * Entitlement-gated similarity card. Reuses the .score-curve rules above
+ * (line 657) — only the axis caption and the card chrome are new.
+ * ─────────────────────────────────────────────────────────────────────────*/
+
+.score-curve__axis {
+  fill: var(--app-muted);
+  font-size: 13px;
+}
+
+.score-card {
+  display: grid;
+  gap: var(--space-8);
+  padding: clamp(24px, 3vw, 40px);
+}
+.score-card__portraits {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-8);
+  align-items: center;
+}
+.score-card__portraits figure {
+  margin: 0;
+  text-align: center;
+}
+.score-card__portraits img {
+  width: 132px;
+  height: 132px;
+  border-radius: var(--dd-radius-frame);
+  object-fit: cover;
+}
+.score-card__portraits figcaption {
+  margin-top: var(--space-2);
+  color: var(--app-muted);
+  font-size: 12px;
+}
+.score-card__headline strong {
+  display: block;
+  color: var(--dd-ink);
+  font-size: clamp(44px, 6vw, 68px);
+  font-weight: 600;
+  line-height: 1;
+}
+.score-card__headline small {
+  color: var(--app-muted);
+  font-size: 20px;
+  font-weight: 400;
+}
+.score-card__headline span {
+  color: var(--app-muted);
+  font-size: 14px;
+}
+
+.score-card__percentile {
+  padding: var(--space-6);
+  border: 1px solid var(--app-line);
+  border-radius: var(--dd-radius-card);
+  background: var(--dd-blue-soft);
+}
+.score-card__percentile strong {
+  display: block;
+  color: var(--dd-blue-strong);
+  font-size: clamp(32px, 4vw, 44px);
+  line-height: 1.1;
+}
+.score-card__percentile span {
+  color: var(--dd-text);
+  font-size: 14px;
+}
+/* Shown instead of a number when the user is outside the published cohort. */
+.score-card__withheld {
+  margin: 0;
+  padding: var(--space-4) var(--space-6);
+  border-left: 3px solid var(--dd-blue);
+  background: var(--dd-canvas);
+  color: var(--app-muted);
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+.score-card__categories {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: var(--space-4);
+}
+.score-card__categories article {
+  display: grid;
+  gap: 6px;
+  padding: var(--space-4);
+  border: 1px solid var(--app-line);
+  border-radius: var(--dd-radius-card);
+  background: var(--dd-canvas);
+}
+.score-card__categories span {
+  color: var(--app-muted);
+  font-size: 13px;
+}
+.score-card__categories strong {
+  color: var(--dd-ink);
+  font-size: 24px;
+  line-height: 1;
+}
+.score-card__categories i {
+  display: block;
+  height: 4px;
+  border-radius: var(--dd-radius-pill);
+  background: var(--dd-blue);
+}
+.score-card__categories small {
+  color: var(--app-muted);
+  font-size: 11px;
+}
+
+/* The caveats are part of the claim, not fine print to be skimmed past — same
+   text size as the body copy, not smaller. */
+.score-card__caveat {
+  display: grid;
+  gap: var(--space-3);
+  padding-top: var(--space-6);
+  border-top: 1px solid var(--app-line);
+}
+.score-card__caveat p {
+  margin: 0;
+  color: var(--app-muted);
+  font-size: 13px;
+  line-height: 1.65;
+}
+.score-card__caveat strong {
+  color: var(--dd-text);
+}
+
+.score-card-locked {
+  display: grid;
+  justify-items: start;
+  gap: var(--space-4);
+  padding: clamp(28px, 3vw, 48px);
+  max-width: 640px;
+}
+.score-card-locked svg {
+  width: 28px;
+  height: 28px;
+  color: var(--dd-blue);
+}
+.score-card-locked h2 {
+  margin: 0;
+  color: var(--dd-ink);
+  font-size: 22px;
+}
+.score-card-locked p {
+  margin: 0;
+  color: var(--app-muted);
+  line-height: 1.65;
+}
+.score-card-locked__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+}
+.score-card-locked__actions button {
+  padding: 11px 20px;
+  border: 1px solid var(--app-line);
+  border-radius: var(--dd-radius-pill);
+  background: var(--dd-canvas);
+  font: inherit;
+  cursor: pointer;
+}
+.score-card-locked__actions button:first-child {
+  border-color: var(--dd-ink);
+  background: var(--dd-ink);
+  color: var(--dd-canvas);
+}
+
+@media (max-width: 720px) {
+  .score-card {
+    gap: var(--space-6);
+  }
+  .score-card__portraits {
+    gap: var(--space-4);
+  }
+}

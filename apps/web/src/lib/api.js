@@ -58,6 +58,9 @@ export function uploadScan(files, ageBand, referenceAgeBand, referenceProfile, r
 
 export const getScan = (scanId) => request(`/scans/${scanId}/status/`);
 export const getScans = () => request('/scans/');
+// 403 for a free account, 409 while the scan is still being analysed — the caller shows a
+// different thing for each, so neither is smoothed into an empty result here.
+export const getScoreCard = (scanId) => request(`/scans/${scanId}/score-card/`);
 export const getSession = () => request('/session/');
 export const deleteScan = (scanId) => request(`/scans/${scanId}/`, { method: 'DELETE' });
 // Without a region this returns the whole catalog, which the simulation view needs: a stacked
