@@ -10,12 +10,11 @@ import { getFirebaseAuth } from './lib/firebase';
 // is worth its own chunk even though it is the first route most users hit.
 const LandingPage = lazy(() => import('./pages/LandingPage'));
 const LoginPage = lazy(() => import('./pages/LoginPage'));
-const AnalysisDashboard = lazy(() => import('./components/AnalysisDashboard'));
-const HomeView = lazy(() => import('./components/HomeView'));
+// One component serves the five qijek dashboard views; the route decides which one shows.
+const DashboardPage = lazy(() => import('./pages/DashboardPage'));
 const OnboardingPage = lazy(() => import('./pages/OnboardingPage'));
 // Own chunk: it pulls in the MediaPipe worker and the wasm loader.
 const ScanPage = lazy(() => import('./pages/ScanPage'));
-const SimulationView = lazy(() => import('./components/SimulationView'));
 const TryOnView = lazy(() => import('./components/TryOnView'));
 const HistoryView = lazy(() => import('./components/HistoryView'));
 const PricingView = lazy(() => import('./components/PricingView'));
@@ -25,9 +24,12 @@ function WorkspaceFallback({ lang }) {
   return <div className="workspace-loading" role="status">{lang === 'th' ? 'กำลังเปิดหน้า…' : 'Opening…'}</div>;
 }
 
-const ROUTE_PATHS = { landing: '/', login: '/login', onboarding: '/onboarding', home: '/home', analysis: '/analysis', 'face-scan': '/scan', simulation: '/simulation', tryon: '/try-on', history: '/history', pricing: '/pricing', settings: '/settings' };
+const ROUTE_PATHS = { landing: '/', login: '/login', onboarding: '/onboarding', home: '/home', analysis: '/analysis', plan: '/plan', 'doodee-gpt': '/doodee-gpt', 'face-scan': '/scan', simulation: '/simulation', tryon: '/try-on', history: '/history', pricing: '/pricing', settings: '/settings' };
 
 const CHROMELESS_ROUTES = ['landing', 'login', 'onboarding', 'face-scan'];
+
+// Routes DashboardPage renders itself, with its own sidebar and topbar.
+const DASHBOARD_VIEWS = { home: 'overview', analysis: 'analysis', plan: 'plan', simulation: 'simulate', 'doodee-gpt': 'doodeegpt' };
 
 export default function App() {
   const location = useLocation();
@@ -98,8 +100,15 @@ export default function App() {
         </Suspense>
       )}
 
-      {/* CASE 2: AI Pre-Consultation Platform Dashboard Shell */}
-      {!CHROMELESS_ROUTES.includes(currentRoute) && (
+      {/* CASE 2: the ported qijek dashboard — five views behind one shell */}
+      {DASHBOARD_VIEWS[currentRoute] && (
+        <Suspense fallback={<WorkspaceFallback lang={lang} />}>
+          <DashboardPage view={DASHBOARD_VIEWS[currentRoute]} />
+        </Suspense>
+      )}
+
+      {/* CASE 3: routes still on the old shell until phase 5 rebuilds them */}
+      {!CHROMELESS_ROUTES.includes(currentRoute) && !DASHBOARD_VIEWS[currentRoute] && (
         <div
           className={`app-shell glass-app-shell liquid-glass-shell${isTryOnEditor ? ' is-tryon-editor' : ''}`}
           style={{ display: 'flex', height: '100vh', maxHeight: '100vh', width: '100vw', background: '#f5f5f7', overflow: 'hidden' }}
@@ -135,10 +144,7 @@ export default function App() {
             transition: 'margin-left 220ms ease, padding 220ms ease'
           }}>
             <Suspense fallback={<WorkspaceFallback lang={lang} />}>
-              {currentRoute === 'home' && <HomeView lang={lang} onNavigate={setCurrentRoute} />}
-              {currentRoute === 'analysis' && <AnalysisDashboard lang={lang} onNavigate={setCurrentRoute} />}
               {currentRoute === 'tryon' && <TryOnView lang={lang} />}
-              {currentRoute === 'simulation' && <SimulationView lang={lang} onNavigate={setCurrentRoute} />}
               {currentRoute === 'history' && <HistoryView lang={lang} onNavigate={setCurrentRoute} />}
               {currentRoute === 'pricing' && <PricingView lang={lang} onStartScan={handleStartScan} />}
               {currentRoute === 'settings' && <SettingsView lang={lang} setLang={setLang} setCurrentRoute={setCurrentRoute} />}
