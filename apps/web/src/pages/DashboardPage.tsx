@@ -13,6 +13,7 @@ import { useNavigate } from "react-router-dom";
 import { useLocale } from "../useLocale";
 import { useQuery } from "@tanstack/react-query";
 import { getScan, getScans } from "../lib/api";
+import { errorMessage } from "../lib/apiError";
 import type { RatioRow } from "../lib/dashboardData";
 import {
   catalogAvailability,
@@ -57,7 +58,16 @@ import {
   type MetricMethod,
 } from "../analysisCatalog";
 
-type AppView = "overview" | "analysis" | "plan" | "simulate" | "doodeegpt";
+type AppView =
+  | "overview"
+  | "analysis"
+  | "plan"
+  | "simulate"
+  | "doodeegpt"
+  | "tryon"
+  | "history"
+  | "pricing"
+  | "settings";
 type PillarId = "harmony" | "angularity" | "dimorphism" | "features";
 type FaceAngle = "front" | "side";
 type AnalysisMode = "results" | "library";
@@ -91,7 +101,20 @@ export const VIEW_ROUTES: Record<AppView, string> = {
   plan: "/plan",
   simulate: "/simulation",
   doodeegpt: "/doodee-gpt",
+  tryon: "/try-on",
+  history: "/history",
+  pricing: "/pricing",
+  settings: "/settings",
 };
+
+/** doodee-only destinations. They sit in their own sidebar section rather than crowding the
+ *  five-item topbar nav qijek designed. */
+const accountViews: { id: AppView; label: string }[] = [
+  { id: "tryon", label: "Try-on" },
+  { id: "history", label: "History" },
+  { id: "pricing", label: "Plans" },
+  { id: "settings", label: "Settings" },
+];
 
 type ScanData = {
   pillars: ReturnType<typeof pillarsFor>;
@@ -216,7 +239,7 @@ const planActions: PlanAction[] = [
   },
 ];
 
-function GlassCard({
+export function GlassCard({
   className = "",
   children,
 }: {
@@ -1290,6 +1313,12 @@ function Plan({
  * and quota handling, so that view is rendered inside this shell instead of being replaced by
  * the mock. Its internals are restyled in phase 5. */
 const SimulationView = lazy(() => import("../components/SimulationView"));
+/* Try-on keeps its existing component: 672 lines of canvas makeup geometry that the shell has
+ * no reason to touch. The three presentational views are rebuilt on qijek's own cards. */
+const TryOnView = lazy(() => import("../components/TryOnView"));
+const HistoryPanel = lazy(() => import("./views/HistoryPanel"));
+const PricingPanel = lazy(() => import("./views/PricingPanel"));
+const SettingsPanel = lazy(() => import("./views/SettingsPanel"));
 
 function DoodeeGPT({ scanImage }: { scanImage: string }) {
   const suggestions = [
@@ -1493,7 +1522,8 @@ export default function DashboardPage({ view }: { view: AppView }) {
   const [toolPanel, setToolPanel] = useState<"settings" | "help" | null>(null);
   const [toast, setToast] = useState("");
   const activeLabel = useMemo(
-    () => views.find((item) => item.id === view)?.label ?? "Overview",
+    () =>
+      [...views, ...accountViews].find((item) => item.id === view)?.label ?? "Overview",
     [view],
   );
 
@@ -1533,6 +1563,22 @@ export default function DashboardPage({ view }: { view: AppView }) {
   // Deleting the scan is a real server action, so it lives on /history where it already has a
   // confirmation. Here the control just takes the user there rather than dropping local state.
   const goToHistory = () => navigate("/history");
+
+  // Without this the shell sits on an empty aria-busy panel forever whenever the API is down,
+  // which reads as a broken page rather than an unreachable server.
+  const loadError = scanList.error || scanQuery.error;
+  if (loadError)
+    return (
+      <main className="doodee-app doodee-app--handoff">
+        <div className="app-load-error" role="alert">
+          <strong>We could not load your analysis.</strong>
+          <p>{errorMessage(loadError) || (loadError as Error).message}</p>
+          <button type="button" onClick={() => { void scanList.refetch(); void scanQuery.refetch(); }}>
+            <RefreshCw size={16} /> Try again
+          </button>
+        </div>
+      </main>
+    );
 
   if (!scanImage)
     return <main className="doodee-app doodee-app--handoff" aria-busy="true" />;
@@ -1602,6 +1648,28 @@ export default function DashboardPage({ view }: { view: AppView }) {
                 <WandSparkles />
               ) : (
                 <MessageCircle />
+              )}
+              {item.label}
+            </button>
+          ))}
+        </nav>
+        <nav className="sidebar-nav" aria-label="Account">
+          <span>Account</span>
+          {accountViews.map((item) => (
+            <button
+              className={view === item.id ? "is-active" : ""}
+              type="button"
+              onClick={() => openView(item.id)}
+              key={item.id}
+            >
+              {item.id === "tryon" ? (
+                <WandSparkles />
+              ) : item.id === "history" ? (
+                <RefreshCw />
+              ) : item.id === "pricing" ? (
+                <Sparkles />
+              ) : (
+                <Settings2 />
               )}
               {item.label}
             </button>
@@ -1708,6 +1776,12 @@ export default function DashboardPage({ view }: { view: AppView }) {
             </Suspense>
           )}
           {view === "doodeegpt" && <DoodeeGPT scanImage={scanImage} />}
+          <Suspense fallback={<div className="app-view" aria-busy="true" />}>
+            {view === "tryon" && <TryOnView lang={locale} />}
+            {view === "history" && <HistoryPanel />}
+            {view === "pricing" && <PricingPanel />}
+            {view === "settings" && <SettingsPanel />}
+          </Suspense>
         </div>
       </div>
       {menuOpen && (

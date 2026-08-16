@@ -15,6 +15,7 @@ import {
   type CaptureTimer, type FaceObservation, type QualityStatus, type ScanView,
 } from '@doodee/shared';
 import { api, auth } from '../lib/backend';
+import { colors } from '../theme';
 
 WebBrowser.maybeCompleteAuthSession();
 
@@ -259,7 +260,7 @@ export default function Home() {
       <Text>{viewIndex + 1}/7 · {LABELS[currentView]}</Text>
       {device && hasPermission ? <View style={styles.cameraBox}>
         <Camera style={styles.camera} device={device} isActive={!reviewing && !isProcessing} outputs={[faceOutput, lightOutput, photoOutput]} />
-        <View pointerEvents="none" style={[styles.guide, { borderColor: quality === 'ready' ? '#22c55e' : '#f59e0b' }]} />
+        <View pointerEvents="none" style={[styles.guide, { borderColor: quality === 'ready' ? colors.success : colors.warning }]} />
         <View pointerEvents="none" style={styles.guidance}><Text style={styles.guidanceText}>{brightnessRef.current ? QUALITY_TEXT[quality] : 'กำลังวัดแสง…'}{quality === 'ready' ? ` ${Math.round(timer.progress * 100)}%` : ''}</Text></View>
       </View> : <Text style={styles.error}>ไม่พบกล้องหน้า หรือยังไม่ได้อนุญาตกล้อง</Text>}
       {timer.fallbackAvailable && <Button title="ถ่ายเอง" onPress={capture} />}
@@ -276,13 +277,13 @@ export default function Home() {
 }
 
 const styles = StyleSheet.create({
-  container: { padding: 20, gap: 14, backgroundColor: '#f5f5f7' }, center: { flex: 1, alignItems: 'stretch', justifyContent: 'center', gap: 16, padding: 24 },
-  title: { fontSize: 28, fontWeight: '700' }, note: { color: '#5b5b66', lineHeight: 21 }, cameraBox: { height: 500, overflow: 'hidden', borderRadius: 24, backgroundColor: '#111' }, camera: { flex: 1 },
+  container: { padding: 20, gap: 14, backgroundColor: colors.ice }, center: { flex: 1, alignItems: 'stretch', justifyContent: 'center', gap: 16, padding: 24 },
+  title: { fontSize: 28, fontWeight: '700' }, note: { color: colors.muted, lineHeight: 21 }, cameraBox: { height: 500, overflow: 'hidden', borderRadius: 24, backgroundColor: colors.text }, camera: { flex: 1 },
   guide: { position: 'absolute', top: 55, bottom: 55, left: 48, right: 48, borderWidth: 4, borderRadius: 150 }, guidance: { position: 'absolute', left: 16, right: 16, bottom: 18, alignItems: 'center' },
-  guidanceText: { color: '#fff', backgroundColor: 'rgba(0,0,0,.72)', paddingHorizontal: 14, paddingVertical: 10, borderRadius: 20, overflow: 'hidden', fontWeight: '700' },
-  row: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12 }, consent: { flex: 1 }, metric: { padding: 14, borderRadius: 12, backgroundColor: '#fff', gap: 10 },
-  grid: { flexDirection: 'row', flexWrap: 'wrap', gap: 10 }, thumbCard: { width: '48%', gap: 6 }, thumb: { width: '100%', aspectRatio: 0.8, borderRadius: 10, backgroundColor: '#ddd' },
-  resultImage: { width: '48%', aspectRatio: 1, borderRadius: 12 }, bold: { fontWeight: '700' }, error: { color: '#b42318' },
-  choiceRow: { flexDirection: 'row', gap: 8 }, choice: { flex: 1, padding: 11, borderRadius: 12, backgroundColor: '#ece9f2', textAlign: 'center', overflow: 'hidden' }, choiceActive: { backgroundColor: '#6549d8', color: '#fff', fontWeight: '700' },
-  scoreCard: { padding: 18, borderRadius: 18, backgroundColor: '#302066', gap: 10 }, score: { fontSize: 42, fontWeight: '800', color: '#fff' }, scoreUnit: { fontSize: 18, color: '#cfc4f8' },
+  guidanceText: { color: colors.canvas, backgroundColor: 'rgba(0,0,0,.72)', paddingHorizontal: 14, paddingVertical: 10, borderRadius: 20, overflow: 'hidden', fontWeight: '700' },
+  row: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12 }, consent: { flex: 1 }, metric: { padding: 14, borderRadius: 12, backgroundColor: colors.canvas, gap: 10 },
+  grid: { flexDirection: 'row', flexWrap: 'wrap', gap: 10 }, thumbCard: { width: '48%', gap: 6 }, thumb: { width: '100%', aspectRatio: 0.8, borderRadius: 10, backgroundColor: colors.line },
+  resultImage: { width: '48%', aspectRatio: 1, borderRadius: 12 }, bold: { fontWeight: '700' }, error: { color: colors.danger },
+  choiceRow: { flexDirection: 'row', gap: 8 }, choice: { flex: 1, padding: 11, borderRadius: 12, backgroundColor: colors.iceStrong, textAlign: 'center', overflow: 'hidden' }, choiceActive: { backgroundColor: colors.blueStrong, color: colors.canvas, fontWeight: '700' },
+  scoreCard: { padding: 18, borderRadius: 18, backgroundColor: colors.ink, gap: 10 }, score: { fontSize: 42, fontWeight: '800', color: colors.canvas }, scoreUnit: { fontSize: 18, color: colors.blueSoft },
 });

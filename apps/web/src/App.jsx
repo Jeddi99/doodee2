@@ -1,45 +1,44 @@
 import React, { lazy, Suspense, useEffect, useState } from 'react';
 import { onAuthStateChanged } from 'firebase/auth';
 import { useLocation, useNavigate } from 'react-router-dom';
-import Sidebar from './components/Sidebar';
-import AppHeaderBar from './components/AppHeaderBar';
 import { authRedirect } from './lib/authRouting';
 import { getFirebaseAuth } from './lib/firebase';
+import { useLocale } from './useLocale';
 
 // The landing page carries the MediaPipe demo and the treatment canvas, so it
 // is worth its own chunk even though it is the first route most users hit.
 const LandingPage = lazy(() => import('./pages/LandingPage'));
 const LoginPage = lazy(() => import('./pages/LoginPage'));
-// One component serves the five qijek dashboard views; the route decides which one shows.
+// One component serves every signed-in view; the route decides which one shows.
 const DashboardPage = lazy(() => import('./pages/DashboardPage'));
 const OnboardingPage = lazy(() => import('./pages/OnboardingPage'));
 // Own chunk: it pulls in the MediaPipe worker and the wasm loader.
 const ScanPage = lazy(() => import('./pages/ScanPage'));
-const TryOnView = lazy(() => import('./components/TryOnView'));
-const HistoryView = lazy(() => import('./components/HistoryView'));
-const PricingView = lazy(() => import('./components/PricingView'));
-const SettingsView = lazy(() => import('./components/SettingsView'));
 
-function WorkspaceFallback({ lang }) {
-  return <div className="workspace-loading" role="status">{lang === 'th' ? 'กำลังเปิดหน้า…' : 'Opening…'}</div>;
+function WorkspaceFallback({ locale }) {
+  return <div className="workspace-loading" role="status">{locale === 'th' ? 'กำลังเปิดหน้า…' : 'Opening…'}</div>;
 }
 
 const ROUTE_PATHS = { landing: '/', login: '/login', onboarding: '/onboarding', home: '/home', analysis: '/analysis', plan: '/plan', 'doodee-gpt': '/doodee-gpt', 'face-scan': '/scan', simulation: '/simulation', tryon: '/try-on', history: '/history', pricing: '/pricing', settings: '/settings' };
 
-const CHROMELESS_ROUTES = ['landing', 'login', 'onboarding', 'face-scan'];
-
-// Routes DashboardPage renders itself, with its own sidebar and topbar.
-const DASHBOARD_VIEWS = { home: 'overview', analysis: 'analysis', plan: 'plan', simulation: 'simulate', 'doodee-gpt': 'doodeegpt' };
+// Every signed-in route lives inside DashboardPage's shell; the path picks the view.
+const DASHBOARD_VIEWS = {
+  home: 'overview',
+  analysis: 'analysis',
+  plan: 'plan',
+  simulation: 'simulate',
+  'doodee-gpt': 'doodeegpt',
+  tryon: 'tryon',
+  history: 'history',
+  pricing: 'pricing',
+  settings: 'settings',
+};
 
 export default function App() {
   const location = useLocation();
   const navigate = useNavigate();
   const currentRoute = Object.entries(ROUTE_PATHS).find(([, path]) => path === location.pathname)?.[0] || 'landing';
-  const setCurrentRoute = (route, params = {}) => {
-    const query = params.scanId ? `?scan_id=${encodeURIComponent(params.scanId)}` : '';
-    navigate(`${ROUTE_PATHS[route] || '/analysis'}${query}`);
-  };
-  const [lang, setLang] = useState('th'); // 'th' | 'en'
+  const { locale } = useLocale();
   const [authState, setAuthState] = useState({ ready: false, user: null });
 
   useEffect(() => {
@@ -57,31 +56,21 @@ export default function App() {
     if (redirect) navigate(ROUTE_PATHS[redirect], { replace: true });
   }, [authState.ready, currentRoute, isAuthenticated, navigate]);
 
-  const handleStartScan = () => {
-    setCurrentRoute('onboarding');
-    window.scrollTo({ top: 0, behavior: 'smooth' });
-  };
-
-  const isCompactWorkspace = ['tryon', 'simulation'].includes(currentRoute);
-  const isTryOnEditor = currentRoute === 'tryon';
-  const needsPortraitGate = !isTryOnEditor;
-
   if (!authState.ready || authRedirect(authState.ready, isAuthenticated, currentRoute)) {
-    return <WorkspaceFallback lang={lang} />;
+    return <WorkspaceFallback locale={locale} />;
   }
 
   return (
-    <div className={`landing-bg glass-app-bg liquid-glass-app${currentRoute !== 'landing' ? ' is-app-route' : ''}`} style={{ minHeight: '100vh', width: '100%', display: 'flex', flexDirection: 'column', overflowY: 'auto' }}>
-      
-      {/* CASE 1: Main Public Landing Page */}
+    <div className={`doodee-root${currentRoute !== 'landing' ? ' is-app-route' : ''}`}>
+      {/* Public routes */}
       {currentRoute === 'landing' && (
-        <Suspense fallback={<WorkspaceFallback lang={lang} />}>
+        <Suspense fallback={<WorkspaceFallback locale={locale} />}>
           <LandingPage />
         </Suspense>
       )}
 
       {currentRoute === 'login' && (
-        <Suspense fallback={<WorkspaceFallback lang={lang} />}>
+        <Suspense fallback={<WorkspaceFallback locale={locale} />}>
           <LoginPage />
         </Suspense>
       )}
@@ -89,69 +78,24 @@ export default function App() {
       {/* Onboarding and scan carry their own chrome and read locale from useLocale, so unlike
           the dashboard views they take no lang/route props. */}
       {currentRoute === 'onboarding' && (
-        <Suspense fallback={<WorkspaceFallback lang={lang} />}>
+        <Suspense fallback={<WorkspaceFallback locale={locale} />}>
           <OnboardingPage />
         </Suspense>
       )}
 
       {currentRoute === 'face-scan' && (
-        <Suspense fallback={<WorkspaceFallback lang={lang} />}>
+        <Suspense fallback={<WorkspaceFallback locale={locale} />}>
           <ScanPage />
         </Suspense>
       )}
 
-      {/* CASE 2: the ported qijek dashboard — five views behind one shell */}
+      {/* Signed-in routes, all inside the ported dashboard shell */}
       {DASHBOARD_VIEWS[currentRoute] && (
-        <Suspense fallback={<WorkspaceFallback lang={lang} />}>
+        <Suspense fallback={<WorkspaceFallback locale={locale} />}>
           <DashboardPage view={DASHBOARD_VIEWS[currentRoute]} />
         </Suspense>
       )}
 
-      {/* CASE 3: routes still on the old shell until phase 5 rebuilds them */}
-      {!CHROMELESS_ROUTES.includes(currentRoute) && !DASHBOARD_VIEWS[currentRoute] && (
-        <div
-          className={`app-shell glass-app-shell liquid-glass-shell${isTryOnEditor ? ' is-tryon-editor' : ''}`}
-          style={{ display: 'flex', height: '100vh', maxHeight: '100vh', width: '100vw', background: '#f5f5f7', overflow: 'hidden' }}
-        >
-          
-          {/* Floating Language Switcher Pill */}
-          <AppHeaderBar lang={lang} setLang={setLang} />
-
-          {needsPortraitGate && (
-            <div className="portrait-route-gate" role="status" aria-live="polite">
-              <div className="portrait-route-gate-device" aria-hidden="true" />
-              <h2>{lang === 'th' ? 'หมุนโทรศัพท์กลับเป็นแนวตั้ง' : 'Rotate your phone to portrait'}</h2>
-              <p>{lang === 'th' ? 'ฟังก์ชันนี้ออกแบบให้ใช้งานในแนวตั้ง เพื่อให้เครื่องมืออ่านง่ายและไม่แน่นหน้าจอ' : 'This function is designed for portrait use so its tools stay clear and uncluttered.'}</p>
-            </div>
-          )}
-
-          {/* Left Floating Sidebar Menu */}
-          <Sidebar 
-            currentRoute={currentRoute} 
-            setCurrentRoute={setCurrentRoute} 
-            lang={lang} 
-          />
-
-          {/* Right Main Application Workspace Container */}
-          <main className="dashboard-main" style={{
-            flex: 1,
-            marginLeft: isCompactWorkspace ? '78px' : '268px',
-            height: '100vh',
-            padding: isCompactWorkspace ? '8px 12px 8px 8px' : '14px 24px 14px 16px',
-            overflowY: isCompactWorkspace ? 'hidden' : 'auto',
-            minWidth: 0,
-            boxSizing: 'border-box',
-            transition: 'margin-left 220ms ease, padding 220ms ease'
-          }}>
-            <Suspense fallback={<WorkspaceFallback lang={lang} />}>
-              {currentRoute === 'tryon' && <TryOnView lang={lang} />}
-              {currentRoute === 'history' && <HistoryView lang={lang} onNavigate={setCurrentRoute} />}
-              {currentRoute === 'pricing' && <PricingView lang={lang} onStartScan={handleStartScan} />}
-              {currentRoute === 'settings' && <SettingsView lang={lang} setLang={setLang} setCurrentRoute={setCurrentRoute} />}
-            </Suspense>
-          </main>
-        </div>
-      )}
     </div>
   );
 }
