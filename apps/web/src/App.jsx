@@ -1,25 +1,16 @@
 import React, { lazy, Suspense, useEffect, useState } from 'react';
 import { onAuthStateChanged } from 'firebase/auth';
 import { useLocation, useNavigate } from 'react-router-dom';
-import Header from './components/Header';
-import HeroSection from './components/HeroSection';
-import AboutUsSection from './components/AboutUsSection';
-import DataWeUseSection from './components/DataWeUseSection';
-import ProcedurePreview from './components/ProcedurePreview';
-import SampleReportSection from './components/SampleReportSection';
-import DifferenceSection from './components/DifferenceSection';
-import CredibilityStrip from './components/CredibilityStrip';
-import PricingSection from './components/PricingSection';
-import ContactUsSection from './components/ContactUsSection';
-import FaqSection from './components/FaqSection';
-import FooterSection from './components/FooterSection';
-
 import Sidebar from './components/Sidebar';
 import AppHeaderBar from './components/AppHeaderBar';
 import OnboardingFlow from './components/OnboardingFlow';
 import { authRedirect } from './lib/authRouting';
 import { getFirebaseAuth } from './lib/firebase';
 
+// The landing page carries the MediaPipe demo and the treatment canvas, so it
+// is worth its own chunk even though it is the first route most users hit.
+const LandingPage = lazy(() => import('./pages/LandingPage'));
+const LoginPage = lazy(() => import('./pages/LoginPage'));
 const AnalysisDashboard = lazy(() => import('./components/AnalysisDashboard'));
 const HomeView = lazy(() => import('./components/HomeView'));
 const FacialAnalysisView = lazy(() => import('./components/FacialAnalysisView'));
@@ -33,7 +24,9 @@ function WorkspaceFallback({ lang }) {
   return <div className="workspace-loading" role="status">{lang === 'th' ? 'กำลังเปิดหน้า…' : 'Opening…'}</div>;
 }
 
-const ROUTE_PATHS = { landing: '/', onboarding: '/onboarding', home: '/home', analysis: '/analysis', 'face-scan': '/scan', simulation: '/simulation', tryon: '/try-on', history: '/history', pricing: '/pricing', settings: '/settings' };
+const ROUTE_PATHS = { landing: '/', login: '/login', onboarding: '/onboarding', home: '/home', analysis: '/analysis', 'face-scan': '/scan', simulation: '/simulation', tryon: '/try-on', history: '/history', pricing: '/pricing', settings: '/settings' };
+
+const CHROMELESS_ROUTES = ['landing', 'login', 'onboarding', 'face-scan'];
 
 export default function App() {
   const location = useLocation();
@@ -86,27 +79,15 @@ export default function App() {
       
       {/* CASE 1: Main Public Landing Page */}
       {currentRoute === 'landing' && (
-        <>
-          <Header 
-            currentRoute={currentRoute} 
-            setCurrentRoute={setCurrentRoute} 
-            lang={lang} 
-            setLang={setLang}
-          />
-          <main style={{ minHeight: '100vh', width: '100%', overflowY: 'visible', flex: 1 }}>
-            <HeroSection lang={lang} onStartScan={handleStartScan} />
-            <AboutUsSection lang={lang} />
-            <DataWeUseSection lang={lang} />
-            <ProcedurePreview lang={lang} />
-            <SampleReportSection lang={lang} onStartScan={handleStartScan} />
-            <DifferenceSection lang={lang} />
-            <CredibilityStrip lang={lang} />
-            <PricingSection lang={lang} onStartScan={handleStartScan} />
-            <ContactUsSection lang={lang} />
-            <FaqSection lang={lang} />
-            <FooterSection lang={lang} onStartScan={handleStartScan} />
-          </main>
-        </>
+        <Suspense fallback={<WorkspaceFallback lang={lang} />}>
+          <LandingPage />
+        </Suspense>
+      )}
+
+      {currentRoute === 'login' && (
+        <Suspense fallback={<WorkspaceFallback lang={lang} />}>
+          <LoginPage />
+        </Suspense>
       )}
 
       {currentRoute === 'onboarding' && (
@@ -131,7 +112,7 @@ export default function App() {
       )}
 
       {/* CASE 2: AI Pre-Consultation Platform Dashboard Shell */}
-      {currentRoute !== 'landing' && currentRoute !== 'onboarding' && currentRoute !== 'face-scan' && (
+      {!CHROMELESS_ROUTES.includes(currentRoute) && (
         <div
           className={`app-shell glass-app-shell liquid-glass-shell${isTryOnEditor ? ' is-tryon-editor' : ''}`}
           style={{ display: 'flex', height: '100vh', maxHeight: '100vh', width: '100vw', background: '#f5f5f7', overflow: 'hidden' }}

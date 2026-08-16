@@ -15,3 +15,10 @@ test('signed-out users cannot open private routes', () => {
   assert.equal(authRedirect(true, false, 'onboarding'), null);
   assert.equal(authRedirect(false, false, 'simulation'), null);
 });
+
+test('the login route is reachable signed out and does not trap signed-in users', () => {
+  assert.equal(authRedirect(true, false, 'login'), null);
+  // Only `landing` bounces an authenticated user to home; /login is left alone
+  // so the referral redeem it fires after sign-in is not cut short.
+  assert.equal(authRedirect(true, true, 'login'), null);
+});

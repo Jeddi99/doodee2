@@ -1,4 +1,6 @@
-const PUBLIC_ROUTES = new Set(['landing', 'onboarding']);
+// `login` is public by definition; `onboarding` stays public so a user who
+// signs in can finish answering before their first scan is created.
+const PUBLIC_ROUTES = new Set(['landing', 'login', 'onboarding']);
 
 export function authRedirect(authReady, isAuthenticated, currentRoute) {
   if (!authReady) return null;
