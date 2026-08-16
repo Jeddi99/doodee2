@@ -11822,3 +11822,13 @@ body:has(.results-page) {
   font: inherit;
   cursor: pointer;
 }
+
+/* Sidebar scan card before a first capture. Mirrors .history-card so the
+   sidebar keeps its rhythm instead of collapsing a slot. */
+.history-card.is-empty {
+  grid-template-columns: minmax(0, 1fr) auto;
+  color: var(--app-muted);
+}
+.history-card.is-empty strong {
+  color: var(--app-ink);
+}

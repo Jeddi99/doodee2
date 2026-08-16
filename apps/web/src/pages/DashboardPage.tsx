@@ -1527,12 +1527,15 @@ export default function DashboardPage({ view }: { view: AppView }) {
     [view],
   );
 
+  // Only the views that describe a scan need one. Settings, plans, history and try-on must stay
+  // reachable before a first capture — bouncing them to /scan would trap a new account.
+  const needsScan = !accountViews.some((item) => item.id === view);
   // Send the user to capture only once we know there is genuinely nothing to show — not while
   // the scan list is still loading, and not while Celery is still analysing an existing scan.
   const hasNoScan = scanList.isSuccess && !scanId;
   useEffect(() => {
-    if (hasNoScan) navigate("/scan", { replace: true });
-  }, [hasNoScan, navigate]);
+    if (needsScan && hasNoScan) navigate("/scan", { replace: true });
+  }, [needsScan, hasNoScan, navigate]);
 
   useEffect(() => {
     const close = (event: KeyboardEvent) => {
@@ -1580,7 +1583,8 @@ export default function DashboardPage({ view }: { view: AppView }) {
       </main>
     );
 
-  if (!scanImage)
+  // Only the scan-backed views wait for an image; the account views render straight away.
+  if (needsScan && !scanImage)
     return <main className="doodee-app doodee-app--handoff" aria-busy="true" />;
   return (
     <ScanDataContext.Provider value={scanData}>
@@ -1617,18 +1621,28 @@ export default function DashboardPage({ view }: { view: AppView }) {
             <Plus /> New scan
           </button>
         </div>
-        <button
-          className="history-card is-active"
-          type="button"
-          onClick={() => openView("overview")}
-        >
-          <img src={scanImage} alt="Latest scan" />
-          <span>
-            <strong>Latest scan</strong>
-            <small>{scanData.overall === null ? "Analysing…" : `Overall ${scanData.overall.toFixed(1)}`}</small>
-          </span>
-          <ArrowRight />
-        </button>
+        {scanImage ? (
+          <button
+            className="history-card is-active"
+            type="button"
+            onClick={() => openView("overview")}
+          >
+            <img src={scanImage} alt="Latest scan" />
+            <span>
+              <strong>Latest scan</strong>
+              <small>{scanData.overall === null ? "Analysing…" : `Overall ${scanData.overall.toFixed(1)}`}</small>
+            </span>
+            <ArrowRight />
+          </button>
+        ) : (
+          <button className="history-card is-empty" type="button" onClick={() => navigate("/scan")}>
+            <span>
+              <strong>No scan yet</strong>
+              <small>Capture three angles to begin</small>
+            </span>
+            <ArrowRight />
+          </button>
+        )}
         <nav className="sidebar-nav" aria-label="Dashboard">
           <span>Explore</span>
           {views.map((item) => (
