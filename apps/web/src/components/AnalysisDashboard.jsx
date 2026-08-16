@@ -3,7 +3,7 @@ import { useQuery } from '@tanstack/react-query';
 import { Activity, AlertTriangle, ScanFace } from 'lucide-react';
 
 import { getScans } from '../lib/api';
-import { AnalysisResults } from './FacialAnalysisView';
+import { AnalysisResults } from './AnalysisResults';
 
 export default function AnalysisDashboard({ lang = 'th', onNavigate }) {
   const isTh = lang === 'th';

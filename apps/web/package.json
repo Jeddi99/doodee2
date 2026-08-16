@@ -8,7 +8,7 @@
     "build": "vite build",
     "lint": "oxlint",
     "typecheck": "tsc --noEmit",
-    "test": "node --test src/lib/authRouting.test.js src/lib/homeState.test.js src/lib/onboardingAnswers.test.js src/lib/captureConfidence.test.js src/lib/promoCode.test.js src/lib/previewQueue.test.js src/lib/simulationStack.test.js src/lib/apiError.test.js src/lib/simulationError.test.js src/lib/makeupGeometry.test.js src/lib/metricLines.test.js src/lib/capturePerformance.test.js src/lib/facePose.test.js src/lib/facePreview.test.js",
+    "test": "node --test --experimental-strip-types tests/scanQuality.test.ts src/lib/authRouting.test.js src/lib/homeState.test.js src/lib/onboardingAnswers.test.js src/lib/promoCode.test.js src/lib/previewQueue.test.js src/lib/simulationStack.test.js src/lib/apiError.test.js src/lib/simulationError.test.js src/lib/makeupGeometry.test.js src/lib/metricLines.test.js src/lib/facePose.test.js",
     "preview": "vite preview"
   },
   "dependencies": {

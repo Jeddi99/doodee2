@@ -3,7 +3,6 @@ import { onAuthStateChanged } from 'firebase/auth';
 import { useLocation, useNavigate } from 'react-router-dom';
 import Sidebar from './components/Sidebar';
 import AppHeaderBar from './components/AppHeaderBar';
-import OnboardingFlow from './components/OnboardingFlow';
 import { authRedirect } from './lib/authRouting';
 import { getFirebaseAuth } from './lib/firebase';
 
@@ -13,7 +12,9 @@ const LandingPage = lazy(() => import('./pages/LandingPage'));
 const LoginPage = lazy(() => import('./pages/LoginPage'));
 const AnalysisDashboard = lazy(() => import('./components/AnalysisDashboard'));
 const HomeView = lazy(() => import('./components/HomeView'));
-const FacialAnalysisView = lazy(() => import('./components/FacialAnalysisView'));
+const OnboardingPage = lazy(() => import('./pages/OnboardingPage'));
+// Own chunk: it pulls in the MediaPipe worker and the wasm loader.
+const ScanPage = lazy(() => import('./pages/ScanPage'));
 const SimulationView = lazy(() => import('./components/SimulationView'));
 const TryOnView = lazy(() => import('./components/TryOnView'));
 const HistoryView = lazy(() => import('./components/HistoryView'));
@@ -37,7 +38,6 @@ export default function App() {
     navigate(`${ROUTE_PATHS[route] || '/analysis'}${query}`);
   };
   const [lang, setLang] = useState('th'); // 'th' | 'en'
-  const [onboardingData, setOnboardingData] = useState(null);
   const [authState, setAuthState] = useState({ ready: false, user: null });
 
   useEffect(() => {
@@ -58,12 +58,6 @@ export default function App() {
   const handleStartScan = () => {
     setCurrentRoute('onboarding');
     window.scrollTo({ top: 0, behavior: 'smooth' });
-  };
-
-  const handleOnboardingComplete = (answers) => {
-    setOnboardingData(answers);
-    setCurrentRoute('face-scan');
-    window.scrollTo({ top: 0 });
   };
 
   const isCompactWorkspace = ['tryon', 'simulation'].includes(currentRoute);
@@ -90,24 +84,17 @@ export default function App() {
         </Suspense>
       )}
 
+      {/* Onboarding and scan carry their own chrome and read locale from useLocale, so unlike
+          the dashboard views they take no lang/route props. */}
       {currentRoute === 'onboarding' && (
-        <OnboardingFlow
-          lang={lang}
-          authenticated={isAuthenticated}
-          onBack={() => setCurrentRoute(isAuthenticated ? 'home' : 'landing')}
-          onComplete={handleOnboardingComplete}
-        />
+        <Suspense fallback={<WorkspaceFallback lang={lang} />}>
+          <OnboardingPage />
+        </Suspense>
       )}
 
       {currentRoute === 'face-scan' && (
         <Suspense fallback={<WorkspaceFallback lang={lang} />}>
-          <FacialAnalysisView
-            lang={lang}
-            setLang={setLang}
-            onboardingData={onboardingData}
-            onBack={() => setCurrentRoute('home')}
-            onNavigate={setCurrentRoute}
-          />
+          <ScanPage />
         </Suspense>
       )}
 

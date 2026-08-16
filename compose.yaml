@@ -32,8 +32,18 @@ services:
       REDIS_CACHE_URL: redis://redis:6379/1
       GOOGLE_APPLICATION_CREDENTIALS: /run/secrets/firebase-service-account.json
     volumes:
-      - ./firebase-service-account.json:/run/secrets/firebase-service-account.json:ro
+      # create_host_path: false — ถ้าไฟล์คีย์ไม่มีจริง ให้ compose ฟ้อง error ไปเลย
+      # ไม่งั้น Docker จะสร้าง "โฟลเดอร์ว่าง" ชื่อนี้ให้เงียบๆ แล้ว firebase_admin
+      # จะอ่าน credential ไม่ได้ โผล่มาเป็น "Invalid Firebase token" ที่หน้าเว็บแทน
+      - type: bind
+        source: ./firebase-service-account.json
+        target: /run/secrets/firebase-service-account.json
+        read_only: true
+        bind:
+          create_host_path: false
       - ./backend:/app/backend
+    # host:container — gunicorn binds :8000 inside, and .env/api.js point
+    # clients at localhost:8001, so the host side must be 8001.
     ports: ["8001:8000"]
     depends_on:
       postgres: {condition: service_healthy}

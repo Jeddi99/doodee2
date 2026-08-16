@@ -11389,3 +11389,102 @@ body:has(.results-page) {
     margin-top: var(--space-8);
   }
 }
+
+/* ── Onboarding step 6: consent ────────────────────────────────────────────
+ * Not in qijek — POST /scans/ requires analysis_consent_version. Built from
+ * the same tokens as .sex-option so it reads as one more card in the flow,
+ * but stacked rather than side by side because each row carries a sentence.
+ * ─────────────────────────────────────────────────────────────────────────*/
+
+.consent-options {
+  position: relative;
+  z-index: 1;
+  width: min(590px, 100%);
+  margin: clamp(28px, 4.5vh, 42px) auto 0;
+  display: grid;
+  gap: 12px;
+}
+.consent-option {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 16px;
+  align-items: center;
+  padding: 20px;
+  border: 1px solid rgba(11, 14, 20, 0.12);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.7);
+  color: #0b0e14;
+  text-align: left;
+  cursor: pointer;
+  backdrop-filter: blur(22px) saturate(130%);
+  transition:
+    transform 220ms cubic-bezier(0.16, 1, 0.3, 1),
+    background 220ms ease,
+    border-color 220ms ease;
+}
+.consent-option:hover {
+  transform: translateY(-2px);
+  background: rgba(255, 255, 255, 0.94);
+}
+.consent-option.is-selected {
+  border-color: #0b0e14;
+  background: rgba(255, 255, 255, 0.96);
+}
+.consent-option.is-selected .frequency-option__check {
+  border-color: #0b0e14;
+  background: #0b0e14;
+  color: #fff;
+}
+.consent-option__symbol {
+  width: 44px;
+  height: 44px;
+  display: grid;
+  place-items: center;
+  color: #0b0e14;
+}
+.consent-option__symbol svg {
+  width: 24px;
+  height: 24px;
+  stroke-width: 1.25;
+}
+.consent-option__copy {
+  display: grid;
+  gap: 4px;
+}
+.consent-option__copy strong {
+  font-size: 1rem;
+  font-weight: 600;
+}
+.consent-option__copy span {
+  color: var(--dd-muted);
+  font-size: 0.85rem;
+  line-height: 1.5;
+}
+
+/* Under-18 is refused before any photo is taken, so the notice sits with the
+   age control rather than surfacing later as a server rejection. */
+.onboarding-minor-notice {
+  position: relative;
+  z-index: 1;
+  width: min(590px, 100%);
+  margin: 20px auto 0;
+  padding: 12px 16px;
+  border: 1px solid rgba(11, 14, 20, 0.12);
+  border-left: 3px solid var(--dd-blue);
+  border-radius: 10px;
+  background: var(--dd-canvas);
+  color: var(--dd-text);
+  font-size: 0.88rem;
+  line-height: 1.5;
+}
+
+@media (max-width: 620px) {
+  .consent-option {
+    grid-template-columns: auto minmax(0, 1fr);
+    row-gap: 12px;
+  }
+  .consent-option > .frequency-option__check {
+    grid-column: 2;
+    justify-self: end;
+  }
+}

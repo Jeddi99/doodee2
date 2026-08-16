@@ -1,7 +1,13 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { AGE_BANDS, ageBandFor, canContinueFromAge } from './onboardingAnswers.js';
+import {
+  AGE_BANDS,
+  ageBandFor,
+  canContinueFromAge,
+  referencePopulationFor,
+  referenceProfileFor,
+} from './onboardingAnswers.js';
 
 test('a typed age becomes a band, never an exact age', () => {
   assert.equal(ageBandFor('27'), AGE_BANDS.ADULT_COHORT);
@@ -23,4 +29,19 @@ test('values outside one to one hundred twenty are not an age at all', () => {
     assert.equal(ageBandFor(input), null, `expected ${JSON.stringify(input)} to be rejected`);
     assert.equal(canContinueFromAge(input), false);
   }
+});
+
+test('a country with no published cohort falls back to OTHER instead of failing the upload', () => {
+  assert.equal(referencePopulationFor('TH'), 'TH');
+  assert.equal(referencePopulationFor('jp'), 'JP');
+  assert.equal(referencePopulationFor('FR'), 'OTHER');
+  assert.equal(referencePopulationFor('OTHER'), 'OTHER');
+  assert.equal(referencePopulationFor(''), 'OTHER');
+  assert.equal(referencePopulationFor(undefined), 'OTHER');
+});
+
+test('the sex reference maps onto the profile names the backend validates', () => {
+  assert.equal(referenceProfileFor('male'), 'masculine');
+  assert.equal(referenceProfileFor('female'), 'feminine');
+  assert.equal(referenceProfileFor(null), 'neutral');
 });
