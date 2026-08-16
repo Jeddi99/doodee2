@@ -8,7 +8,6 @@ import { getScan, uploadScan } from '../lib/api';
 import { nextSlowInferenceStreak, shouldDisableAutoCapture } from '../lib/capturePerformance';
 import { previewTransform } from '../lib/facePreview';
 import AnalysisMetricsPanel from './AnalysisMetricsPanel';
-import '../capture-flow.css';
 
 // `name` identifies the view in review and error text; `action` is the instruction shown on
 // camera. The turn directions follow pose_targets.json, where a "left" view is a negative yaw

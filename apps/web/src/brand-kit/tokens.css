@@ -1,0 +1,35 @@
+:root {
+  --dd-canvas: #ffffff;
+  --dd-ice: #f7fbff;
+  --dd-ice-strong: #edf4fc;
+  --dd-surface: rgba(255, 255, 255, 0.84);
+  --dd-ink: #0b0e14;
+  --dd-text: #111116;
+  --dd-muted: #5b6778;
+  --dd-line: rgba(11, 14, 20, 0.1);
+  --dd-blue: #087bff;
+  --dd-blue-strong: #0064e8;
+  --dd-blue-soft: #e7f2ff;
+  --dd-teal: #45c8c0;
+  --dd-font:
+    "Manrope", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --dd-radius-control: 8px;
+  --dd-radius-card: 16px;
+  --dd-radius-frame: 22px;
+  --dd-radius-pill: 999px;
+  --dd-space-1: 4px;
+  --dd-space-2: 8px;
+  --dd-space-3: 12px;
+  --dd-space-4: 16px;
+  --dd-space-6: 24px;
+  --dd-space-8: 32px;
+  --dd-space-12: 48px;
+  --dd-space-16: 64px;
+  --dd-space-24: 96px;
+  --dd-space-32: 128px;
+  --dd-focus: 0 0 0 3px #087bff;
+  --dd-shadow-float: 0 8px 24px rgba(31, 74, 137, 0.1);
+  --dd-ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --dd-motion-fast: 240ms;
+  --dd-motion-normal: 360ms;
+}

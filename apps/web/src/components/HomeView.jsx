@@ -4,7 +4,6 @@ import { Activity, ArrowRight, BarChart3, Clock3, History, RefreshCw, ScanFace, 
 
 import { getScans, getSession } from '../lib/api';
 import { homeScanState } from '../lib/homeState';
-import '../home.css';
 
 const STATUS_TEXT = {
   queued: ['อยู่ในคิว', 'Queued'], processing: ['กำลังประมวลผล', 'Processing'],

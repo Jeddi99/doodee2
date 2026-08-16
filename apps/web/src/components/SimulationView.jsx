@@ -10,7 +10,6 @@ import {
   MAX_ITEMS, clearAll, clearUnlocked, count, emptyStack, isLocked, itemFor, remove as removeFromStack, select as selectInStack,
   toRequest, toggleLock, total, unlock,
 } from '../lib/simulationStack';
-import '../simulation.css';
 
 const REGIONS = [
   ['eyes', 'ดวงตา', 'Eyes'], ['nose', 'จมูก', 'Nose'], ['lips', 'ริมฝีปาก', 'Lips'],

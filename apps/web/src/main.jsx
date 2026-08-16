@@ -2,11 +2,7 @@ import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { BrowserRouter } from 'react-router-dom'
-import './index.css'
-import './App.css'
-import './mobile.css'
-import './liquid-glass.css'
-import './face-report.css'
+import './styles.css'
 import App from './App.jsx'
 
 const queryClient = new QueryClient()

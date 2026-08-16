@@ -10,3 +10,7 @@ dist/
 coverage/
 *.sqlite3
 .claude/
+
+# Firebase admin service-account keys — never commit, whatever the filename.
+*firebase-adminsdk*.json
+apps/web/dist/
