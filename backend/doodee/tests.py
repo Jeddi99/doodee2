@@ -16,9 +16,14 @@ from rest_framework.test import APIClient
 from django.core.cache import cache
 
 from .models import (
-    ChatConversation, ChatMessage, ChatUsage, ConsentEvent, FirebaseIdentity, PromoCode,
-    PromoRedemption, Scan, Simulation, SimulationPreviewUsage,
+    ChatConversation, ChatMessage, ChatUsage, ConsentEvent, Coupon, CouponRedemption,
+    FirebaseIdentity, Order, Plan, PromoCode, PromoRedemption, Scan, Simulation,
+    SimulationPreviewUsage, Subscription,
 )
+from .billing import (
+    CouponError, activate, create_order, discount_for, quote, sync_entitlement, validate_coupon,
+)
+from .views import COUPON_FAILURE_LIMIT
 from .chat import MAX_QUESTION_CHARS, SYSTEM_PROMPT, scan_context
 from .analysis_engine import (
     POSE_TARGETS, SCAN_VIEW_MODES, _distance, _isotropic, _validate_pose_set, analyze_images,
@@ -1559,3 +1564,250 @@ class ChatApiTest(TestCase):
             self.post(message="second question")
         titles = [item["title"] for item in self.client.get("/api/v1/chat/").data]
         self.assertEqual(titles, ["second question", "first question"])
+
+
+class CouponMathTest(TestCase):
+    """The arithmetic, in satang. Anything that produces a float here is a bug."""
+
+    def setUp(self):
+        self.plan = Plan.objects.get(code="member")
+
+    def coupon(self, **kwargs):
+        return Coupon.objects.create(code=kwargs.pop("code", "SAVE20"), **kwargs)
+
+    def test_percent_discount_floors_rather_than_rounding_up(self):
+        # 14900 * 33 / 100 = 4917.0 exactly; 14900 * 7 / 100 = 1043.0. Pick a value that does
+        # not divide evenly so the flooring is actually exercised.
+        coupon = self.coupon(discount_type=Coupon.DiscountType.PERCENT, discount_value=33)
+        self.assertEqual(discount_for(coupon, 14999), 4949)  # 4949.67 floored
+
+    def test_a_fixed_discount_never_exceeds_the_price(self):
+        coupon = self.coupon(discount_type=Coupon.DiscountType.FIXED, discount_value=50000)
+        self.assertEqual(discount_for(coupon, 14900), 14900)
+        self.assertEqual(quote(self.plan, coupon)["total_satang"], 0)
+
+    def test_a_percent_over_a_hundred_cannot_produce_a_negative_total(self):
+        coupon = self.coupon(discount_type=Coupon.DiscountType.PERCENT, discount_value=250)
+        self.assertEqual(quote(self.plan, coupon)["total_satang"], 0)
+
+    def test_the_quote_is_the_plan_price_when_there_is_no_coupon(self):
+        self.assertEqual(quote(self.plan), {
+            "plan": "member", "subtotal_satang": 14900, "discount_satang": 0,
+            "total_satang": 14900, "currency": "THB", "coupon": None,
+        })
+
+
+class CouponValidationTest(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user("buyer")
+        self.plan = Plan.objects.get(code="member")
+
+    def make(self, **kwargs):
+        kwargs.setdefault("code", "TWENTY")
+        kwargs.setdefault("discount_value", 20)
+        return Coupon.objects.create(**kwargs)
+
+    def assertRejected(self, code_str, expected):
+        with self.assertRaises(CouponError) as caught:
+            validate_coupon(code_str, self.plan, self.user)
+        self.assertEqual(caught.exception.code, expected)
+
+    def test_codes_match_case_insensitively_and_ignore_surrounding_space(self):
+        self.make()
+        self.assertEqual(validate_coupon("  twenty ", self.plan, self.user).code, "TWENTY")
+
+    def test_an_unknown_and_a_disabled_coupon_are_indistinguishable(self):
+        self.make(is_active=False)
+        self.assertRejected("TWENTY", "invalid_coupon")
+        self.assertRejected("NEVEREXISTED", "invalid_coupon")
+
+    def test_an_expired_window_is_refused(self):
+        self.make(valid_until=timezone.now() - timedelta(minutes=1))
+        self.assertRejected("TWENTY", "coupon_expired")
+
+    def test_a_window_that_has_not_opened_is_refused(self):
+        self.make(valid_from=timezone.now() + timedelta(days=1))
+        self.assertRejected("TWENTY", "coupon_not_started")
+
+    def test_a_coupon_at_its_use_limit_is_refused(self):
+        self.make(max_uses=2, used_count=2)
+        self.assertRejected("TWENTY", "coupon_exhausted")
+
+    def test_zero_max_uses_means_unlimited_not_zero(self):
+        self.make(max_uses=0, used_count=999)
+        self.assertEqual(validate_coupon("TWENTY", self.plan, self.user).code, "TWENTY")
+
+    def test_a_minimum_above_the_plan_price_is_refused(self):
+        self.make(min_amount_satang=20000)
+        self.assertRejected("TWENTY", "coupon_minimum_not_met")
+
+    def test_a_coupon_restricted_to_another_plan_is_refused(self):
+        coupon = self.make()
+        coupon.applies_to_plans.add(Plan.objects.get(code="clinic"))
+        self.assertRejected("TWENTY", "coupon_not_valid_for_plan")
+
+    def test_an_empty_plan_restriction_means_every_plan(self):
+        self.make()
+        self.assertEqual(validate_coupon("TWENTY", self.plan, self.user).code, "TWENTY")
+
+
+class OrderActivationTest(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user("payer")
+        self.plan = Plan.objects.get(code="member")
+
+    def test_paying_grants_the_group_the_plan_names(self):
+        order = create_order(self.user, self.plan)
+        self.assertEqual(order.status, Order.Status.PENDING)
+        self.assertEqual(order.total_satang, 14900)
+        activate(order)
+        self.assertIn("pro_member", set(self.user.groups.values_list("name", flat=True)))
+
+    def test_activating_twice_grants_one_period_and_spends_the_coupon_once(self):
+        """Webhooks are retried and Confirm can be double-clicked; neither may double-charge."""
+        coupon = Coupon.objects.create(code="HALF", discount_value=50)
+        order = create_order(self.user, self.plan, "HALF")
+        self.assertEqual(order.total_satang, 7450)
+        first = activate(order)
+        second = activate(order)
+        self.assertEqual(first.pk, second.pk)
+        self.assertEqual(Coupon.objects.get(pk=coupon.pk).used_count, 1)
+        self.assertEqual(CouponRedemption.objects.filter(user=self.user).count(), 1)
+        self.assertEqual(Subscription.objects.filter(user=self.user).count(), 1)
+
+    def test_the_coupon_is_only_spent_when_the_order_is_actually_paid(self):
+        coupon = Coupon.objects.create(code="HALF", discount_value=50)
+        create_order(self.user, self.plan, "HALF")
+        # An abandoned checkout must not burn a use of a limited coupon.
+        self.assertEqual(Coupon.objects.get(pk=coupon.pk).used_count, 0)
+
+    def test_a_once_per_user_coupon_cannot_be_reused_after_it_is_paid(self):
+        Coupon.objects.create(code="ONCE", discount_value=10, once_per_user=True)
+        activate(create_order(self.user, self.plan, "ONCE"))
+        with self.assertRaises(CouponError) as caught:
+            create_order(self.user, self.plan, "ONCE")
+        self.assertEqual(caught.exception.code, "coupon_already_used")
+
+    def test_renewing_early_extends_from_the_existing_end_not_from_today(self):
+        first = activate(create_order(self.user, self.plan))
+        second = activate(create_order(self.user, self.plan))
+        self.assertGreater(second.current_period_end, first.current_period_end)
+        self.assertEqual((second.current_period_end - first.current_period_end).days, 30)
+
+    def test_a_charge_id_cannot_be_recorded_against_two_orders(self):
+        """The database refuses a replayed provider callback, not application code."""
+        from django.db.utils import IntegrityError
+
+        activate(create_order(self.user, self.plan, provider=Order.Provider.OMISE), charge_id="chrg_1")
+        with self.assertRaises(IntegrityError):
+            activate(create_order(self.user, self.plan, provider=Order.Provider.OMISE), charge_id="chrg_1")
+
+    def test_entitlement_is_taken_back_once_the_period_ends(self):
+        subscription = activate(create_order(self.user, self.plan))
+        self.assertIn("pro_member", set(self.user.groups.values_list("name", flat=True)))
+        Subscription.objects.filter(pk=subscription.pk).update(
+            current_period_end=timezone.now() - timedelta(minutes=1)
+        )
+        sync_entitlement(self.user)
+        self.assertNotIn("pro_member", set(self.user.groups.values_list("name", flat=True)))
+        self.assertEqual(Subscription.objects.get(pk=subscription.pk).status, Subscription.Status.EXPIRED)
+
+    def test_one_lapsed_subscription_does_not_revoke_a_second_live_one(self):
+        old = activate(create_order(self.user, self.plan))
+        Subscription.objects.filter(pk=old.pk).update(current_period_end=timezone.now() - timedelta(days=1))
+        Subscription.objects.create(
+            user=self.user, plan=self.plan, current_period_end=timezone.now() + timedelta(days=10),
+        )
+        sync_entitlement(self.user)
+        self.assertIn("pro_member", set(self.user.groups.values_list("name", flat=True)))
+
+
+class BillingApiTest(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user("shopper")
+        self.client = APIClient()
+        self.client.force_authenticate(self.user)
+        cache.clear()
+
+    def test_the_price_list_comes_from_the_api_not_a_hardcoded_client_table(self):
+        codes = [item["code"] for item in self.client.get("/api/v1/plans/").data]
+        # The ported panel invented free/plus/pro; these are the codes _user_plan() returns.
+        self.assertEqual(codes, ["free", "member", "clinic"])
+
+    def test_an_inactive_plan_disappears_from_sale_everywhere_at_once(self):
+        Plan.objects.filter(code="clinic").update(is_active=False)
+        codes = [item["code"] for item in self.client.get("/api/v1/plans/").data]
+        self.assertNotIn("clinic", codes)
+
+    def test_validating_a_coupon_returns_the_total_without_consuming_it(self):
+        coupon = Coupon.objects.create(code="TWENTY", discount_value=20)
+        response = self.client.post(
+            "/api/v1/coupons/validate/", {"code": "twenty", "plan": "member"}, format="json"
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["discount_satang"], 2980)
+        self.assertEqual(response.data["total_satang"], 11920)
+        self.assertEqual(Coupon.objects.get(pk=coupon.pk).used_count, 0)
+
+    def test_a_rejected_coupon_reports_which_rule_it_broke(self):
+        Coupon.objects.create(code="GONE", discount_value=20, valid_until=timezone.now() - timedelta(days=1))
+        response = self.client.post("/api/v1/coupons/validate/", {"code": "GONE", "plan": "member"}, format="json")
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.data["detail"], "coupon_expired")
+
+    def test_guessing_coupon_codes_is_rate_limited(self):
+        for _ in range(COUPON_FAILURE_LIMIT):
+            self.client.post("/api/v1/coupons/validate/", {"code": "NOPE", "plan": "member"}, format="json")
+        response = self.client.post("/api/v1/coupons/validate/", {"code": "NOPE", "plan": "member"}, format="json")
+        self.assertEqual(response.status_code, 429)
+
+    def test_a_valid_code_still_works_after_the_holder_mistypes_it_repeatedly(self):
+        Coupon.objects.create(code="REALONE", discount_value=15)
+        for _ in range(COUPON_FAILURE_LIMIT - 1):
+            self.client.post("/api/v1/coupons/validate/", {"code": "WRONG", "plan": "member"}, format="json")
+        response = self.client.post("/api/v1/coupons/validate/", {"code": "REALONE", "plan": "member"}, format="json")
+        self.assertEqual(response.status_code, 200)
+
+    def test_an_unknown_plan_is_refused_rather_than_priced_at_zero(self):
+        response = self.client.post("/api/v1/coupons/validate/", {"code": "X", "plan": "plus"}, format="json")
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.data["plan"], "unknown_plan")
+
+    def test_creating_an_order_prices_it_and_leaves_it_pending(self):
+        Coupon.objects.create(code="TWENTY", discount_value=20)
+        response = self.client.post("/api/v1/orders/", {"plan": "member", "coupon": "TWENTY"}, format="json")
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.data["total_satang"], 11920)
+        self.assertEqual(response.data["status"], "pending")
+        # Nothing is granted until the money is confirmed.
+        self.assertEqual(self.client.get("/api/v1/session/").data["plan"], "free")
+
+    def test_the_free_plan_cannot_be_ordered(self):
+        response = self.client.post("/api/v1/orders/", {"plan": "free"}, format="json")
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.data["detail"], "plan_is_free")
+
+    def test_a_plan_that_needs_an_agreement_cannot_be_bought_from_a_form(self):
+        response = self.client.post("/api/v1/orders/", {"plan": "clinic"}, format="json")
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.data["detail"], "plan_not_self_serve")
+
+    def test_orders_are_scoped_to_their_owner(self):
+        stranger = create_order(User.objects.create_user("someoneelse"), Plan.objects.get(code="member"))
+        self.assertEqual(self.client.get("/api/v1/orders/").data, [])
+        self.assertEqual(self.client.get(f"/api/v1/orders/{stranger.id}/").status_code, 404)
+
+    def test_confirmed_payment_unlocks_the_gated_features_through_session(self):
+        order = create_order(self.user, Plan.objects.get(code="member"))
+        activate(order)
+        session = self.client.get("/api/v1/session/").data
+        self.assertEqual(session["plan"], "member")
+        self.assertIs(session["score_card_locked"], False)
+        self.assertIs(session["simulation_locked"], False)
+
+    def test_session_revokes_a_lapsed_plan_without_waiting_for_a_cron(self):
+        subscription = activate(create_order(self.user, Plan.objects.get(code="member")))
+        Subscription.objects.filter(pk=subscription.pk).update(
+            current_period_end=timezone.now() - timedelta(minutes=1)
+        )
+        self.assertEqual(self.client.get("/api/v1/session/").data["plan"], "free")

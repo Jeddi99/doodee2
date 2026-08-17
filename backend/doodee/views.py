@@ -18,9 +18,10 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from .models import (
-    ChatConversation, ChatMessage, ChatUsage, ConsentEvent, PromoCode, PromoRedemption,
-    Scan, Simulation, SimulationPreviewUsage,
+    ChatConversation, ChatMessage, ChatUsage, ConsentEvent, Order, Plan, PromoCode,
+    PromoRedemption, Scan, Simulation, SimulationPreviewUsage,
 )
+from .billing import CouponError, create_order, quote, sync_entitlement, validate_coupon
 from .procedures import PROCEDURES
 from .chat import (
     HISTORY_TURNS, MAX_QUESTION_CHARS, ChatUnavailable, chat_enabled, reply as chat_reply,
@@ -28,7 +29,7 @@ from .chat import (
 )
 from .serializers import (
     ChatConversationDetailSerializer, ChatConversationSerializer, ChatMessageSerializer,
-    ScanSerializer, SimulationSerializer,
+    OrderSerializer, PlanSerializer, ScanSerializer, SimulationSerializer,
 )
 from .analysis_engine import PROFILE_VIEWS, SCAN_VIEW_MODES, DEFAULT_SCAN_MODE, scan_views_for_mode
 from .reference_scoring import REFERENCE_POPULATIONS
@@ -45,6 +46,7 @@ MAX_IMAGE_BYTES = 10 * 1024 * 1024
 
 @api_view(("GET",))
 def session(request):
+    sync_entitlement(request.user)
     plan = _user_plan(request.user)
     now = timezone.now()
     usage = SimulationPreviewUsage.objects.filter(user=request.user, period=now.date().replace(day=1)).first()
@@ -630,3 +632,94 @@ class ChatViewSet(viewsets.GenericViewSet, mixins.ListModelMixin, mixins.Retriev
             "message": ChatMessageSerializer(message).data,
             "chat_remaining": remaining,
         }, status=status.HTTP_201_CREATED)
+
+
+COUPON_FAILURE_LIMIT = 20
+
+
+@api_view(("GET",))
+def plans(request):
+    """The price list. One source of truth, read by the pricing panel.
+
+    Inactive plans are hidden rather than marked, so switching a tier off removes it from sale
+    everywhere at once instead of in each client that remembers to check a flag.
+    """
+    return Response(PlanSerializer(Plan.objects.filter(is_active=True), many=True).data)
+
+
+def _plan_or_400(code):
+    plan = Plan.objects.filter(code=str(code or "").strip(), is_active=True).first()
+    if not plan:
+        raise ValidationError({"plan": "unknown_plan"})
+    return plan
+
+
+def _guard_coupon_guessing(user):
+    """Rate-limits wrong codes only, exactly as `redeem` does.
+
+    Without it the validate endpoint is a free oracle for brute-forcing discount codes, since
+    it is unauthenticated-cheap and answers instantly. Only failures count, so nobody typing
+    a coupon they actually hold is ever locked out.
+    """
+    key = f"coupon-fail:{user.id}:{timezone.now():%Y%m%d%H}"
+    if (cache.get(key) or 0) >= COUPON_FAILURE_LIMIT:
+        return False
+    return key
+
+
+@api_view(("POST",))
+def validate_coupon_view(request):
+    """The price after a coupon, without consuming anything.
+
+    Nothing is reserved here on purpose: holding a limited coupon because someone typed it into
+    a box would let one user sit on the last use indefinitely.
+    """
+    plan = _plan_or_400(request.data.get("plan"))
+    code = str(request.data.get("code", "")).strip()
+    if not code:
+        raise ValidationError({"code": "code_required"})
+
+    failure_key = _guard_coupon_guessing(request.user)
+    if not failure_key:
+        return Response({"detail": "too_many_attempts"}, status=status.HTTP_429_TOO_MANY_REQUESTS)
+
+    try:
+        coupon = validate_coupon(code, plan, request.user)
+    except CouponError as exc:
+        cache.add(failure_key, 0, timeout=3700)
+        cache.incr(failure_key)
+        return Response({"detail": exc.code}, status=status.HTTP_400_BAD_REQUEST)
+    return Response(quote(plan, coupon))
+
+
+class OrderViewSet(viewsets.GenericViewSet, mixins.ListModelMixin, mixins.RetrieveModelMixin):
+    """Orders the user placed.
+
+    There is no card form behind this yet: an Omise merchant account needs a registered
+    company. `POST` therefore creates a pending order to be settled by bank transfer and
+    confirmed by a superuser in admin. The entitlement it grants runs through the same
+    `billing.activate()` a provider webhook will call, so nothing about the grant changes when
+    a provider is added.
+    """
+
+    serializer_class = OrderSerializer
+
+    def get_queryset(self):
+        return Order.objects.filter(user=self.request.user).select_related("plan", "coupon")
+
+    def create(self, request):
+        plan = _plan_or_400(request.data.get("plan"))
+        if not plan.self_serve:
+            return Response({"detail": "plan_not_self_serve"}, status=status.HTTP_400_BAD_REQUEST)
+        if plan.price_satang == 0:
+            # Nothing to charge for, and an order for ฿0 would create a payment record that
+            # never settles and a subscription nobody bought.
+            return Response({"detail": "plan_is_free"}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            order = create_order(request.user, plan, request.data.get("coupon"))
+        except CouponError as exc:
+            return Response({"detail": exc.code}, status=status.HTTP_400_BAD_REQUEST)
+        return Response(
+            {**OrderSerializer(order).data, "payment_instructions": "manual_transfer"},
+            status=status.HTTP_201_CREATED,
+        )

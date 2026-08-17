@@ -14,9 +14,11 @@ from django.http import HttpResponse
 from django.utils import timezone
 
 from .models import (
-    ChatConversation, ChatMessage, ChatUsage, ConsentEvent, FirebaseIdentity, PromoCode,
-    PromoRedemption, Scan, Simulation, SimulationPreviewUsage,
+    ChatConversation, ChatMessage, ChatUsage, ConsentEvent, Coupon, CouponRedemption,
+    FirebaseIdentity, Order, Plan, PromoCode, PromoRedemption, Scan, Simulation,
+    SimulationPreviewUsage, Subscription,
 )
+from .billing import activate
 
 
 MEMBERSHIP_GROUPS = ("pro_member", "clinic_partner")
@@ -408,3 +410,141 @@ class ChatUsageAdmin(admin.ModelAdmin):
     list_filter = ("period",)
     search_fields = ("user__email",)
     autocomplete_fields = ("user",)
+
+
+def satang(value):
+    """฿ from satang. Display only — nothing in the database is ever a decimal."""
+    return f"฿{value / 100:,.2f}"
+
+
+@admin.register(Plan)
+class PlanAdmin(ConfirmingModelAdmin):
+    list_display = ("code", "name_en", "price", "interval", "grants_group", "self_serve", "is_active", "sort_order")
+    list_filter = ("interval", "is_active", "self_serve")
+    search_fields = ("code", "name_en", "name_th")
+    list_editable = ("is_active", "sort_order")
+
+    @admin.display(ordering="price_satang", description="price")
+    def price(self, obj):
+        return satang(obj.price_satang)
+
+    def has_delete_permission(self, request, obj=None):
+        """Deactivate, never delete.
+
+        Orders PROTECT their plan, so deleting a sold tier fails anyway — and a plan removed
+        from the database takes the price history of every past order with it.
+        """
+        return False
+
+
+@admin.register(Coupon)
+class CouponAdmin(ConfirmingModelAdmin):
+    list_display = ("code", "discount", "uses", "once_per_user", "valid_from", "valid_until", "is_active")
+    list_filter = ("discount_type", "is_active", "once_per_user")
+    search_fields = ("code", "note")
+    list_editable = ("is_active",)
+    filter_horizontal = ("applies_to_plans",)
+    readonly_fields = ("used_count", "created_at")
+
+    @admin.display(description="discount")
+    def discount(self, obj):
+        if obj.discount_type == Coupon.DiscountType.PERCENT:
+            return f"{obj.discount_value}%"
+        return satang(obj.discount_value)
+
+    @admin.display(description="uses")
+    def uses(self, obj):
+        return f"{obj.used_count} / {obj.max_uses or '∞'}"
+
+    def save_model(self, request, obj, form, change):
+        # Codes are compared uppercase everywhere, so a lowercase one created here would
+        # simply never match — fail into the working shape rather than out of it.
+        obj.code = obj.code.strip().upper()
+        super().save_model(request, obj, form, change)
+
+
+@admin.register(Order)
+class OrderAdmin(ConfirmingModelAdmin):
+    """Where a bank transfer becomes entitlement, until a payment provider exists.
+
+    `mark_paid` is the only way to grant a paid plan through money right now, and it runs the
+    same `billing.activate()` a provider webhook will call — so the grant, the coupon count and
+    the subscription period are identical either way, and both are idempotent.
+    """
+
+    list_display = ("id", "user", "plan", "total", "discount", "coupon", "status", "provider", "created_at", "paid_at")
+    list_filter = ("status", "provider", "plan")
+    search_fields = ("id", "user__email", "provider_charge_id", "coupon__code")
+    autocomplete_fields = ("user",)
+    readonly_fields = (
+        "subtotal_satang", "discount_satang", "total_satang", "coupon", "provider_charge_id",
+        "created_at", "paid_at",
+    )
+    actions = ("mark_paid", "mark_cancelled")
+
+    @admin.display(ordering="total_satang", description="total")
+    def total(self, obj):
+        return satang(obj.total_satang)
+
+    @admin.display(ordering="discount_satang", description="discount")
+    def discount(self, obj):
+        return satang(obj.discount_satang) if obj.discount_satang else "—"
+
+    def has_add_permission(self, request):
+        """Orders come from checkout, not from admin.
+
+        One typed in here would have a price nobody was quoted and no payment behind it.
+        """
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+    @admin.action(description="Confirm payment received and grant the plan")
+    def mark_paid(self, request, queryset):
+        if not request.user.is_superuser:
+            # This hands out paid entitlement. Staff who can edit users should not also be
+            # able to grant it silently through a bulk action.
+            raise PermissionDenied
+        granted = 0
+        skipped = 0
+        for order in queryset:
+            if order.status == Order.Status.PAID:
+                skipped += 1
+                continue
+            activate(order)
+            granted += 1
+        if granted:
+            self.message_user(request, f"{granted} order(s) confirmed and entitlement granted.", messages.SUCCESS)
+        if skipped:
+            self.message_user(request, f"{skipped} order(s) were already paid and were left alone.", messages.WARNING)
+
+    @admin.action(description="Cancel unpaid orders")
+    def mark_cancelled(self, request, queryset):
+        # Paid orders are excluded rather than refused: cancelling one would strip the record
+        # behind a subscription that is still running. Refunds are a provider operation.
+        updated = queryset.exclude(status=Order.Status.PAID).update(status=Order.Status.CANCELLED)
+        self.message_user(request, f"{updated} unpaid order(s) cancelled.", messages.SUCCESS)
+
+
+@admin.register(Subscription)
+class SubscriptionAdmin(ConfirmingModelAdmin):
+    list_display = ("user", "plan", "status", "current_period_end", "order", "created_at")
+    list_filter = ("status", "plan")
+    search_fields = ("user__email",)
+    autocomplete_fields = ("user",)
+    readonly_fields = ("order", "created_at")
+
+
+@admin.register(CouponRedemption)
+class CouponRedemptionAdmin(ConfirmingModelAdmin):
+    list_display = ("user", "coupon", "order", "redeemed_at")
+    list_filter = ("coupon",)
+    search_fields = ("user__email", "coupon__code")
+    readonly_fields = tuple(field.name for field in CouponRedemption._meta.fields)
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False

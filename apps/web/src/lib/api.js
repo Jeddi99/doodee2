@@ -90,6 +90,21 @@ export const sendChat = ({ message, conversationId, scanId }) => request('/chat/
   headers: { 'Content-Type': 'application/json' },
   body: JSON.stringify({ message, conversation_id: conversationId, scan_id: scanId }),
 });
+// Plans, coupons and orders. Prices cross the wire in satang (integer) — never baht floats.
+export const getPlans = () => request('/plans/');
+export const getOrders = () => request('/orders/');
+// Prices the discount without spending the coupon, so the total can be shown before the user
+// commits. The server re-checks it at order time; this result is a preview, not a reservation.
+export const validateCoupon = (code, plan) => request('/coupons/validate/', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ code, plan }),
+});
+export const createOrder = (plan, coupon) => request('/orders/', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ plan, coupon }),
+});
 export const deleteAccount = () => request('/account/', { method: 'DELETE' });
 export const redeemCode = (code) => request('/redeem/', {
   method: 'POST',

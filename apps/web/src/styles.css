@@ -11625,7 +11625,12 @@ body:has(.results-page) {
   grid-template-columns: repeat(auto-fit, minmax(268px, 1fr));
   gap: var(--space-4);
 }
-.pricing-plan {
+/* `.price-plans article` (the landing page's wide card) sets `grid-template-columns: 1fr 1fr`
+   and outranks a bare `.pricing-plan`, so in-app cards — a third the width — were splitting
+   into two ~150px columns and shredding the feature labels. Matched on the same specificity
+   here so the in-app card stacks, which is what the rule below always intended. */
+.pricing-view .price-plans article {
+  min-height: 0;
   display: flex;
   flex-direction: column;
   gap: var(--space-4);
@@ -11658,6 +11663,90 @@ body:has(.results-page) {
 }
 .pricing-plan li.is-excluded svg {
   color: var(--app-muted);
+}
+/* Checkout controls. .pricing-unavailable is kept: it is still the honest state for any
+   deployment where the plan list comes back empty or a tier is switched off mid-session. */
+.price-discount {
+  display: block;
+  margin-top: 4px;
+  color: var(--dd-blue-strong);
+  font-size: 12px;
+}
+.pricing-buy {
+  margin-top: auto;
+  padding-top: 12px;
+  display: grid;
+  gap: 8px;
+}
+.pricing-buy label {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 6px;
+  align-items: center;
+}
+.pricing-buy label span {
+  grid-column: 1 / -1;
+  color: var(--app-muted);
+  font-size: 12px;
+}
+.pricing-buy input {
+  min-height: 38px;
+  padding: 0 11px;
+  border: 1px solid var(--app-line);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.72);
+  font-size: 13px;
+  text-transform: uppercase;
+}
+.pricing-buy label button {
+  min-height: 38px;
+  padding: 0 14px;
+  border: 1px solid var(--app-line);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.72);
+  font-size: 13px;
+}
+.pricing-order {
+  min-height: 44px;
+  border: 0;
+  border-radius: 14px;
+  background: var(--app-ink);
+  color: #fff;
+  font-size: 14px;
+  font-weight: 600;
+}
+.pricing-order:disabled {
+  opacity: 0.5;
+}
+.pricing-coupon-error {
+  color: #b4243a;
+  font-size: 12px;
+}
+.pricing-contact {
+  margin-top: auto;
+  padding: 12px 0 0;
+  color: var(--dd-blue-strong);
+  font-size: 13px;
+  font-weight: 600;
+  text-decoration: none;
+}
+.pricing-placed {
+  margin-top: auto;
+  padding: 12px;
+  display: grid;
+  gap: 4px;
+  border: 1px solid var(--app-line);
+  border-radius: 14px;
+  background: rgba(226, 240, 253, 0.6);
+}
+.pricing-placed strong {
+  font-size: 13px;
+}
+.pricing-placed p {
+  margin: 0;
+  color: var(--app-muted);
+  font-size: 12px;
+  line-height: 1.55;
 }
 .pricing-current,
 .pricing-unavailable {

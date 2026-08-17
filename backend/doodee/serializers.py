@@ -1,6 +1,6 @@
 from rest_framework import serializers
 
-from .models import ChatConversation, ChatMessage, Scan, Simulation
+from .models import ChatConversation, ChatMessage, Order, Plan, Scan, Simulation
 from .storage import signed_url
 
 
@@ -100,4 +100,29 @@ class ChatConversationDetailSerializer(ChatConversationSerializer):
 
     class Meta(ChatConversationSerializer.Meta):
         fields = (*ChatConversationSerializer.Meta.fields, "messages")
+        read_only_fields = fields
+
+
+class PlanSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Plan
+        # Prices go out in satang; formatting to baht is the client's job, and doing it here
+        # would mean a float on the wire.
+        fields = (
+            "code", "name_th", "name_en", "description_th", "description_en",
+            "price_satang", "interval", "features", "self_serve", "sort_order",
+        )
+        read_only_fields = fields
+
+
+class OrderSerializer(serializers.ModelSerializer):
+    plan = serializers.SlugRelatedField(slug_field="code", read_only=True)
+    coupon = serializers.SlugRelatedField(slug_field="code", read_only=True)
+
+    class Meta:
+        model = Order
+        fields = (
+            "id", "plan", "coupon", "subtotal_satang", "discount_satang", "total_satang",
+            "currency", "status", "provider", "created_at", "paid_at",
+        )
         read_only_fields = fields
