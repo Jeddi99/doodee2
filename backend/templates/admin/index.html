@@ -2,6 +2,7 @@
 {# Operational overview above the stock model list. Values come from
    DoodeeAdminSite._overview(); the card styling matches the plan summary on the user
    changelist so the two pages read as one surface. #}
+{% load doodee_money %}
 {% block content %}
   <style>
     .ops-overview { display:grid; grid-template-columns:repeat(auto-fit,minmax(9rem,1fr)); gap:1rem; margin:0 0 1.5rem; }
@@ -11,6 +12,36 @@
     .ops-card.is-alert { border-color:var(--error-fg); }
     .ops-section-title { font-size:.8rem; letter-spacing:.08em; text-transform:uppercase; color:var(--body-quiet-color); margin:0 0 .5rem; }
   </style>
+
+  <p class="ops-section-title">คนใช้งาน</p>
+  <div class="ops-overview">
+    <div class="ops-card"><span>เข้าใช้วันนี้</span><strong>{{ headline.visitors.today }}</strong></div>
+    <div class="ops-card"><span>เข้าใช้ 7 วัน</span><strong>{{ headline.visitors.week }}</strong></div>
+    <div class="ops-card"><span>เข้าใช้ 30 วัน</span><strong>{{ headline.visitors.month }}</strong></div>
+    <a class="ops-card" href="{% url 'admin:auth_user_changelist' %}"><span>สมัครใหม่วันนี้</span><strong>{{ headline.signups.today }}</strong><small>เดือนนี้ {{ headline.signups.month }} · รวม {{ headline.signups.total }}</small></a>
+  </div>
+
+  <p class="ops-section-title">เงิน</p>
+  <div class="ops-overview">
+    <div class="ops-card"><span>รายได้เดือนนี้</span><strong>฿{{ headline.money.revenue_month_satang|satang }}</strong><small>เดือนก่อน ฿{{ headline.money.revenue_last_month_satang|satang }}</small></div>
+    <div class="ops-card"><span>รายได้สะสม</span><strong>฿{{ headline.money.revenue_total_satang|satang }}</strong></div>
+    <a class="ops-card" href="{% url 'admin:doodee_subscription_changelist' %}"><span>สมาชิกที่จ่ายอยู่</span><strong>{{ headline.money.paying }}</strong><small>MRR ฿{{ headline.money.mrr_satang|satang }}</small></a>
+    <a class="ops-card{% if headline.money.pending_orders %} is-alert{% endif %}" href="{% url 'admin:doodee_order_changelist' %}?status__exact=pending">
+      <span>รอยืนยันการโอน</span><strong>{{ headline.money.pending_orders }}</strong>
+      {% if headline.money.pending_orders %}<small>เงินที่รอคุณกดยืนยัน</small>{% endif %}
+    </a>
+  </div>
+
+  <p class="ops-section-title">ค่าใช้จ่าย AI</p>
+  <div class="ops-overview">
+    <a class="ops-card{% if headline.chat.over_budget %} is-alert{% endif %}" href="{% url 'admin:doodee_chatconversation_changelist' %}">
+      <span>ค่าแชทเดือนนี้ (ประมาณ)</span><strong>฿{{ headline.chat.cost_thb }}</strong>
+      <small>งบ ฿{{ headline.chat.budget_thb }}{% if headline.chat.over_budget %} — เกินงบแล้ว{% endif %}</small>
+    </a>
+    <div class="ops-card"><span>เทิร์นเดือนนี้</span><strong>{{ headline.chat.turns }}</strong></div>
+    <div class="ops-card"><span>แคชช่วยได้</span><strong>{{ headline.chat.cache_hit_percent }}%</strong><small>ของ input token</small></div>
+    <a class="ops-card" href="{% url 'admin:doodee_reports' %}"><span>รายงานทั้งหมด</span><strong>&rarr;</strong><small>12 เดือน · funnel · คูปอง</small></a>
+  </div>
 
   <p class="ops-section-title">การสแกน</p>
   <div class="ops-overview">

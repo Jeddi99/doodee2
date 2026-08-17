@@ -14,6 +14,8 @@ from datetime import timedelta
 
 from django.contrib.admin import AdminSite
 from django.db.models import Count, Q
+from django.shortcuts import render
+from django.urls import path
 from django.utils import timezone
 
 from .models import PromoRedemption, Scan, Simulation
@@ -25,7 +27,31 @@ class DoodeeAdminSite(AdminSite):
     index_title = "ภาพรวมระบบ"
 
     def index(self, request, extra_context=None):
-        return super().index(request, {**(extra_context or {}), **self._overview()})
+        from .analytics import headline
+
+        return super().index(request, {
+            **(extra_context or {}),
+            **self._overview(),
+            "headline": headline(),
+        })
+
+    def get_urls(self):
+        # Ahead of super()'s catch-all app_index route, which would otherwise try to resolve
+        # "reports" as an installed app label and 404.
+        return [
+            path("reports/", self.admin_view(self.reports_view), name="doodee_reports"),
+            *super().get_urls(),
+        ]
+
+    def reports_view(self, request):
+        """The deeper numbers. `admin_view` supplies the login gate and staff check."""
+        from .analytics import report
+
+        return render(request, "admin/doodee/reports.html", {
+            **self.each_context(request),
+            "title": "รายงาน",
+            "report": report(),
+        })
 
     @staticmethod
     def _overview():
@@ -33,7 +59,7 @@ class DoodeeAdminSite(AdminSite):
         last_7 = now - timedelta(days=7)
         last_30 = now - timedelta(days=30)
 
-        scans = Scan.objects.aggregate(
+        scans = Scan.objects.filter(is_demo=False).aggregate(
             total=Count("pk"),
             week=Count("pk", filter=Q(created_at__gte=last_7)),
             month=Count("pk", filter=Q(created_at__gte=last_30)),

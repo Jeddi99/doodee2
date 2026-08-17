@@ -1,9 +1,11 @@
+from datetime import timedelta
+
 from django.core.management.base import BaseCommand
 from django.db import transaction
 from django.db.models import Q
 from django.utils import timezone
 
-from doodee.models import Scan, Simulation
+from doodee.models import DailyActive, Scan, Simulation
 from doodee.tasks import cleanup_scan, cleanup_simulation, purge_scan_images, request_scan_deletion
 
 
@@ -33,4 +35,10 @@ class Command(BaseCommand):
                 simulation.deletion_requested_at = now
                 simulation.save(update_fields=("status", "deletion_requested_at", "updated_at"))
             transaction.on_commit(lambda simulation_id=str(simulation.id): cleanup_simulation.delay(simulation_id))
-        self.stdout.write(f"queued scans={counts[0]} adult_images={counts[1]} simulations={counts[2]}")
+        # Visit rows answer "how many people this month"; a year is more than enough history
+        # for that, and keeping them forever grows a per-user log with no expiry date.
+        stale_activity, _ = DailyActive.objects.filter(date__lt=now.date() - timedelta(days=365)).delete()
+        self.stdout.write(
+            f"queued scans={counts[0]} adult_images={counts[1]} simulations={counts[2]} "
+            f"activity_rows_deleted={stale_activity}"
+        )

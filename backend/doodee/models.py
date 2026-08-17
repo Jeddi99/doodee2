@@ -186,6 +186,10 @@ class ChatMessage(models.Model):
     # to tell whether the cache is being hit.
     input_tokens = models.PositiveIntegerField(default=0)
     cached_input_tokens = models.PositiveIntegerField(default=0)
+    # Billed at 1.25x the input rate and paid on the first turn of every conversation. Without
+    # it the cost report reads low against the real invoice, which is the one number an
+    # estimate must never do.
+    cache_write_tokens = models.PositiveIntegerField(default=0)
     output_tokens = models.PositiveIntegerField(default=0)
     created_at = models.DateTimeField(auto_now_add=True)
 
@@ -380,3 +384,29 @@ class Subscription(models.Model):
     class Meta:
         ordering = ("-current_period_end",)
         indexes = (models.Index(fields=("user", "status", "current_period_end")),)
+
+
+class DailyActive(models.Model):
+    """One row per user per day they used the app. The whole of the usage analytics.
+
+    Nothing recorded who was here before this: the app authenticates with Firebase tokens and
+    never calls django.contrib.auth.login(), so `User.last_login` is null for every account.
+    Only side effects were visible — a scan, a chat turn, an order — which counts people who
+    *did* something and misses everyone who opened the app, read their score card and left.
+
+    Deliberately just (user, date). No IP, no user agent, no page path: this app measures
+    faces, and a behavioural log is a much heavier thing to hold than a visit count. Anything
+    beyond "how many people, which day" needs a reason better than "it might be useful".
+    """
+
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="daily_active")
+    date = models.DateField()
+
+    class Meta:
+        ordering = ("-date",)
+        constraints = (models.UniqueConstraint(fields=("user", "date"), name="unique_daily_active"),)
+        # Every report groups by date across all users, never by user.
+        indexes = (models.Index(fields=("date",)),)
+
+    def __str__(self):
+        return f"{self.user_id} @ {self.date}"

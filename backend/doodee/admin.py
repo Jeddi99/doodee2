@@ -15,8 +15,8 @@ from django.utils import timezone
 
 from .models import (
     ChatConversation, ChatMessage, ChatUsage, ConsentEvent, Coupon, CouponRedemption,
-    FirebaseIdentity, Order, Plan, PromoCode, PromoRedemption, Scan, Simulation,
-    SimulationPreviewUsage, Subscription,
+    DailyActive, FirebaseIdentity, Order, Plan, PromoCode, PromoRedemption, Scan,
+    Simulation, SimulationPreviewUsage, Subscription,
 )
 from .billing import activate
 
@@ -561,6 +561,22 @@ class CouponRedemptionAdmin(ConfirmingModelAdmin):
     list_filter = ("coupon",)
     search_fields = ("user__email", "coupon__code")
     readonly_fields = tuple(field.name for field in CouponRedemption._meta.fields)
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+
+@admin.register(DailyActive)
+class DailyActiveAdmin(admin.ModelAdmin):
+    """The raw visit log. Read-only: an editable usage figure is one nobody can trust."""
+
+    list_display = ("date", "user")
+    list_filter = ("date",)
+    search_fields = ("user__email",)
+    date_hierarchy = "date"
 
     def has_add_permission(self, request):
         return False

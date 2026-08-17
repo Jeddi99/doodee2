@@ -170,6 +170,9 @@ def reply(context_text, history):
     return text, {
         "input_tokens": getattr(usage, "input_tokens", 0) or 0,
         "cached_input_tokens": getattr(usage, "cache_read_input_tokens", 0) or 0,
+        # Billed at 1.25x input and paid on the first turn of every conversation. Left out, the
+        # cost report reads low against the real invoice.
+        "cache_write_tokens": getattr(usage, "cache_creation_input_tokens", 0) or 0,
         "output_tokens": getattr(usage, "output_tokens", 0) or 0,
     }
 

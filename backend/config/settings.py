@@ -97,6 +97,17 @@ CHAT_PAID_TURNS = int(os.getenv("CHAT_PAID_TURNS", "300"))
 # never took, which pollutes every count in the admin overview.
 DEMO_SCANS_ENABLED = os.getenv("DEMO_SCANS_ENABLED", str(DEBUG)).lower() == "true"
 
+# What a chat turn costs, for the admin cost report. Per million tokens in USD, matching
+# Anthropic's published rates for whichever model CHAT_MODEL points at — update both together.
+# The report labels the result an estimate: the exchange rate below is a constant we choose,
+# and the invoice from Anthropic is always the real number.
+CHAT_PRICE_IN_USD_PER_MTOK = float(os.getenv("CHAT_PRICE_IN_USD_PER_MTOK", "5"))
+CHAT_PRICE_OUT_USD_PER_MTOK = float(os.getenv("CHAT_PRICE_OUT_USD_PER_MTOK", "25"))
+USD_THB_RATE = float(os.getenv("USD_THB_RATE", "35"))
+# Turns the LLM cost card red once the month's spend passes this. Sized against the ~฿570 of
+# the ฿1,000 budget that is not the VPS.
+LLM_BUDGET_THB_PER_MONTH = float(os.getenv("LLM_BUDGET_THB_PER_MONTH", "570"))
+
 CACHES = {
     "default": {
         "BACKEND": "django.core.cache.backends.redis.RedisCache",

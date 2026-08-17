@@ -6,6 +6,7 @@ from firebase_admin import auth
 from rest_framework.authentication import BaseAuthentication, get_authorization_header
 from rest_framework.exceptions import AuthenticationFailed
 
+from .activity import record_activity
 from .models import FirebaseIdentity
 
 
@@ -35,6 +36,7 @@ class FirebaseAuthentication(BaseAuthentication):
                 defaults={"email": "guest@example.com"}
             )
             FirebaseIdentity.objects.get_or_create(user=user, defaults={"firebase_uid": "dev-guest-uid"})
+            record_activity(user)
             return user, {"uid": "dev-guest-uid", "email": "guest@example.com"}
 
         try:
@@ -49,6 +51,9 @@ class FirebaseAuthentication(BaseAuthentication):
         if identity:
             if not identity.user.is_active:
                 raise AuthenticationFailed("Account is disabled")
+            # Stamped here rather than in middleware: DRF authenticates inside the view, so a
+            # middleware reading request.user sees AnonymousUser for every app request.
+            record_activity(identity.user)
             return identity.user, token
 
         user = User.objects.create_user(
@@ -57,5 +62,6 @@ class FirebaseAuthentication(BaseAuthentication):
             password=None,
         )
         FirebaseIdentity.objects.create(user=user, firebase_uid=uid)
+        record_activity(user)
         return user, token
 

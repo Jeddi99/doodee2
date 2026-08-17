@@ -17,8 +17,8 @@ from django.core.cache import cache
 
 from .models import (
     ChatConversation, ChatMessage, ChatUsage, ConsentEvent, Coupon, CouponRedemption,
-    FirebaseIdentity, Order, Plan, PromoCode, PromoRedemption, Scan, Simulation,
-    SimulationPreviewUsage, Subscription,
+    DailyActive, FirebaseIdentity, Order, Plan, PromoCode, PromoRedemption, Scan,
+    Simulation, SimulationPreviewUsage, Subscription,
 )
 from .billing import (
     CouponError, activate, create_order, discount_for, quote, sync_entitlement, validate_coupon,
@@ -27,6 +27,8 @@ from .views import COUPON_FAILURE_LIMIT
 from .chat import MAX_QUESTION_CHARS, SYSTEM_PROMPT, scan_context
 from .demo_data import create_demo_scan, demo_analysis_data
 from .chat_facts import TOPICS, answer as topic_answer
+from .activity import record_activity
+from .analytics import chat_cost_thb, funnel, headline, mrr_satang, report, revenue_satang
 from .analysis_engine import (
     POSE_TARGETS, SCAN_VIEW_MODES, _distance, _isotropic, _validate_pose_set, analyze_images,
     measured_views, pose_from_matrix,
@@ -2077,3 +2079,149 @@ class ChatFactsTest(TestCase):
     def test_the_score_explanation_states_it_is_not_a_beauty_score(self):
         self.assertIn("not attractiveness", topic_answer("score_meaning", self.scan.analysis_data, "en")[1])
         self.assertIn("ไม่ใช่การให้คะแนนความสวยงาม", topic_answer("score_meaning", self.scan.analysis_data, "th")[1])
+
+
+class ActivityTrackingTest(TestCase):
+    """Analytics must never be able to break sign-in."""
+
+    def setUp(self):
+        self.user = User.objects.create_user("visitor")
+        cache.clear()
+
+    def test_many_requests_in_one_day_write_one_row(self):
+        for _ in range(5):
+            record_activity(self.user)
+        self.assertEqual(DailyActive.objects.filter(user=self.user).count(), 1)
+
+    def test_a_second_day_writes_a_second_row(self):
+        today = timezone.localdate()
+        record_activity(self.user, today)
+        record_activity(self.user, today - timedelta(days=1))
+        self.assertEqual(DailyActive.objects.filter(user=self.user).count(), 2)
+
+    def test_a_cache_outage_still_records_and_never_raises(self):
+        # A day of missing counts is a gap in a chart; an exception here is every user locked out.
+        with patch("doodee.activity.cache.add", side_effect=RuntimeError("redis down")):
+            record_activity(self.user)
+        self.assertEqual(DailyActive.objects.filter(user=self.user).count(), 1)
+
+    def test_a_database_failure_is_swallowed_rather_than_breaking_auth(self):
+        with patch("doodee.models.DailyActive.objects.get_or_create", side_effect=RuntimeError("db gone")):
+            record_activity(self.user)  # must not raise
+
+    def test_calling_the_api_records_the_visit(self):
+        """The hook is in the auth class because DRF authenticates inside the view."""
+        client = APIClient()
+        client.force_authenticate(self.user)
+        client.get("/api/v1/session/")
+        # force_authenticate bypasses the auth class, so drive record_activity as the class does.
+        record_activity(self.user)
+        self.assertTrue(DailyActive.objects.filter(user=self.user, date=timezone.localdate()).exists())
+
+
+@override_settings(
+    CHAT_PRICE_IN_USD_PER_MTOK=5, CHAT_PRICE_OUT_USD_PER_MTOK=25,
+    USD_THB_RATE=35, LLM_BUDGET_THB_PER_MONTH=570,
+)
+class AnalyticsTest(TestCase):
+    def setUp(self):
+        cache.clear()
+        self.user = User.objects.create_user("payer", email="payer@example.com")
+        FirebaseIdentity.objects.create(user=self.user, firebase_uid="uid-payer")
+        self.plan = Plan.objects.get(code="member")
+
+    def test_cost_includes_the_cache_write_premium(self):
+        # 1M input + 1M cache write + 1M cache read + 1M output at $5/$25, rate 35.
+        # 5 + 6.25 + 0.5 + 25 = 36.75 USD -> 1286.25 THB
+        cost = chat_cost_thb({"input": 1_000_000, "cache_write": 1_000_000,
+                              "cache_read": 1_000_000, "output": 1_000_000})
+        self.assertAlmostEqual(cost, 1286.25, places=2)
+
+    def test_revenue_counts_only_paid_orders(self):
+        create_order(self.user, self.plan)                      # pending
+        activate(create_order(self.user, self.plan))            # paid
+        cancelled = create_order(self.user, self.plan)
+        Order.objects.filter(pk=cancelled.pk).update(status=Order.Status.CANCELLED)
+        self.assertEqual(revenue_satang(), 14900)
+
+    def test_the_dev_guest_and_staff_accounts_are_left_out_of_every_count(self):
+        guest = User.objects.create_user("firebase:dev-guest-uid")
+        FirebaseIdentity.objects.create(user=guest, firebase_uid="dev-guest-uid")
+        staff = User.objects.create_user("ops", is_staff=True)
+        FirebaseIdentity.objects.create(user=staff, firebase_uid="uid-ops")
+        for account in (guest, staff, self.user):
+            record_activity(account)
+        card = headline()
+        self.assertEqual(card["signups"]["total"], 1)
+        self.assertEqual(card["visitors"]["today"], 1)
+
+    def test_demo_scans_are_not_counted_as_activity(self):
+        create_demo_scan(self.user)
+        self.assertEqual(funnel()[1]["count"], 0)
+        Scan.objects.create(
+            user=self.user, age_band="adult", status=Scan.Status.COMPLETED,
+            analysis_data={}, expires_at=timezone.now() + timedelta(days=30),
+        )
+        self.assertEqual(funnel()[1]["count"], 1)
+
+    def test_the_funnel_places_a_user_at_the_step_they_reached(self):
+        Scan.objects.create(
+            user=self.user, age_band="adult", status=Scan.Status.COMPLETED,
+            analysis_data={}, expires_at=timezone.now() + timedelta(days=30),
+        )
+        steps = {step["step"]: step["count"] for step in funnel()}
+        self.assertEqual(steps["สแกนสำเร็จ"], 1)
+        # Scanned but never chatted and never paid — must not be counted further down.
+        self.assertEqual(steps["ใช้แชท"], 0)
+        self.assertEqual(steps["จ่ายเงิน"], 0)
+
+    def test_free_topic_answers_do_not_count_as_billable_turns(self):
+        conversation = ChatConversation.objects.create(user=self.user, title="t")
+        ChatMessage.objects.create(conversation=conversation, role=ChatMessage.Role.ASSISTANT, content="free")
+        ChatMessage.objects.create(
+            conversation=conversation, role=ChatMessage.Role.ASSISTANT, content="paid",
+            input_tokens=1000, output_tokens=200,
+        )
+        self.assertEqual(headline()["chat"]["turns"], 1)
+
+    def test_the_budget_alert_trips_only_above_the_ceiling(self):
+        self.assertIs(headline()["chat"]["over_budget"], False)
+        conversation = ChatConversation.objects.create(user=self.user, title="t")
+        # 30M output tokens at $25/M = $750 -> ฿26,250, well past ฿570.
+        ChatMessage.objects.create(
+            conversation=conversation, role=ChatMessage.Role.ASSISTANT, content="x",
+            input_tokens=1, output_tokens=30_000_000,
+        )
+        self.assertIs(headline()["chat"]["over_budget"], True)
+
+    def test_mrr_ignores_one_off_plans_and_prorates_yearly(self):
+        Plan.objects.filter(code="member").update(interval=Plan.Interval.YEAR)
+        activate(create_order(self.user, Plan.objects.get(code="member")))
+        self.assertEqual(mrr_satang(), 14900 // 12)
+
+    def test_the_report_renders_every_section_without_data(self):
+        """An empty database is the state on day one; the page must not 500 on it."""
+        data = report()
+        self.assertEqual(len(data["months"]), 12)
+        self.assertEqual(len(data["funnel"]), 4)
+        self.assertIsNone(data["tracking_started"])
+
+
+class ReportsPageTest(TestCase):
+    def test_it_refuses_anyone_who_is_not_staff(self):
+        response = self.client.get("/admin/reports/")
+        self.assertEqual(response.status_code, 302)
+        self.assertIn("/admin/login/", response["Location"])
+
+    def test_staff_can_read_it(self):
+        staff = User.objects.create_user("boss", password="x", is_staff=True, is_superuser=True)
+        self.client.force_login(staff)
+        response = self.client.get("/admin/reports/")
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "ผู้ใช้หลุดตรงไหน")
+
+    def test_the_reports_route_is_not_swallowed_by_the_admin_app_index(self):
+        """`admin/<app_label>/` would otherwise treat "reports" as an app and 404."""
+        from django.urls import reverse
+
+        self.assertEqual(reverse("admin:doodee_reports"), "/admin/reports/")

@@ -1,0 +1,148 @@
+{% extends "admin/base_site.html" %}
+{% load doodee_money %}
+{# The numbers that do not fit on the index. Plain tables on purpose: a chart library in the
+   admin is a dependency to maintain, and twelve rows read faster as twelve rows. #}
+
+{% block breadcrumbs %}
+  <div class="breadcrumbs"><a href="{% url 'admin:index' %}">หน้าแรก</a> &rsaquo; รายงาน</div>
+{% endblock %}
+
+{% block content %}
+<style>
+  .rp-section { margin: 0 0 2rem; }
+  .rp-section h2 { font-size: 1rem; margin: 0 0 .6rem; }
+  .rp-note { color: var(--body-quiet-color); font-size: .8rem; margin: .2rem 0 .8rem; }
+  .rp-table { width: 100%; border-collapse: collapse; font-size: .82rem; }
+  .rp-table th, .rp-table td { padding: .45rem .6rem; border-bottom: 1px solid var(--hairline-color); text-align: right; }
+  .rp-table th:first-child, .rp-table td:first-child { text-align: left; }
+  .rp-table thead th { color: var(--body-quiet-color); font-weight: 600; white-space: nowrap; }
+  .rp-bar { background: var(--darkened-bg); border-radius: 3px; height: .55rem; display: block; }
+  .rp-bar > i { background: var(--primary); border-radius: 3px; display: block; height: 100%; }
+  .rp-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr)); gap: 1rem; }
+  .rp-cards div { background: var(--darkened-bg); border: 1px solid var(--hairline-color); border-radius: 4px; padding: 1rem; }
+  .rp-cards strong { display: block; font-size: 1.5rem; line-height: 1.2; }
+  .rp-cards small { color: var(--body-quiet-color); }
+</style>
+
+<div class="rp-section">
+  <h2>ผู้ใช้หลุดตรงไหน</h2>
+  <p class="rp-note">นับเป็นจำนวนคน ไม่ใช่จำนวนครั้ง — คนที่สแกน 40 ครั้งนับเป็นหนึ่งคน ไม่รวมบัญชีทดสอบและสแกนตัวอย่าง</p>
+  <table class="rp-table">
+    <thead><tr><th>ขั้นตอน</th><th>จำนวนคน</th><th>สัดส่วน</th><th style="width:40%"></th></tr></thead>
+    <tbody>
+      {% for step in report.funnel %}
+        <tr>
+          <td>{{ step.step }}</td>
+          <td>{{ step.count }}</td>
+          <td>{{ step.percent }}%</td>
+          <td><span class="rp-bar"><i style="width:{{ step.percent }}%"></i></span></td>
+        </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<div class="rp-section">
+  <h2>ย้อนหลัง 12 เดือน</h2>
+  <p class="rp-note">
+    {% if report.tracking_started %}
+      เริ่มนับผู้เข้าใช้เมื่อ {{ report.tracking_started }} — เดือนก่อนหน้านั้นคอลัมน์ "เข้าใช้" เป็น 0 เพราะยังไม่ได้บันทึก ไม่ใช่เพราะไม่มีคนเข้า
+    {% else %}
+      ยังไม่มีข้อมูลผู้เข้าใช้ — เริ่มบันทึกตั้งแต่ deploy ครั้งนี้เป็นต้นไป ย้อนหลังไม่ได้
+    {% endif %}
+  </p>
+  <table class="rp-table">
+    <thead>
+      <tr><th>เดือน</th><th>สมัครใหม่</th><th>เข้าใช้</th><th>สแกน</th><th>เทิร์นแชท</th><th>ออเดอร์</th><th>รายได้</th><th>ค่าแชท</th></tr>
+    </thead>
+    <tbody>
+      {% for row in report.months %}
+        <tr>
+          <td>{{ row.month|date:"Y-m" }}</td>
+          <td>{{ row.signups }}</td>
+          <td>{{ row.active }}</td>
+          <td>{{ row.scans }}</td>
+          <td>{{ row.chat_turns }}</td>
+          <td>{{ row.orders }}</td>
+          <td>฿{{ row.revenue_satang|satang }}</td>
+          <td>฿{{ row.chat_cost_thb }}</td>
+        </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<div class="rp-section">
+  <h2>แชท — ตั้งแต่เริ่มใช้</h2>
+  <p class="rp-note">
+    ค่าใช้จ่ายเป็น<strong>ค่าประมาณ</strong> คำนวณจาก token ที่บันทึกไว้ คูณราคาต่อ token และอัตราแลกเปลี่ยนที่ตั้งไว้ใน settings —
+    บิลจริงจาก Anthropic คือตัวเลขที่ถูกต้องเสมอ นับเฉพาะเทิร์นที่เรียกโมเดลจริง คำตอบสำเร็จรูปไม่นับเพราะไม่มีต้นทุน
+  </p>
+  <div class="rp-cards">
+    <div><span>เทิร์นทั้งหมด</span><strong>{{ report.chat_all_time.turns }}</strong></div>
+    <div><span>ค่าใช้จ่ายสะสม</span><strong>฿{{ report.chat_all_time.cost_thb }}</strong></div>
+    <div><span>แคชช่วยได้</span><strong>{{ report.chat_all_time.cache_hit_percent }}%</strong><small>ยิ่งสูงยิ่งถูก</small></div>
+    <div><span>output token</span><strong>{{ report.chat_all_time.output }}</strong></div>
+  </div>
+</div>
+
+<div class="rp-section">
+  <h2>ผู้ใช้ที่ใช้แชทมากที่สุด</h2>
+  <p class="rp-note">ไว้ดูบัญชีที่อาจถูกยึด — ยอดที่โดดออกมาผิดปกติมักมาก่อนบิลที่บานปลาย</p>
+  <table class="rp-table">
+    <thead><tr><th>ผู้ใช้</th><th>เทิร์น</th><th>ค่าใช้จ่าย</th></tr></thead>
+    <tbody>
+      {% for row in report.heaviest %}
+        <tr>
+          <td><a href="{% url 'admin:auth_user_change' row.user_id %}">{{ row.email }}</a></td>
+          <td>{{ row.turns }}</td>
+          <td>฿{{ row.cost_thb }}</td>
+        </tr>
+      {% empty %}
+        <tr><td colspan="3">ยังไม่มีใครใช้แชท</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<div class="rp-section">
+  <h2>แผนและสมาชิก</h2>
+  <table class="rp-table">
+    <thead><tr><th>แผน</th><th>ราคา</th><th>รอบ</th><th>สมาชิกที่ยังใช้อยู่</th><th>เปิดขาย</th></tr></thead>
+    <tbody>
+      {% for row in report.plans %}
+        <tr>
+          <td>{{ row.name_th }} <small>({{ row.code }})</small></td>
+          <td>฿{{ row.price_satang|satang }}</td>
+          <td>{{ row.interval }}</td>
+          <td>{{ row.subscribers }}</td>
+          <td>{% if row.is_active %}ใช่{% else %}ปิดอยู่{% endif %}</td>
+        </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<div class="rp-section">
+  <h2>คูปอง</h2>
+  <p class="rp-note">ส่วนลดที่ให้ไปแล้วทั้งหมด ฿{{ report.discount_given_satang|satang }} — นับเฉพาะออเดอร์ที่จ่ายเงินแล้ว</p>
+  <table class="rp-table">
+    <thead><tr><th>โค้ด</th><th>ส่วนลด</th><th>ใช้ไป</th><th>ส่วนลดรวม</th><th>สถานะ</th></tr></thead>
+    <tbody>
+      {% for row in report.coupons %}
+        <tr>
+          <td><a href="{% url 'admin:doodee_coupon_changelist' %}?q={{ row.code }}">{{ row.code }}</a></td>
+          <td>{% if row.discount_type == "percent" %}{{ row.discount_value }}%{% else %}฿{{ row.discount_value|satang }}{% endif %}</td>
+          <td>{{ row.used_count }}{% if row.max_uses %} / {{ row.max_uses }}{% endif %}</td>
+          <td>฿{{ row.discount_given|default:0|satang }}</td>
+          <td>{% if row.is_active %}ใช้ได้{% else %}ปิดอยู่{% endif %}</td>
+        </tr>
+      {% empty %}
+        <tr><td colspan="5">ยังไม่มีคูปอง</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<p class="rp-note">คำนวณสดตอนเปิดหน้า — {{ report.generated_at }}</p>
+{% endblock %}
