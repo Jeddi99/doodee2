@@ -35,6 +35,7 @@ from .reference_scoring import (
     MAX_REFERENCE_SHIFT, REFERENCE_TARGETS, metric_score, reference_for, reference_target, score_observations,
 )
 from .serializers import ScanSerializer
+from .tasks import purge_scan_images
 from .simulation_engine import (
     DEFAULT_MAX_SHIFT, _movement, measurement_for, merge_movements, resolve_preset, simulate, validate_preset,
 )
@@ -1811,3 +1812,44 @@ class BillingApiTest(TestCase):
             current_period_end=timezone.now() - timedelta(minutes=1)
         )
         self.assertEqual(self.client.get("/api/v1/session/").data["plan"], "free")
+
+
+class ExpiredImageSerializerTest(TestCase):
+    """A completed scan without photos is the normal state after 30 days, not a broken one.
+
+    `purge_scan_images` (tasks.py:118) empties `image_objects` and keeps the row, so the client
+    has to be able to tell that apart from a scan that is still being analysed — otherwise it
+    waits forever for an image that was deliberately deleted.
+    """
+
+    def scan(self, **kwargs):
+        kwargs.setdefault("status", Scan.Status.COMPLETED)
+        kwargs.setdefault("image_objects", {})
+        return Scan.objects.create(
+            user=User.objects.create_user(f"u{Scan.objects.count()}"), age_band="adult",
+            expires_at=timezone.now() + timedelta(days=30), **kwargs,
+        )
+
+    def test_a_purged_scan_reports_its_images_as_expired(self):
+        data = ScanSerializer(self.scan()).data
+        self.assertIs(data["images_expired"], True)
+        self.assertIsNone(data["front_url"])
+
+    def test_a_scan_that_still_has_images_does_not(self):
+        data = ScanSerializer(self.scan(image_objects={"front": "scans/a.jpg"})).data
+        self.assertIs(data["images_expired"], False)
+
+    def test_a_scan_still_being_analysed_is_not_reported_as_expired(self):
+        # Otherwise the client would show "photo deleted" three seconds into a fresh scan.
+        data = ScanSerializer(self.scan(status=Scan.Status.PROCESSING)).data
+        self.assertIs(data["images_expired"], False)
+
+    def test_purging_produces_exactly_the_state_the_flag_describes(self):
+        """Ties the flag to the real retention path rather than to a hand-built row."""
+        scan = self.scan(image_objects={"front": "scans/a.jpg", "left_profile": "scans/b.jpg"})
+        with patch("doodee.tasks._delete_objects"):
+            purge_scan_images(str(scan.id))
+        scan.refresh_from_db()
+        self.assertEqual(scan.image_objects, {})
+        self.assertEqual(scan.status, Scan.Status.COMPLETED)
+        self.assertIs(ScanSerializer(scan).data["images_expired"], True)

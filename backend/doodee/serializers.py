@@ -9,13 +9,14 @@ class ScanSerializer(serializers.ModelSerializer):
     missing_optional_views = serializers.SerializerMethodField()
     front_url = serializers.SerializerMethodField()
     has_profile_images = serializers.SerializerMethodField()
+    images_expired = serializers.SerializerMethodField()
 
     class Meta:
         model = Scan
         fields = (
             "id", "status", "progress", "age_band", "reference_age_band", "reference_profile", "reference_population",
             "scan_mode", "analysis_data", "formula_version",
-            "analysis_tier", "missing_optional_views", "front_url", "has_profile_images",
+            "analysis_tier", "missing_optional_views", "front_url", "has_profile_images", "images_expired",
             "error_code", "error_message", "expires_at", "created_at",
         )
         read_only_fields = fields
@@ -30,6 +31,16 @@ class ScanSerializer(serializers.ModelSerializer):
     def get_missing_optional_views(self, obj):
         return (obj.analysis_data or {}).get("missing_optional_views")
 
+    def get_images_expired(self, obj):
+        """The photos were deleted on schedule, and are never coming back.
+
+        `purge_scan_images` (tasks.py:118) empties `image_objects` 30 days after a scan while
+        keeping the row and its `analysis_data` — biometrics go, derived numbers stay. Without
+        this flag a client cannot tell that permanent state apart from a signing failure it
+        should retry, and the honest message for each is different.
+        """
+        return obj.status == Scan.Status.COMPLETED and not (obj.image_objects or {})
+
     def get_front_url(self, obj):
         object_name = (obj.image_objects or {}).get("front")
         if obj.status != Scan.Status.COMPLETED or not object_name:
@@ -37,6 +48,8 @@ class ScanSerializer(serializers.ModelSerializer):
         try:
             return signed_url(object_name)
         except Exception:
+            # Storage being unreachable is temporary; `images_expired` stays False so the
+            # client offers a retry rather than claiming the photo was deleted.
             return None
 
 

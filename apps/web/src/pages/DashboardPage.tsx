@@ -13,6 +13,7 @@ import { useLocale } from "../useLocale";
 import { useQuery } from "@tanstack/react-query";
 import { getScan, getScans, getSession } from "../lib/api";
 import { errorMessage } from "../lib/apiError";
+import { dashboardGate } from "../lib/dashboardGate";
 import type { RatioRow } from "../lib/dashboardData";
 import {
   catalogAvailability,
@@ -30,6 +31,7 @@ import {
   ChevronDown,
   CircleHelp,
   CircleUserRound,
+  ImageOff,
   LayoutGrid,
   LockKeyhole,
   Menu,
@@ -39,6 +41,7 @@ import {
   Search,
   Settings2,
   Share2,
+  ShieldCheck,
   SlidersHorizontal,
   Sparkles,
   Target,
@@ -147,6 +150,42 @@ type InsightItem = { name: string; score: string; detail: string; ratios: string
  */
 const ScanDataContext = createContext<ScanData>(emptyScanData);
 const useScanData = () => useContext(ScanDataContext);
+
+/**
+ * The scan photograph, and why it is missing when it is.
+ *
+ * A completed scan without a photo is the *normal* state after 30 days: `purge_scan_images`
+ * (backend/doodee/tasks.py:118) deletes the images and empties `image_objects` while keeping
+ * the row and its measurements. The two reasons a URL can be absent need different words —
+ * `images_expired` is permanent and is the privacy promise being kept, while a signing failure
+ * is temporary and worth a refresh — so the flag comes from the server rather than being
+ * guessed from the absence itself.
+ *
+ * Carried in context rather than threaded as a prop because five components render the photo
+ * and none of them should have to know the difference.
+ */
+type ScanPhotoState = { url: string | null; expired: boolean };
+const ScanPhotoContext = createContext<ScanPhotoState>({ url: null, expired: false });
+
+function ScanPhoto({ alt, className }: { alt: string; className?: string }) {
+  const { url, expired } = useContext(ScanPhotoContext);
+  const { locale } = useLocale();
+  const th = locale !== "en";
+  if (url) return <img src={url} alt={alt} className={className} />;
+  const title = expired
+    ? th ? "ภาพถูกลบแล้ว" : "Photo deleted"
+    : th ? "โหลดภาพไม่ได้" : "Photo unavailable";
+  const detail = expired
+    ? th ? "ตามกำหนด 30 วัน ค่าที่วัดได้ยังอยู่ครบ" : "On schedule after 30 days. Your measurements are still here."
+    : th ? "ลองรีเฟรชหน้านี้อีกครั้ง" : "Try refreshing the page.";
+  return (
+    <span className={`scan-photo-placeholder ${className || ""}`} role="img" aria-label={`${alt} — ${title}. ${detail}`}>
+      {expired ? <ShieldCheck aria-hidden="true" /> : <ImageOff aria-hidden="true" />}
+      <strong>{title}</strong>
+      <small>{detail}</small>
+    </span>
+  );
+}
 
 /** Inverse of PILLAR_CATEGORIES in lib/dashboardData, for grouping rows under a pillar tab. */
 /** Matches _user_plan() in backend/doodee/views.py. */
@@ -387,11 +426,9 @@ function InsightList({
 }
 
 function Overview({
-  scanImage,
   openView,
   onUnlock,
 }: {
-  scanImage: string;
   openView: (view: AppView) => void;
   onUnlock: () => void;
 }) {
@@ -449,11 +486,11 @@ function Overview({
             <p>{current.note}</p>
             <div className="score-portrait-pair">
               <figure>
-                <img src={scanImage} alt="Your front scan" />
+                <ScanPhoto alt="Your front scan" />
                 <figcaption>Front</figcaption>
               </figure>
               <figure>
-                <img src={scanImage} alt="Your side scan" className="is-side" />
+                <ScanPhoto alt="Your side scan" className="is-side" />
                 <figcaption>Side</figcaption>
               </figure>
             </div>
@@ -520,13 +557,11 @@ function RatioModal({
   metric,
   index,
   total,
-  scanImage,
   onClose,
 }: {
   metric: RatioMetric;
   index: number;
   total: number;
-  scanImage: string;
   onClose: () => void;
 }) {
   const [tab, setTab] = useState("Overview");
@@ -555,7 +590,7 @@ function RatioModal({
         </header>
         <div className="ratio-modal__hero">
           <figure>
-            <img src={scanImage} alt={`Your ${metric.name} measurement`} />
+            <ScanPhoto alt={`Your ${metric.name} measurement`} />
             <span>{metric.value}</span>
           </figure>
           <div className="ratio-modal__score">
@@ -917,11 +952,9 @@ function UnlockModal({ onClose }: { onClose: () => void }) {
 }
 
 function Analysis({
-  scanImage,
   onUnlock,
   openView,
 }: {
-  scanImage: string;
   onUnlock: () => void;
   openView: (view: AppView) => void;
 }) {
@@ -943,6 +976,7 @@ function Analysis({
     setShowAll(false);
     setActiveIndex(0);
   }, [pillar, angle]);
+  const photo = useContext(ScanPhotoContext);
   useEffect(() => {
     const close = (event: KeyboardEvent) => {
       if (event.key === "Escape") setSelectedMetric(null);
@@ -992,7 +1026,7 @@ function Analysis({
           type="button"
           onClick={() => setAngle("front")}
         >
-          <img src={scanImage} alt="Front view" />
+          <ScanPhoto alt="Front view" />
           <span>
             <small>Front</small>
             <strong>{pillar === "harmony" ? "7.4" : "Locked"}</strong>
@@ -1003,7 +1037,7 @@ function Analysis({
           type="button"
           onClick={() => setAngle("side")}
         >
-          <img className="is-side" src={scanImage} alt="Side view" />
+          <ScanPhoto className="is-side" alt="Side view" />
           <span>
             <small>Side</small>
             <strong>5.9</strong>
@@ -1024,12 +1058,16 @@ function Analysis({
         <GlassCard
           className={`analysis-face-card analysis-face-card--${angle}`}
         >
-          <img src={scanImage} alt={`Your ${angle} facial analysis`} />
-          <svg viewBox="0 0 600 760" aria-hidden="true">
-            <path d="M145 230H455M130 327H470M157 468H443M188 596H412M300 185V630" />
-            <circle cx="300" cy="327" r="5" />
-            <circle cx="300" cy="468" r="5" />
-          </svg>
+          <ScanPhoto alt={`Your ${angle} facial analysis`} />
+          {/* The overlay only means something on top of a face. Drawn over the placeholder it
+              would read as landmarks measured on an empty box. */}
+          {photo.url ? (
+            <svg viewBox="0 0 600 760" aria-hidden="true">
+              <path d="M145 230H455M130 327H470M157 468H443M188 596H412M300 185V630" />
+              <circle cx="300" cy="327" r="5" />
+              <circle cx="300" cy="468" r="5" />
+            </svg>
+          ) : null}
           <div className="analysis-face-overlay">
             <span>
               {angle} {pillars.find((item) => item.id === pillar)?.label}
@@ -1172,7 +1210,6 @@ function Analysis({
           metric={selectedMetric}
           index={list.findIndex((item) => item.id === selectedMetric.id)}
           total={list.length}
-          scanImage={scanImage}
           onClose={() => setSelectedMetric(null)}
         />
       )}
@@ -1183,10 +1220,8 @@ function Analysis({
 }
 
 function Plan({
-  scanImage,
   onUnlock,
 }: {
-  scanImage: string;
   onUnlock: () => void;
 }) {
   const [mode, setMode] = useState("Timeline");
@@ -1213,8 +1248,8 @@ function Plan({
           </strong>
         </div>
         <div className="potential-profile">
-          <img src={scanImage} alt="Front profile" />
-          <img className="is-side" src={scanImage} alt="Side profile" />
+          <ScanPhoto alt="Front profile" />
+          <ScanPhoto className="is-side" alt="Side profile" />
         </div>
         <div className="potential-meta">
           <span>
@@ -1433,12 +1468,27 @@ export default function DashboardPage({ view }: { view: AppView }) {
       </main>
     );
 
-  // Only the views that actually put the photograph on screen wait for it. Chat is in the
-  // top nav with them but is built from the measurements, not the image — making it wait
-  // would leave it permanently blank whenever a signed URL fails, for no reason.
-  if (IMAGE_BACKED_VIEWS.has(view) && !scanImage)
+  // Wait on the *analysis*, never on the photo. `purge_scan_images` deletes the images 30 days
+  // after a scan and keeps the measurements, so "completed with no photo" is the normal steady
+  // state for every account — gating the render on the image turned that state into a
+  // permanently blank page. ScanPhoto explains the gap where the photo used to be instead.
+  const gate = dashboardGate(scan);
+  if (IMAGE_BACKED_VIEWS.has(view) && gate === "failed")
+    return (
+      <main className="doodee-app doodee-app--handoff">
+        <div className="app-load-error" role="alert">
+          <strong>This scan could not be analysed.</strong>
+          <p>{scan.error_message || "Capture three angles again in good, even light."}</p>
+          <button type="button" onClick={() => navigate("/scan")}>
+            <RefreshCw size={16} /> New scan
+          </button>
+        </div>
+      </main>
+    );
+  if (IMAGE_BACKED_VIEWS.has(view) && gate === "waiting")
     return <main className="doodee-app doodee-app--handoff" aria-busy="true" />;
   return (
+    <ScanPhotoContext.Provider value={{ url: scanImage, expired: scan?.images_expired === true }}>
     <ScanDataContext.Provider value={scanData}>
     <main className="doodee-app">
       <aside className={`app-sidebar ${menuOpen ? "is-open" : ""}`}>
@@ -1475,13 +1525,15 @@ export default function DashboardPage({ view }: { view: AppView }) {
             <Plus /> New scan
           </button>
         </div>
-        {scanImage ? (
+        {/* Keyed on the scan existing, not on its photo. A scan whose images were purged is
+            still a scan, and telling its owner "No scan yet" would be plainly false. */}
+        {scanId ? (
           <button
             className="history-card is-active"
             type="button"
             onClick={() => openView("overview")}
           >
-            <img src={scanImage} alt="Latest scan" />
+            <ScanPhoto alt="Latest scan" />
             <span>
               <strong>Latest scan</strong>
               <small>{scanData.overall === null ? "Analysing…" : `Overall ${scanData.overall.toFixed(1)}`}</small>
@@ -1625,20 +1677,18 @@ export default function DashboardPage({ view }: { view: AppView }) {
         <div className="app-content">
           {view === "overview" && (
             <Overview
-              scanImage={scanImage}
               openView={openView}
               onUnlock={() => setUnlockOpen(true)}
             />
           )}
           {view === "analysis" && (
             <Analysis
-              scanImage={scanImage}
               openView={openView}
               onUnlock={() => setUnlockOpen(true)}
             />
           )}
           {view === "plan" && (
-            <Plan scanImage={scanImage} onUnlock={() => setUnlockOpen(true)} />
+            <Plan onUnlock={() => setUnlockOpen(true)} />
           )}
           {view === "simulate" && (
             <Suspense fallback={<div className="app-view" aria-busy="true" />}>
@@ -1672,5 +1722,6 @@ export default function DashboardPage({ view }: { view: AppView }) {
       )}
     </main>
     </ScanDataContext.Provider>
+    </ScanPhotoContext.Provider>
   );
 }

@@ -601,7 +601,8 @@ body:has(.doodee-app),
   background: #edf3f8;
 }
 
-.score-portrait-pair img {
+.score-portrait-pair img,
+.score-portrait-pair .scan-photo-placeholder {
   width: 100%;
   height: 128px;
   object-fit: cover;
@@ -908,7 +909,7 @@ body:has(.doodee-app),
   object-position: 50% 32%;
 }
 
-.analysis-face-card svg {
+.analysis-face-card > svg {
   position: absolute;
   inset: 0;
   width: 100%;
@@ -919,7 +920,7 @@ body:has(.doodee-app),
   filter: drop-shadow(0 0 5px rgba(8,123,255,.55));
 }
 
-.analysis-face-card svg circle {
+.analysis-face-card > svg circle {
   fill: var(--app-blue);
   stroke-width: 3;
 }
@@ -1416,7 +1417,7 @@ body:has(.doodee-app),
   .overall-score { display: grid; grid-template-columns: auto 1fr; align-items: end; gap: 0 7px; }
   .overall-score > p { grid-column: 1 / -1; }
   .score-portrait-pair { grid-column: 1 / -1; }
-  .score-portrait-pair img { height: 154px; }
+  .score-portrait-pair img, .score-portrait-pair .scan-photo-placeholder { height: 154px; }
   .overall-distribution { padding-top: 4px; border-top: 1px solid var(--app-line); }
   .insight-panel { padding: 18px; border-radius: 21px; }
   .insight-panel header > button { padding: 8px; font-size: 0; }
@@ -10882,7 +10883,8 @@ body:has(.results-page) {
 .analysis-profile-strip > button { min-width: 155px; padding: 6px; display: flex; align-items: center; gap: 9px; border: 1px solid transparent; border-radius: 14px; background: rgba(255,255,255,.45); text-align: left; }
 .analysis-profile-strip > button:hover,
 .analysis-profile-strip > button.is-active { border-color: rgba(22,135,255,.22); background: rgba(226,241,255,.76); transform: translateY(-1px); }
-.analysis-profile-strip img { width: 48px; height: 48px; border-radius: 9px; object-fit: cover; object-position: 50% 31%; }
+.analysis-profile-strip img,
+.analysis-profile-strip .scan-photo-placeholder { width: 48px; height: 48px; min-height: 0; padding: 0; border-radius: 9px; object-fit: cover; object-position: 50% 31%; }
 .analysis-profile-strip img.is-side { transform: scale(1.1) translateX(4%); object-position: 68% 31%; }
 .analysis-profile-strip button span,
 .analysis-profile-strip > div { display: grid; gap: 2px; }
@@ -10892,9 +10894,9 @@ body:has(.results-page) {
 
 .analysis-deep-layout { margin-top: 16px; display: grid; grid-template-columns: minmax(330px,.42fr) minmax(560px,.58fr); align-items: start; gap: 16px; }
 .analysis-view--deep .analysis-face-card { min-height: 610px; position: sticky; top: 126px; border-radius: 26px; background: #dfe9f2; box-shadow: var(--app-shadow); }
-.analysis-view--deep .analysis-face-card img { width: 100%; height: 610px; object-fit: cover; object-position: 50% 31%; transition: transform 420ms cubic-bezier(.16,1,.3,1), object-position 420ms ease; }
+.analysis-view--deep .analysis-face-card img, .analysis-view--deep .analysis-face-card .scan-photo-placeholder { width: 100%; height: 610px; object-fit: cover; object-position: 50% 31%; transition: transform 420ms cubic-bezier(.16,1,.3,1), object-position 420ms ease; }
 .analysis-view--deep .analysis-face-card--side img { object-position: 70% 31%; transform: scale(1.16) translateX(4%); }
-.analysis-view--deep .analysis-face-card svg { opacity: .8; transition: opacity 180ms ease; }
+.analysis-view--deep .analysis-face-card > svg { opacity: .8; transition: opacity 180ms ease; }
 .analysis-view--deep .analysis-face-card:hover svg { opacity: 1; }
 .analysis-face-overlay { min-height: 118px; padding: 44px 24px 18px; display: grid; gap: 2px; position: absolute; inset: auto 0 0; background: linear-gradient(transparent, rgba(8,14,22,.88)); color: #fff; }
 .analysis-face-overlay > span { font-size: 10px; text-transform: uppercase; opacity: .72; }
@@ -10949,7 +10951,7 @@ body:has(.results-page) {
 .unlock-modal__close svg { width: 15px; }
 .ratio-modal__hero { padding: 22px; display: grid; grid-template-columns: minmax(300px,.75fr) minmax(360px,1.25fr); gap: 22px; }
 .ratio-modal__hero figure { min-height: 360px; margin: 0; position: relative; overflow: hidden; border-radius: 22px; background: #dfe9f2; }
-.ratio-modal__hero img { width: 100%; height: 360px; object-fit: cover; object-position: 50% 28%; }
+.ratio-modal__hero img, .ratio-modal__hero .scan-photo-placeholder { width: 100%; height: 360px; object-fit: cover; object-position: 50% 28%; }
 .ratio-modal__hero figure > span { padding: 8px 11px; position: absolute; left: 16px; bottom: 16px; border-radius: 999px; background: rgba(255,255,255,.84); box-shadow: 0 8px 22px rgba(15,30,50,.14); font-size: 11px; }
 .ratio-modal__score { padding: 24px; display: grid; align-content: center; border: 1px solid var(--app-line); border-radius: 22px; background: rgba(255,255,255,.5); }
 .ratio-modal__score > strong { margin-top: 10px; font-size: 72px; font-weight: 400; letter-spacing: -.07em; }
@@ -10993,7 +10995,7 @@ body:has(.results-page) {
 
 .potential-card--deep { grid-template-columns: minmax(180px,1fr) 40px minmax(180px,1fr) minmax(220px,.9fr); }
 .potential-profile { display: grid !important; grid-template-columns: repeat(2,1fr); gap: 8px !important; }
-.potential-profile img { width: 100%; height: 112px; border-radius: 14px; object-fit: cover; object-position: 50% 28%; }
+.potential-profile img, .potential-profile .scan-photo-placeholder { width: 100%; height: 112px; border-radius: 14px; object-fit: cover; object-position: 50% 28%; }
 .potential-profile img.is-side { object-position: 70% 28%; transform: scale(1.03); }
 .potential-meta { grid-column: 1 / -1; display: flex !important; flex-direction: row !important; gap: 8px !important; }
 .potential-meta span { min-width: 150px; padding: 11px 14px; display: grid; gap: 2px; border: 1px solid var(--app-line); border-radius: 13px; background: rgba(255,255,255,.5); color: var(--app-muted); font-size: 9px; }
@@ -11763,6 +11765,67 @@ body:has(.results-page) {
   margin-top: var(--space-6);
   color: var(--app-muted);
   font-size: 13px;
+}
+
+/* Stands in for the scan photograph when there is none. A completed scan loses its images
+   after 30 days by design (purge_scan_images), so this is a normal steady state, not an
+   error — it keeps the layout intact and says which of the two reasons applies. */
+.scan-photo-placeholder {
+  display: grid;
+  place-content: center;
+  gap: 3px;
+  width: 100%;
+  height: 100%;
+  min-height: 112px;
+  padding: 14px;
+  border-radius: inherit;
+  background: #eaf1f7;
+  color: var(--app-muted);
+  text-align: center;
+}
+.scan-photo-placeholder svg {
+  width: 20px;
+  height: 20px;
+  justify-self: center;
+  opacity: 0.75;
+}
+.scan-photo-placeholder strong {
+  font-size: 12px;
+  color: #3d495a;
+}
+.scan-photo-placeholder small {
+  font-size: 10px;
+  line-height: 1.45;
+}
+/* The sidebar thumbnail is a small square; only the icon fits. */
+.history-card .scan-photo-placeholder {
+  width: 44px;
+  height: 44px;
+  min-height: 0;
+  padding: 0;
+  border-radius: 12px;
+}
+.history-card .scan-photo-placeholder strong,
+.history-card .scan-photo-placeholder small {
+  display: none;
+}
+
+.analysis-profile-strip .scan-photo-placeholder strong,
+.analysis-profile-strip .scan-photo-placeholder small {
+  display: none;
+}
+/* 560-610px of empty box helps nobody. When the photo is gone the hero shrinks to the size the
+   message actually needs, and the score caption below it moves up with it. Kept unscoped and
+   last so it also beats the fixed heights the responsive blocks above set on the card. */
+.analysis-face-card:has(.scan-photo-placeholder),
+.analysis-view--deep .analysis-face-card:has(.scan-photo-placeholder) {
+  min-height: 260px;
+  height: auto;
+}
+.analysis-face-card .scan-photo-placeholder,
+.analysis-view--deep .analysis-face-card .scan-photo-placeholder {
+  min-height: 260px;
+  height: 260px;
 }
 
 /* Settings */
