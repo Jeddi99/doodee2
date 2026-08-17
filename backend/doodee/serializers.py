@@ -17,6 +17,7 @@ class ScanSerializer(serializers.ModelSerializer):
             "id", "status", "progress", "age_band", "reference_age_band", "reference_profile", "reference_population",
             "scan_mode", "analysis_data", "formula_version",
             "analysis_tier", "missing_optional_views", "front_url", "has_profile_images", "images_expired",
+            "is_demo",
             "error_code", "error_message", "expires_at", "created_at",
         )
         read_only_fields = fields

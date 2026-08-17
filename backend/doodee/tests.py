@@ -25,6 +25,7 @@ from .billing import (
 )
 from .views import COUPON_FAILURE_LIMIT
 from .chat import MAX_QUESTION_CHARS, SYSTEM_PROMPT, scan_context
+from .demo_data import create_demo_scan, demo_analysis_data
 from .analysis_engine import (
     POSE_TARGETS, SCAN_VIEW_MODES, _distance, _isotropic, _validate_pose_set, analyze_images,
     measured_views, pose_from_matrix,
@@ -1853,3 +1854,90 @@ class ExpiredImageSerializerTest(TestCase):
         self.assertEqual(scan.image_objects, {})
         self.assertEqual(scan.status, Scan.Status.COMPLETED)
         self.assertIs(ScanSerializer(scan).data["images_expired"], True)
+
+
+@override_settings(DEMO_SCANS_ENABLED=True)
+class DemoScanTest(TestCase):
+    """Sample data, so the four gated features are reachable without a camera."""
+
+    def setUp(self):
+        self.user = User.objects.create_user("demouser")
+        self.client = APIClient()
+        self.client.force_authenticate(self.user)
+
+    def test_it_produces_a_completed_scan_the_real_scorer_would_recognise(self):
+        response = self.client.post("/api/v1/scans/demo/")
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.data["status"], "completed")
+        self.assertIs(response.data["is_demo"], True)
+        scores = response.data["analysis_data"]["reference_scores"]
+        # Same status string reference_scoring stamps on a real run, so percentile.py and
+        # chat.py accept it without a special case.
+        self.assertEqual(scores["status"], "experimental_reference_similarity")
+        self.assertEqual(len(scores["metrics"]), len(CATEGORIES))
+
+    def test_the_numbers_are_deterministic(self):
+        """A screenshot taken today has to match one taken next week."""
+        first = demo_analysis_data()["reference_scores"]
+        second = demo_analysis_data()["reference_scores"]
+        self.assertEqual(first["overall_score"], second["overall_score"])
+        self.assertEqual(
+            [m["normalized_deviation"] for m in first["metrics"]],
+            [m["normalized_deviation"] for m in second["metrics"]],
+        )
+
+    def test_it_carries_no_images_and_says_so_as_sample_data(self):
+        """Never "your photos were deleted" — nothing was ever taken."""
+        response = self.client.post("/api/v1/scans/demo/")
+        scan = Scan.objects.get(id=response.data["id"])
+        self.assertEqual(scan.image_objects, {})
+        self.assertIsNone(response.data["front_url"])
+        self.assertIs(response.data["is_demo"], True)
+
+    def test_asking_twice_returns_the_same_scan_rather_than_stacking_them(self):
+        first = self.client.post("/api/v1/scans/demo/")
+        second = self.client.post("/api/v1/scans/demo/")
+        self.assertEqual(second.status_code, 200)
+        self.assertEqual(first.data["id"], second.data["id"])
+        self.assertEqual(Scan.objects.filter(user=self.user).count(), 1)
+
+    def test_the_score_card_works_off_it(self):
+        self.user.groups.add(Group.objects.get(name="pro_member"))
+        scan_id = self.client.post("/api/v1/scans/demo/").data["id"]
+        card = self.client.get(f"/api/v1/scans/{scan_id}/score-card/")
+        self.assertEqual(card.status_code, 200)
+        self.assertIsNotNone(card.data["similarity_percentile"])
+        self.assertEqual(card.data["metric_count"], len(CATEGORIES))
+
+    def test_chat_sees_the_measurements(self):
+        scan = create_demo_scan(self.user)
+        context = scan_context(scan)
+        self.assertIn("alar_width", context)
+        self.assertIn("within_reference_age_range", context)
+
+    @override_settings(DEMO_SCANS_ENABLED=False)
+    def test_it_is_refused_when_switched_off(self):
+        # On a real deployment this would let anyone manufacture a scan they never took.
+        self.assertEqual(self.client.post("/api/v1/scans/demo/").status_code, 403)
+        self.assertIs(self.client.get("/api/v1/session/").data["demo_scans_enabled"], False)
+
+    def test_the_route_is_not_swallowed_by_the_scan_detail_route(self):
+        """`scans/<pk>/` matches [^/.]+, so "demo" would be read as a scan id if ordered wrong."""
+        self.assertEqual(self.client.post("/api/v1/scans/demo/").status_code, 201)
+
+    def test_the_management_command_refuses_an_unknown_account(self):
+        from django.core.management.base import CommandError
+
+        with self.assertRaises(CommandError):
+            call_command("seed_demo_scan", "nobody@example.com")
+
+    def test_the_management_command_will_not_silently_stack_demo_scans(self):
+        from django.core.management.base import CommandError
+
+        self.user.email = "demo@example.com"
+        self.user.save(update_fields=("email",))
+        call_command("seed_demo_scan", "demo@example.com")
+        with self.assertRaises(CommandError):
+            call_command("seed_demo_scan", "demo@example.com")
+        call_command("seed_demo_scan", "demo@example.com", "--replace")
+        self.assertEqual(Scan.objects.filter(user=self.user, is_demo=True).count(), 1)

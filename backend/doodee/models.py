@@ -53,6 +53,10 @@ class Scan(models.Model):
     reference_population = models.CharField(max_length=8, default="TH")
     scan_mode = models.CharField(max_length=16, choices=ScanMode.choices, default=ScanMode.FULL)
     image_objects = models.JSONField(default=dict)
+    # Sample data, not a real person. Carried on the row rather than inferred from the absence
+    # of images, because a real scan whose photos expired looks identical and the two must
+    # never be described to the user with the same words.
+    is_demo = models.BooleanField(default=False)
     analysis_data = models.JSONField(null=True, blank=True)
     formula_version = models.CharField(max_length=16, default="2026.1")
     error_code = models.CharField(max_length=40, blank=True)

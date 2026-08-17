@@ -11828,6 +11828,44 @@ body:has(.results-page) {
   height: 260px;
 }
 
+/* The "no scan yet" fork. Without sample data this screen never appears — the app redirects
+   straight to the camera, which is a dead end on any machine without one. */
+.demo-chooser {
+  max-width: 460px;
+}
+.demo-chooser__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: center;
+}
+.demo-chooser__actions button {
+  min-height: 42px;
+  padding: 0 18px;
+  border: 0;
+  border-radius: 14px;
+  background: var(--app-ink);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 600;
+}
+.demo-chooser__actions button.is-secondary {
+  border: 1px solid var(--app-line);
+  background: rgba(255, 255, 255, 0.72);
+  color: #3d495a;
+}
+.demo-chooser__actions button:disabled {
+  opacity: 0.5;
+}
+.demo-chooser small {
+  color: var(--app-muted);
+  font-size: 11px;
+  line-height: 1.5;
+}
+.demo-chooser small[role="alert"] {
+  color: #b4243a;
+}
+
 /* Settings */
 .settings-grid {
   display: grid;

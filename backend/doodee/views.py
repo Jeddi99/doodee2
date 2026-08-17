@@ -22,6 +22,7 @@ from .models import (
     PromoRedemption, Scan, Simulation, SimulationPreviewUsage,
 )
 from .billing import CouponError, create_order, quote, sync_entitlement, validate_coupon
+from .demo_data import create_demo_scan
 from .procedures import PROCEDURES
 from .chat import (
     HISTORY_TURNS, MAX_QUESTION_CHARS, ChatUnavailable, chat_enabled, reply as chat_reply,
@@ -62,6 +63,7 @@ def session(request):
         # one place — the same reason simulation_locked is a server field.
         "score_card_locked": plan == "free",
         "chat_enabled": chat_enabled(),
+        "demo_scans_enabled": settings.DEMO_SCANS_ENABLED,
         # Same reasoning as preview_remaining: the client shows the counter and the upgrade
         # prompt, but the number it shows is the one the server will actually enforce.
         "chat_remaining": _chat_remaining(request.user),
@@ -723,3 +725,27 @@ class OrderViewSet(viewsets.GenericViewSet, mixins.ListModelMixin, mixins.Retrie
             {**OrderSerializer(order).data, "payment_instructions": "manual_transfer"},
             status=status.HTTP_201_CREATED,
         )
+
+
+@api_view(("POST",))
+def demo_scan(request):
+    """Mint a completed sample scan for the caller.
+
+    Everything gated on "you must have a scan" — chat, the score card, the paid upsells — is
+    unreachable without a camera, MediaPipe, Celery and Supabase all working. This produces the
+    same `analysis_data` the real pipeline would, from the real scoring module, so the features
+    downstream are exercised rather than mocked.
+
+    Off unless DEMO_SCANS_ENABLED. On a real deployment this would let anyone manufacture a
+    scan they never took, and every figure on the admin overview would count it as genuine.
+    """
+    if not settings.DEMO_SCANS_ENABLED:
+        return Response({"detail": "demo_scans_disabled"}, status=status.HTTP_403_FORBIDDEN)
+    # One at a time: the point is to unblock the dashboard, not to let a held-down button fill
+    # the table. An existing demo scan is returned rather than duplicated.
+    existing = Scan.objects.filter(user=request.user, is_demo=True, status=Scan.Status.COMPLETED).first()
+    scan = existing or create_demo_scan(request.user)
+    return Response(
+        ScanSerializer(scan).data,
+        status=status.HTTP_200_OK if existing else status.HTTP_201_CREATED,
+    )

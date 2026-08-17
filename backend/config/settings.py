@@ -92,6 +92,10 @@ CHAT_ENABLED = os.getenv("CHAT_ENABLED", "true").lower() == "true"
 # bound the bill if an account is stolen, not to ration the feature.
 CHAT_FREE_TURNS = int(os.getenv("CHAT_FREE_TURNS", "5"))
 CHAT_PAID_TURNS = int(os.getenv("CHAT_PAID_TURNS", "300"))
+# Sample scans, so chat, the score card and the paid gates can be exercised without a camera.
+# Defaults to DEBUG: on a real deployment this would let anyone mint a "completed" scan they
+# never took, which pollutes every count in the admin overview.
+DEMO_SCANS_ENABLED = os.getenv("DEMO_SCANS_ENABLED", str(DEBUG)).lower() == "true"
 
 CACHES = {
     "default": {

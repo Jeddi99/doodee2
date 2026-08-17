@@ -10,8 +10,8 @@ import {
 } from "react";
 import { useNavigate } from "react-router-dom";
 import { useLocale } from "../useLocale";
-import { useQuery } from "@tanstack/react-query";
-import { getScan, getScans, getSession } from "../lib/api";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { createDemoScan, getScan, getScans, getSession } from "../lib/api";
 import { errorMessage } from "../lib/apiError";
 import { dashboardGate } from "../lib/dashboardGate";
 import type { RatioRow } from "../lib/dashboardData";
@@ -31,6 +31,7 @@ import {
   ChevronDown,
   CircleHelp,
   CircleUserRound,
+  FlaskConical,
   ImageOff,
   LayoutGrid,
   LockKeyhole,
@@ -164,23 +165,30 @@ const useScanData = () => useContext(ScanDataContext);
  * Carried in context rather than threaded as a prop because five components render the photo
  * and none of them should have to know the difference.
  */
-type ScanPhotoState = { url: string | null; expired: boolean };
-const ScanPhotoContext = createContext<ScanPhotoState>({ url: null, expired: false });
+type ScanPhotoState = { url: string | null; expired: boolean; demo: boolean };
+const ScanPhotoContext = createContext<ScanPhotoState>({ url: null, expired: false, demo: false });
 
 function ScanPhoto({ alt, className }: { alt: string; className?: string }) {
-  const { url, expired } = useContext(ScanPhotoContext);
+  const { url, expired, demo } = useContext(ScanPhotoContext);
   const { locale } = useLocale();
   const th = locale !== "en";
   if (url) return <img src={url} alt={alt} className={className} />;
-  const title = expired
-    ? th ? "ภาพถูกลบแล้ว" : "Photo deleted"
-    : th ? "โหลดภาพไม่ได้" : "Photo unavailable";
-  const detail = expired
-    ? th ? "ตามกำหนด 30 วัน ค่าที่วัดได้ยังอยู่ครบ" : "On schedule after 30 days. Your measurements are still here."
-    : th ? "ลองรีเฟรชหน้านี้อีกครั้ง" : "Try refreshing the page.";
+  // Demo first: a sample scan also has empty image_objects, so `images_expired` is true for it
+  // too — and "your photo was deleted" would be a straight falsehood about a photo that never
+  // existed.
+  const title = demo
+    ? th ? "ข้อมูลตัวอย่าง" : "Sample data"
+    : expired
+      ? th ? "ภาพถูกลบแล้ว" : "Photo deleted"
+      : th ? "โหลดภาพไม่ได้" : "Photo unavailable";
+  const detail = demo
+    ? th ? "ตัวเลขสมมติ ไม่มีภาพใบหน้าจริง" : "Invented numbers. There is no real face here."
+    : expired
+      ? th ? "ตามกำหนด 30 วัน ค่าที่วัดได้ยังอยู่ครบ" : "On schedule after 30 days. Your measurements are still here."
+      : th ? "ลองรีเฟรชหน้านี้อีกครั้ง" : "Try refreshing the page.";
   return (
     <span className={`scan-photo-placeholder ${className || ""}`} role="img" aria-label={`${alt} — ${title}. ${detail}`}>
-      {expired ? <ShieldCheck aria-hidden="true" /> : <ImageOff aria-hidden="true" />}
+      {demo ? <FlaskConical aria-hidden="true" /> : expired ? <ShieldCheck aria-hidden="true" /> : <ImageOff aria-hidden="true" />}
       <strong>{title}</strong>
       <small>{detail}</small>
     </span>
@@ -1373,6 +1381,7 @@ const ChatPanel = lazy(() => import("./views/ChatPanel"));
 export default function DashboardPage({ view }: { view: AppView }) {
   const navigate = useNavigate();
   const { locale } = useLocale();
+  const th = locale !== "en";
   // The most recent scan is the one the dashboard describes. /analysis may name a specific one
   // through ?scan_id=, which is how ScanPage hands off straight after an upload.
   const requestedScanId = new URLSearchParams(window.location.search).get("scan_id");
@@ -1402,6 +1411,14 @@ export default function DashboardPage({ view }: { view: AppView }) {
     }),
     [scan],
   );
+  const queryClient = useQueryClient();
+  const seedDemo = useMutation({
+    mutationFn: createDemoScan,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["scans"] });
+      queryClient.invalidateQueries({ queryKey: ["session"] });
+    },
+  });
   const [menuOpen, setMenuOpen] = useState(false);
   const [unlockOpen, setUnlockOpen] = useState(false);
   const [toolPanel, setToolPanel] = useState<"settings" | "help" | null>(null);
@@ -1418,9 +1435,18 @@ export default function DashboardPage({ view }: { view: AppView }) {
   // Send the user to capture only once we know there is genuinely nothing to show — not while
   // the scan list is still loading, and not while Celery is still analysing an existing scan.
   const hasNoScan = scanList.isSuccess && !scanId;
+  // With sample data available the redirect is skipped: bouncing to the camera is the one door
+  // that cannot be opened while developing (no camera in a headless browser, no MediaPipe on a
+  // laptop that is only meant to be checking a coupon form), and it made chat, the score card
+  // and the paid gates unreachable. The chooser below offers both doors instead.
+  // Waits for /session/ to answer. Reading `demo_scans_enabled` off an unresolved query gives
+  // `undefined`, which redirected to the camera on the very first render — before the flag that
+  // was supposed to prevent it had arrived.
+  const demoResolved = sessionQuery.isSuccess || sessionQuery.isError;
+  const demoAvailable = sessionQuery.data?.demo_scans_enabled === true;
   useEffect(() => {
-    if (needsScan && hasNoScan) navigate("/scan", { replace: true });
-  }, [needsScan, hasNoScan, navigate]);
+    if (needsScan && hasNoScan && demoResolved && !demoAvailable) navigate("/scan", { replace: true });
+  }, [needsScan, hasNoScan, demoResolved, demoAvailable, navigate]);
 
   useEffect(() => {
     const close = (event: KeyboardEvent) => {
@@ -1472,6 +1498,41 @@ export default function DashboardPage({ view }: { view: AppView }) {
   // after a scan and keeps the measurements, so "completed with no photo" is the normal steady
   // state for every account — gating the render on the image turned that state into a
   // permanently blank page. ScanPhoto explains the gap where the photo used to be instead.
+  if (needsScan && hasNoScan && demoAvailable)
+    return (
+      <main className="doodee-app doodee-app--handoff">
+        <div className="app-load-error demo-chooser" role="status">
+          <strong>{th ? "ยังไม่มีผลสแกน" : "No scan yet"}</strong>
+          <p>
+            {th
+              ? "สแกนจริงต้องใช้กล้องและถ่ายสามมุม หรือจะใช้ข้อมูลตัวอย่างเพื่อดูการ์ดคะแนน แชท และแผนก่อนก็ได้"
+              : "A real scan needs a camera and three angles. Or load sample measurements to try the score card, chat and plans first."}
+          </p>
+          <div className="demo-chooser__actions">
+            <button type="button" onClick={() => navigate("/scan")}>
+              {th ? "สแกนจริง" : "Start a real scan"}
+            </button>
+            <button
+              className="is-secondary"
+              type="button"
+              onClick={() => seedDemo.mutate()}
+              disabled={seedDemo.isPending}
+            >
+              {seedDemo.isPending
+                ? th ? "กำลังสร้าง…" : "Creating…"
+                : th ? "ใช้ข้อมูลตัวอย่าง" : "Use sample data"}
+            </button>
+          </div>
+          {seedDemo.error ? <small role="alert">{errorMessage(seedDemo.error)}</small> : null}
+          <small>
+            {th
+              ? "ข้อมูลตัวอย่างเป็นตัวเลขสมมติ ไม่ใช่ใบหน้าจริง และไม่มีภาพประกอบ"
+              : "Sample data is invented numbers, not a real face, and comes with no photographs."}
+          </small>
+        </div>
+      </main>
+    );
+
   const gate = dashboardGate(scan);
   if (IMAGE_BACKED_VIEWS.has(view) && gate === "failed")
     return (
@@ -1488,7 +1549,7 @@ export default function DashboardPage({ view }: { view: AppView }) {
   if (IMAGE_BACKED_VIEWS.has(view) && gate === "waiting")
     return <main className="doodee-app doodee-app--handoff" aria-busy="true" />;
   return (
-    <ScanPhotoContext.Provider value={{ url: scanImage, expired: scan?.images_expired === true }}>
+    <ScanPhotoContext.Provider value={{ url: scanImage, expired: scan?.images_expired === true, demo: scan?.is_demo === true }}>
     <ScanDataContext.Provider value={scanData}>
     <main className="doodee-app">
       <aside className={`app-sidebar ${menuOpen ? "is-open" : ""}`}>

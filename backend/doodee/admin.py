@@ -252,10 +252,29 @@ class UserAdmin(DjangoUserAdmin):
 
 @admin.register(Scan)
 class ScanAdmin(ConfirmingModelAdmin):
-    list_display = ("id", "user", "age_band", "status", "progress", "created_at", "expires_at")
-    list_filter = ("age_band", "status")
+    list_display = ("id", "user", "age_band", "status", "progress", "is_demo", "created_at", "expires_at")
+    # is_demo is a filter because sample scans otherwise sit in the same list as real ones and
+    # quietly inflate every count read off this page.
+    list_filter = ("age_band", "status", "is_demo")
     search_fields = ("id", "user__email")
     readonly_fields = tuple(field.name for field in Scan._meta.fields)
+    actions = ("delete_demo_scans",)
+
+    @admin.action(description="Delete the selected sample scans")
+    def delete_demo_scans(self, request, queryset):
+        """Sample scans only. Real scans hold biometric data and are deleted through the
+        retention path (request_scan_deletion), which also removes the stored images —
+        a bulk delete here would orphan them in Supabase."""
+        removed, _ = queryset.filter(is_demo=True).delete()
+        kept = queryset.exclude(is_demo=True).count()
+        self.message_user(request, f"{removed} sample scan(s) deleted.", messages.SUCCESS)
+        if kept:
+            self.message_user(
+                request,
+                f"{kept} real scan(s) were left alone — delete those from the account page so "
+                "their images are removed too.",
+                messages.WARNING,
+            )
 
 
 @admin.register(Simulation)

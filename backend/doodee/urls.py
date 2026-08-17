@@ -3,7 +3,7 @@ from rest_framework.routers import DefaultRouter
 
 from .views import (
     ChatViewSet, OrderViewSet, ProcedureList, ScanViewSet, SimulationViewSet, delete_account,
-    plans, redeem, session, validate_coupon_view,
+    demo_scan, plans, redeem, session, validate_coupon_view,
 )
 
 
@@ -14,6 +14,9 @@ router.register("chat", ChatViewSet, basename="chat")
 router.register("orders", OrderViewSet, basename="order")
 
 urlpatterns = [
+    # Ahead of the router: its detail route matches `scans/<pk>/` with `[^/.]+`, which would
+    # capture "demo" as a scan id and answer 404 before this ever runs.
+    path("scans/demo/", demo_scan),
     *router.urls,
     path("session/", session),
     path("procedures/", ProcedureList.as_view()),
