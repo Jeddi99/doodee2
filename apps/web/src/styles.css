@@ -11088,7 +11088,7 @@ body:has(.results-page) {
 .gpt-message { max-width: 78%; display: flex; align-items: flex-start; gap: 9px; animation: dashboardMessage 220ms cubic-bezier(.16,1,.3,1) both; }
 .gpt-message > span { width: 28px; height: 28px; flex: 0 0 auto; display: grid; place-items: center; border-radius: 9px; background: var(--app-ink); color: #fff; }
 .gpt-message svg { width: 14px; }
-.gpt-message p { margin: 0; padding: 12px 14px; border: 1px solid var(--app-line); border-radius: 16px; background: rgba(255,255,255,.62); color: #344154; font-size: 11px; line-height: 1.6; }
+.gpt-message p { margin: 0; padding: 12px 14px; border: 1px solid var(--app-line); border-radius: 16px; background: rgba(255,255,255,.62); color: #344154; font-size: 11px; line-height: 1.6; white-space: pre-wrap; }
 .gpt-message.is-user { justify-self: end; }
 .gpt-message.is-user p { border-color: transparent; background: var(--app-ink); color: #fff; }
 .gpt-chat > form { width: min(780px,100%); margin: 0 auto; padding: 7px; display: grid; grid-template-columns: 1fr 42px; gap: 6px; border: 1px solid var(--app-line); border-radius: 22px; background: rgba(255,255,255,.74); box-shadow: 0 15px 36px rgba(30,60,94,.11); }
@@ -11864,6 +11864,40 @@ body:has(.results-page) {
 }
 .demo-chooser small[role="alert"] {
   color: #b4243a;
+}
+
+/* Free questions, kept reachable after the first answer. Horizontal scroll rather than wrap:
+   eight chips stacked would push the composer off the screen. */
+.gpt-followups {
+  width: min(780px, 100%);
+  margin: 0 auto 8px;
+  padding-bottom: 4px;
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+.gpt-followups button {
+  flex: 0 0 auto;
+  min-height: 32px;
+  padding: 0 12px;
+  border: 1px solid var(--app-line);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.68);
+  color: #3d495a;
+  font-size: 10px;
+  white-space: nowrap;
+}
+.gpt-followups button:hover:not(:disabled) {
+  background: rgba(226, 240, 253, 0.85);
+}
+.gpt-followups button:disabled {
+  opacity: 0.45;
+}
+.gpt-free-note {
+  margin-top: 12px;
+  color: var(--app-muted);
+  font-size: 9px;
 }
 
 /* Settings */

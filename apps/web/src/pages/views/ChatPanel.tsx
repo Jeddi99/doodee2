@@ -11,7 +11,9 @@ import {
   Trash2,
 } from "lucide-react";
 import { GlassCard } from "../DashboardPage";
-import { deleteChat, getChat, getChats, getScan, getScans, getSession, sendChat } from "../../lib/api";
+import {
+  askChatTopic, deleteChat, getChat, getChatFacts, getChats, getScan, getScans, getSession, sendChat,
+} from "../../lib/api";
 import { errorMessage } from "../../lib/apiError";
 import { useLocale } from "../../useLocale";
 
@@ -51,16 +53,11 @@ const COPY = {
     quotaBodyPaid: "ถึงเพดานการใช้งานของเดือนนี้แล้ว ติดต่อทีมงานถ้าต้องใช้เพิ่ม",
     seePlans: "ดูแผน",
     offTitle: "แชทยังไม่เปิดใช้งาน",
-    offBody: "ระบบยังไม่ได้ตั้งค่าเชื่อมกับผู้ให้บริการโมเดล ลองใหม่ภายหลัง",
+    offBody: "คำถามพิมพ์เองต้องเชื่อมกับผู้ให้บริการโมเดลก่อน แต่คำถามด้านบนยังกดได้ตามปกติ",
     failed: "ส่งข้อความไม่สำเร็จ",
+    freeChip: "ตอบจากตัวเลข ไม่กินโควตา",
     retry: "ลองใหม่",
     deleteChat: "ลบแชทนี้",
-    suggestions: [
-      "คุณวัดอะไรจากใบหน้าผมบ้าง",
-      "ค่าไหนห่างจากค่าอ้างอิงมากที่สุด",
-      "คะแนน 84 หมายความว่าอะไร",
-      "ตัวเลขพวกนี้มีข้อจำกัดอะไร",
-    ],
   },
   en: {
     brand: "DOODEE Chat",
@@ -85,16 +82,11 @@ const COPY = {
     quotaBodyPaid: "You've hit this month's usage ceiling. Contact us if you need more.",
     seePlans: "See plans",
     offTitle: "Chat isn't switched on",
-    offBody: "This deployment has no model provider configured yet. Try again later.",
+    offBody: "Typing your own question needs a model provider. The questions above still work.",
     failed: "Message failed to send",
+    freeChip: "Answered from your numbers. Does not use a turn.",
     retry: "Try again",
     deleteChat: "Delete this chat",
-    suggestions: [
-      "What did you actually measure?",
-      "Which measurement is furthest from the reference?",
-      "What does a score of 84 mean?",
-      "What are the limits of these numbers?",
-    ],
   },
 };
 
@@ -124,17 +116,33 @@ export default function ChatPanel() {
     enabled: Boolean(conversationId),
   });
 
+  // The questions this scan can answer without a model. Free, instant, and available even when
+  // chat_enabled is false — which is most of the reason they exist.
+  const facts = useQuery({
+    queryKey: ["chat-facts", locale, scanId],
+    queryFn: () => getChatFacts(locale),
+    enabled: Boolean(scanId),
+  });
+
+  const applyTurn = (data: { conversation_id: string }) => {
+    setPending(null);
+    setConversationId(data.conversation_id);
+    queryClient.invalidateQueries({ queryKey: ["chat", data.conversation_id] });
+    queryClient.invalidateQueries({ queryKey: ["chats"] });
+    // The turn counter in the header comes from /session/, so it has to be refetched or it
+    // keeps showing the pre-send number.
+    queryClient.invalidateQueries({ queryKey: ["session"] });
+  };
+
+  const ask = useMutation({
+    mutationFn: (topic: string) => askChatTopic({ topic, conversationId, scanId, lang: locale }),
+    onSuccess: applyTurn,
+    onError: () => setPending(null),
+  });
+
   const send = useMutation({
     mutationFn: (message: string) => sendChat({ message, conversationId, scanId }),
-    onSuccess: (data: { conversation_id: string }) => {
-      setPending(null);
-      setConversationId(data.conversation_id);
-      queryClient.invalidateQueries({ queryKey: ["chat", data.conversation_id] });
-      queryClient.invalidateQueries({ queryKey: ["chats"] });
-      // The turn counter in the header comes from /session/, so it has to be refetched or it
-      // keeps showing the pre-send number.
-      queryClient.invalidateQueries({ queryKey: ["session"] });
-    },
+    onSuccess: applyTurn,
     onError: () => setPending(null),
   });
 
@@ -158,12 +166,22 @@ export default function ChatPanel() {
     return needle ? items.filter((item: { title: string }) => item.title.toLowerCase().includes(needle)) : items;
   }, [conversations.data, filter]);
 
+  const busy = send.isPending || ask.isPending;
+
   const submit = (text = value) => {
     const clean = text.trim();
-    if (!clean || send.isPending || outOfTurns || chatOff) return;
+    if (!clean || busy || outOfTurns || chatOff) return;
     setValue("");
     setPending(clean);
     send.mutate(clean);
+  };
+
+  // Chips never check chatOff or the quota: they cost nothing and the server does not meter
+  // them, so disabling them would withhold answers for no reason.
+  const askTopic = (topic: string, question: string) => {
+    if (busy) return;
+    setPending(question);
+    ask.mutate(topic);
   };
 
   return (
@@ -258,7 +276,7 @@ export default function ChatPanel() {
                   <p>{pending}</p>
                 </div>
               ) : null}
-              {send.isPending ? (
+              {busy ? (
                 <div className="gpt-message is-assistant" aria-live="polite">
                   <span>
                     <ScanFace />
@@ -266,13 +284,13 @@ export default function ChatPanel() {
                   <p>{copy.thinking}</p>
                 </div>
               ) : null}
-              {send.error ? (
+              {send.error || ask.error ? (
                 <div className="gpt-message is-assistant" role="alert">
                   <span>
                     <ScanFace />
                   </span>
                   <p>
-                    {copy.failed} — {errorMessage(send.error)}
+                    {copy.failed} — {errorMessage(send.error || ask.error)}
                   </p>
                 </div>
               ) : null}
@@ -286,16 +304,40 @@ export default function ChatPanel() {
               <h1>{copy.heading}</h1>
               <p>{copy.subheading}</p>
               <div className="gpt-suggestions">
-                {copy.suggestions.map((item) => (
-                  <button type="button" onClick={() => submit(item)} key={item} disabled={outOfTurns || chatOff}>
-                    {item}
+                {(facts.data?.topics ?? []).map((item: { topic: string; question: string }) => (
+                  <button
+                    type="button"
+                    onClick={() => askTopic(item.topic, item.question)}
+                    key={item.topic}
+                    disabled={busy}
+                  >
+                    {item.question}
                     <ArrowRight />
                   </button>
                 ))}
               </div>
+              {facts.data?.topics?.length ? <small className="gpt-free-note">{copy.freeChip}</small> : null}
             </div>
           )}
         </div>
+
+        {/* Also below the transcript, not only on the empty state. Otherwise the first answer
+            hides every remaining free question — and with chat_enabled false that is a dead
+            end, since the composer is replaced too. */}
+        {(messages.length > 0 || pending) && (facts.data?.topics?.length ?? 0) > 0 ? (
+          <div className="gpt-followups">
+            {(facts.data?.topics ?? []).map((item: { topic: string; question: string }) => (
+              <button
+                type="button"
+                onClick={() => askTopic(item.topic, item.question)}
+                key={item.topic}
+                disabled={busy}
+              >
+                {item.question}
+              </button>
+            ))}
+          </div>
+        ) : null}
 
         {chatOff ? (
           <div className="gpt-quota" role="status">
@@ -333,7 +375,7 @@ export default function ChatPanel() {
                 }
               }}
             />
-            <button type="submit" aria-label={copy.send} disabled={!value.trim() || send.isPending}>
+            <button type="submit" aria-label={copy.send} disabled={!value.trim() || busy}>
               <ArrowRight />
             </button>
           </form>

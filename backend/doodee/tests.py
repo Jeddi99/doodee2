@@ -26,6 +26,7 @@ from .billing import (
 from .views import COUPON_FAILURE_LIMIT
 from .chat import MAX_QUESTION_CHARS, SYSTEM_PROMPT, scan_context
 from .demo_data import create_demo_scan, demo_analysis_data
+from .chat_facts import TOPICS, answer as topic_answer
 from .analysis_engine import (
     POSE_TARGETS, SCAN_VIEW_MODES, _distance, _isotropic, _validate_pose_set, analyze_images,
     measured_views, pose_from_matrix,
@@ -1941,3 +1942,138 @@ class DemoScanTest(TestCase):
             call_command("seed_demo_scan", "demo@example.com")
         call_command("seed_demo_scan", "demo@example.com", "--replace")
         self.assertEqual(Scan.objects.filter(user=self.user, is_demo=True).count(), 1)
+
+
+@override_settings(CHAT_ENABLED=True, CHAT_FREE_TURNS=2, DEMO_SCANS_ENABLED=True)
+class ChatFactsTest(TestCase):
+    """Questions answered by reading the numbers. No model, no key, no quota."""
+
+    # Judgement words that must never appear. The whole product rests on the difference between
+    # "far from the reference average" and "bad".
+    BANNED_TH = ("สวย", "หล่อ", "ไม่ดี", "แย่", "จุดอ่อน", "ควรแก้", "ต้องแก้", "น่าเกลียด")
+    BANNED_EN = ("beautiful", "ugly", "attractive", "flaw", "worst", "should fix", "needs fixing")
+
+    # Phrases that put a banned word inside a denial — "far from average does NOT mean bad" is
+    # the sentence the guardrail exists to produce, so a bare substring check flags the very
+    # wording it is meant to protect.
+    NEGATIONS = ("ไม่ได้แปลว่า", "ไม่ใช่", "ไม่ได้", "ไม่มี", "does not mean", "not ", "no ")
+
+    def setUp(self):
+        self.user = User.objects.create_user("factuser")
+        self.client = APIClient()
+        self.client.force_authenticate(self.user)
+        self.scan = create_demo_scan(self.user)
+        env = patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-key"})
+        env.start()
+        self.addCleanup(env.stop)
+
+    def assertNoBareJudgement(self, text, words, label):
+        """Every judgement word must appear on a line that denies it.
+
+        Scoped to the line rather than a character window: Thai writes no sentence-final
+        punctuation, and the negation can sit well before the word it governs — "ไม่มีตัวเลขไหน
+        ในนี้ที่บอกว่าหน้าตาดีหรือไม่ดี" puts thirty characters between the two.
+        """
+        for line in text.split("\n"):
+            lowered = line.lower()
+            negated = any(n.lower() in lowered for n in self.NEGATIONS)
+            for word in words:
+                if word.lower() in lowered and not negated:
+                    self.fail(f"{label} asserts {word!r} rather than denying it: {line}")
+
+    def post(self, **body):
+        return self.client.post("/api/v1/chat/", body, format="json")
+
+    def test_every_topic_answers_from_the_scan(self):
+        topics = [t["topic"] for t in self.client.get("/api/v1/chat/facts/").data["topics"]]
+        self.assertEqual(len(topics), len(TOPICS))
+        for topic in topics:
+            for lang in ("th", "en"):
+                question, text = topic_answer(topic, self.scan.analysis_data, lang)
+                self.assertTrue(question and text, f"{topic}/{lang}")
+
+    def test_no_answer_passes_judgement_on_the_face(self):
+        for topic, _question, _builder in TOPICS:
+            self.assertNoBareJudgement(
+                topic_answer(topic, self.scan.analysis_data, "th")[1], self.BANNED_TH, f"{topic} (th)")
+            self.assertNoBareJudgement(
+                topic_answer(topic, self.scan.analysis_data, "en")[1], self.BANNED_EN, f"{topic} (en)")
+
+    def test_the_judgement_check_would_actually_catch_a_bare_claim(self):
+        """Guards the guard: a substring check that always passes is worse than none."""
+        with self.assertRaises(AssertionError):
+            self.assertNoBareJudgement("จมูกของคุณแย่", self.BANNED_TH, "probe")
+        with self.assertRaises(AssertionError):
+            self.assertNoBareJudgement("this is your worst feature", self.BANNED_EN, "probe")
+        # And still allows the denial the answers actually use.
+        self.assertNoBareJudgement("ห่างจากค่าเฉลี่ยไม่ได้แปลว่าแย่", self.BANNED_TH, "probe")
+
+    def test_furthest_names_the_real_extreme_and_its_direction(self):
+        metrics = self.scan.analysis_data["reference_scores"]["metrics"]
+        expected = max(metrics, key=lambda m: abs(m["normalized_deviation"]))
+        text = topic_answer("furthest", self.scan.analysis_data, "en")[1]
+        self.assertIn(str(expected["observed"]), text)
+        # alar_width is +1.9 SD in the demo profile, so the direction word must be "larger".
+        self.assertIn("larger than the reference", text)
+        self.assertIn("does not mean worse", text)
+
+    def test_closest_is_the_other_end_of_the_same_ranking(self):
+        text = topic_answer("closest", self.scan.analysis_data, "en")[1]
+        self.assertIn("closest to the reference mean", text)
+
+    def test_a_topic_answer_costs_no_quota_and_calls_no_model(self):
+        with patch("doodee.chat._client") as client:
+            before = self.client.get("/api/v1/session/").data["chat_remaining"]
+            response = self.post(topic="furthest")
+            after = self.client.get("/api/v1/session/").data["chat_remaining"]
+            client.assert_not_called()
+        self.assertEqual(response.status_code, 201)
+        self.assertIs(response.data["billed"], False)
+        self.assertEqual(before, after)
+
+    def test_topics_work_with_no_api_key_at_all(self):
+        """The reason this exists: without a key the whole page was unusable."""
+        with patch.dict(os.environ, {"ANTHROPIC_API_KEY": ""}):
+            self.assertIs(self.client.get("/api/v1/session/").data["chat_enabled"], False)
+            self.assertEqual(self.post(topic="limits").status_code, 201)
+            # Free text still needs the model.
+            self.assertEqual(self.post(message="what should I change?").status_code, 503)
+
+    def test_the_stored_turn_carries_no_token_counts(self):
+        # A non-zero figure here would corrupt the per-turn cost read off these rows in admin.
+        self.post(topic="categories")
+        answer = ChatMessage.objects.filter(role=ChatMessage.Role.ASSISTANT).latest("created_at")
+        self.assertEqual((answer.input_tokens, answer.cached_input_tokens, answer.output_tokens), (0, 0, 0))
+
+    def test_a_topic_answer_and_a_typed_follow_up_share_one_conversation(self):
+        first = self.post(topic="furthest")
+        with patch("doodee.chat._client") as client:
+            client.return_value.messages.create.return_value = FakeMessage()
+            second = self.post(message="why?", conversation_id=first.data["conversation_id"])
+        self.assertEqual(second.data["conversation_id"], first.data["conversation_id"])
+        self.assertEqual(ChatConversation.objects.count(), 1)
+        self.assertEqual(ChatMessage.objects.count(), 4)
+
+    def test_sending_a_topic_and_a_message_together_is_refused(self):
+        response = self.post(topic="furthest", message="also this")
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.data["topic"], "conflicting_question_fields")
+
+    def test_an_unknown_topic_is_refused_rather_than_answered_with_nothing(self):
+        self.assertEqual(self.post(topic="how_attractive_am_i").status_code, 409)
+
+    def test_a_scan_with_no_scores_offers_no_topics(self):
+        Scan.objects.filter(user=self.user).update(analysis_data=None, status=Scan.Status.PROCESSING)
+        self.assertEqual(self.client.get("/api/v1/chat/facts/").data["topics"], [])
+
+    def test_the_reference_answer_warns_a_user_outside_the_cohort(self):
+        data = dict(self.scan.analysis_data)
+        scores = dict(data["reference_scores"])
+        scores["population_match"] = "outside_reference_population"
+        data["reference_scores"] = scores
+        text = topic_answer("reference_group", data, "en")[1]
+        self.assertIn("does not apply to you", text)
+
+    def test_the_score_explanation_states_it_is_not_a_beauty_score(self):
+        self.assertIn("not attractiveness", topic_answer("score_meaning", self.scan.analysis_data, "en")[1])
+        self.assertIn("ไม่ใช่การให้คะแนนความสวยงาม", topic_answer("score_meaning", self.scan.analysis_data, "th")[1])

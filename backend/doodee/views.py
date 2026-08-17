@@ -28,6 +28,7 @@ from .chat import (
     HISTORY_TURNS, MAX_QUESTION_CHARS, ChatUnavailable, chat_enabled, reply as chat_reply,
     scan_context, title_for,
 )
+from .chat_facts import answer as topic_answer, available_topics
 from .serializers import (
     ChatConversationDetailSerializer, ChatConversationSerializer, ChatMessageSerializer,
     OrderSerializer, PlanSerializer, ScanSerializer, SimulationSerializer,
@@ -575,13 +576,67 @@ class ChatViewSet(viewsets.GenericViewSet, mixins.ListModelMixin, mixins.Retriev
             return scan
         return scans.order_by("-created_at").first()
 
-    def create(self, request):
-        if not chat_enabled():
-            return Response({"detail": "chat_unavailable"}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+    @action(detail=False, methods=("get",), url_path="facts")
+    def facts(self, request):
+        """The questions this user's scan can answer without a model.
 
-        question = str(request.data.get("message", "")).strip()[:MAX_QUESTION_CHARS]
-        if not question:
+        The client turns these into suggestion chips. Empty list when there is no scored scan,
+        so no chip is ever offered that would answer with nothing.
+        """
+        scan = self._scan_for(request, request.query_params.get("scan_id"))
+        lang = "en" if request.query_params.get("lang") == "en" else "th"
+        return Response({
+            "lang": lang,
+            "scan_id": str(scan.id) if scan else None,
+            "topics": available_topics(scan.analysis_data if scan else None, lang),
+        })
+
+    def _answer_topic(self, request, conversation, scan, topic):
+        """Answer from the stored numbers. No model, no quota, no bill.
+
+        Stored as a normal pair of messages so the transcript is uniform and a follow-up typed
+        into the box continues the same conversation.
+        """
+        lang = "en" if str(request.data.get("lang", "")) == "en" else "th"
+        result = topic_answer(topic, scan.analysis_data if scan else None, lang)
+        if result is None:
+            return Response({"detail": "topic_unavailable"}, status=status.HTTP_409_CONFLICT)
+        question, text = result
+
+        with transaction.atomic():
+            if conversation is None:
+                conversation = ChatConversation.objects.create(user=request.user, scan=scan, title=title_for(question))
+            ChatMessage.objects.create(conversation=conversation, role=ChatMessage.Role.USER, content=question)
+            # Token counts stay zero: nothing was sent anywhere, and a non-zero figure here
+            # would corrupt the per-turn cost the admin reads off these rows.
+            message = ChatMessage.objects.create(
+                conversation=conversation, role=ChatMessage.Role.ASSISTANT, content=text,
+            )
+            conversation.save(update_fields=("updated_at",))
+
+        return Response({
+            "conversation_id": str(conversation.id),
+            "title": conversation.title,
+            "scan_id": str(scan.id) if scan else None,
+            "message": ChatMessageSerializer(message).data,
+            "chat_remaining": _chat_remaining(request.user),
+            "billed": False,
+        }, status=status.HTTP_201_CREATED)
+
+    def create(self, request):
+        topic = str(request.data.get("topic", "")).strip()
+        message = str(request.data.get("message", "")).strip()[:MAX_QUESTION_CHARS]
+        if topic and message:
+            # Refused rather than guessed at: the two could ask different things, and picking a
+            # winner silently would answer a question nobody asked. Same reasoning as
+            # _selections_from().
+            raise ValidationError({"topic": "conflicting_question_fields"})
+        if not topic and not message:
             raise ValidationError({"message": "message_required"})
+        # Only free-text needs a model behind it. Topic answers are read off the scan, so they
+        # must not be blocked by a missing API key — that check belongs after this fork.
+        if not topic and not chat_enabled():
+            return Response({"detail": "chat_unavailable"}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
 
         conversation_id = request.data.get("conversation_id")
         if conversation_id:
@@ -593,6 +648,10 @@ class ChatViewSet(viewsets.GenericViewSet, mixins.ListModelMixin, mixins.Retriev
 
         scan = conversation.scan if conversation else self._scan_for(request, request.data.get("scan_id"))
 
+        if topic:
+            return self._answer_topic(request, conversation, scan, topic)
+
+        question = message
         remaining = _claim_chat_turn(request.user)
         if remaining is None:
             return Response(

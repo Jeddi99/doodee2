@@ -84,6 +84,14 @@ export const getSimulation = (simulationId) => request(`/simulations/${simulatio
 // DOODEE Chat. Only the measurements travel upstream — the backend never sends the photos,
 // and there is deliberately no way to attach one from here.
 export const getChats = () => request('/chat/');
+// Questions answerable from the scan's own numbers. No model, no key, no quota — these work
+// even when chat_enabled is false.
+export const getChatFacts = (lang) => request(`/chat/facts/?lang=${lang === 'en' ? 'en' : 'th'}`);
+export const askChatTopic = ({ topic, conversationId, scanId, lang }) => request('/chat/', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ topic, conversation_id: conversationId, scan_id: scanId, lang }),
+});
 export const getChat = (conversationId) => request(`/chat/${conversationId}/`);
 export const deleteChat = (conversationId) => request(`/chat/${conversationId}/`, { method: 'DELETE' });
 // 429 when the month's turns are gone, 503 without an API key, 502 when Claude is unreachable —
