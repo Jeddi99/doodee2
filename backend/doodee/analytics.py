@@ -260,6 +260,15 @@ def monthly_rows(months=12, now=None):
             "chat_cost_thb": cost.get(cursor, 0),
         })
         cursor = (cursor - timedelta(days=1)).replace(day=1)
+
+    # Running total of everyone registered, not just those who joined inside the window — so
+    # it has to start from the people already there before the first row. Without the baseline
+    # the line would restart from zero every twelve months and read as a collapse that never
+    # happened. Walked oldest-first, then left in the newest-first order the table expects.
+    running = real_users(User.objects.filter(date_joined__lt=start)).count()
+    for row in reversed(rows):
+        running += row["signups"]
+        row["cumulative_users"] = running
     return rows
 
 

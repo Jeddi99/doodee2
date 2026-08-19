@@ -1,11 +1,12 @@
 import { FormEvent, useState } from "react";
-import { ArrowLeft, ArrowRight, Check, ChevronDown, LoaderCircle } from "lucide-react";
+import { ArrowLeft, ArrowRight, Check, ChevronDown, Eye, EyeOff, LoaderCircle } from "lucide-react";
 import { Link, useNavigate } from "react-router-dom";
 import Brand from "../Brand";
 import { useLocale } from "../useLocale";
 import { canSubmitCode, normalizeCode } from "../lib/promoCode";
 import { redeemCode } from "../lib/api";
 import { errorMessage } from "../lib/apiError";
+import { authErrorKey, formProblem } from "../lib/authForm";
 
 function GoogleMark() {
   return (
@@ -19,6 +20,7 @@ function GoogleMark() {
 }
 
 type ReferralState = "idle" | "error" | "saved";
+type Mode = "signin" | "signup";
 
 export default function LoginPage() {
   const { copy } = useLocale();
@@ -30,6 +32,19 @@ export default function LoginPage() {
   const [referralError, setReferralError] = useState("");
   const [googleBusy, setGoogleBusy] = useState(false);
   const [signInError, setSignInError] = useState("");
+  const [mode, setMode] = useState<Mode>("signin");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
+  const [emailBusy, setEmailBusy] = useState(false);
+  const [notice, setNotice] = useState("");
+
+  const busy = googleBusy || emailBusy;
+
+  // The error strings live on the same `login` copy object as everything else, so the key from
+  // authErrorKey() is turned into a copy key here rather than the module knowing about locales.
+  const messageFor = (key: string) =>
+    (t as Record<string, string>)[`err${key.charAt(0).toUpperCase()}${key.slice(1)}`] || t.errGeneric;
 
   // Every API route is IsAuthenticated, so a code entered before sign-in cannot
   // be redeemed yet. Hold it here and spend it once the account exists — which
@@ -44,32 +59,91 @@ export default function LoginPage() {
     setReferralState("saved");
   };
 
+  // Shared by every way in, so a referral code entered before signing up is spent whichever
+  // button the user ends up pressing.
+  const afterSignIn = async () => {
+    if (referralState === "saved") {
+      try {
+        await redeemCode(normalizeCode(referral));
+      } catch (error) {
+        // A bad code must not strand a user who just signed in successfully;
+        // surface it on the settings page instead, where it can be retried.
+        console.warn("referral redeem failed", errorMessage(error));
+      }
+    }
+    navigate("/onboarding");
+  };
+
   const continueWithGoogle = async () => {
-    if (googleBusy) return;
+    if (busy) return;
     setGoogleBusy(true);
     setSignInError("");
+    setNotice("");
     try {
       const { googleSignIn } = await import("../lib/firebase");
       await googleSignIn();
-      if (referralState === "saved") {
-        try {
-          await redeemCode(normalizeCode(referral));
-        } catch (error) {
-          // A bad code must not strand a user who just signed in successfully;
-          // surface it on the settings page instead, where it can be retried.
-          console.warn("referral redeem failed", errorMessage(error));
-        }
-      }
-      navigate("/onboarding");
+      await afterSignIn();
     } catch (error) {
-      setSignInError(errorMessage(error) || t.signInFailed);
+      setSignInError(messageFor(authErrorKey(error)) || t.signInFailed);
       setGoogleBusy(false);
     }
   };
 
+  const submitEmail = async (event: FormEvent) => {
+    event.preventDefault();
+    if (busy) return;
+    setNotice("");
+    const problem = formProblem({ email, password, mode });
+    if (problem) {
+      setSignInError(problem === "email" ? t.errEmail : t.errShort);
+      return;
+    }
+    setEmailBusy(true);
+    setSignInError("");
+    try {
+      const { emailSignIn, emailSignUp } = await import("../lib/firebase");
+      await (mode === "signup" ? emailSignUp(email, password) : emailSignIn(email, password));
+      await afterSignIn();
+    } catch (error) {
+      setSignInError(messageFor(authErrorKey(error)));
+      setEmailBusy(false);
+    }
+  };
+
+  const resetPassword = async () => {
+    if (busy) return;
+    setSignInError("");
+    setNotice("");
+    const { isEmail } = await import("../lib/authForm");
+    if (!isEmail(email)) {
+      setSignInError(t.errEmail);
+      return;
+    }
+    try {
+      const { sendPasswordReset } = await import("../lib/firebase");
+      await sendPasswordReset(email);
+    } catch (error) {
+      // Anything other than a configuration or rate-limit problem is swallowed on purpose:
+      // reporting "no such account" here would turn this box into a way to test which emails
+      // are registered, which is exactly what the vague sign-in error above avoids.
+      const key = authErrorKey(error);
+      if (key === "methodDisabled" || key === "tooMany" || key === "network") {
+        setSignInError(messageFor(key));
+        return;
+      }
+    }
+    setNotice(t.resetSent);
+  };
+
+  const switchMode = (next: Mode) => {
+    setMode(next);
+    setSignInError("");
+    setNotice("");
+  };
+
   return (
     <main className="login-page">
-      {googleBusy && (
+      {busy && (
         <div className="login-transition" role="status" aria-live="assertive" aria-label={t.preparing}>
           <div className="login-transition__logo" aria-hidden="true">
             <LoaderCircle className="login-transition__spinner" strokeWidth={1} />
@@ -92,15 +166,34 @@ export default function LoginPage() {
         <section className="login-panel" aria-labelledby="login-title">
           <div className="login-panel__heading">
             <h1 id="login-title">
-              <span>{t.titleLead}</span> <span>DOODEE</span>
+              <span>{mode === "signup" ? t.tabSignUp : t.titleLead}</span> <span>DOODEE</span>
             </h1>
+          </div>
+
+          <div className="auth-tabs" role="tablist" aria-label={t.tabSignIn}>
+            <button
+              type="button" role="tab" id="tab-signin" aria-controls="auth-form"
+              aria-selected={mode === "signin"}
+              className={mode === "signin" ? "is-active" : ""}
+              onClick={() => switchMode("signin")}
+            >
+              {t.tabSignIn}
+            </button>
+            <button
+              type="button" role="tab" id="tab-signup" aria-controls="auth-form"
+              aria-selected={mode === "signup"}
+              className={mode === "signup" ? "is-active" : ""}
+              onClick={() => switchMode("signup")}
+            >
+              {t.tabSignUp}
+            </button>
           </div>
 
           <button
             className="google-button"
             type="button"
             onClick={continueWithGoogle}
-            disabled={googleBusy}
+            disabled={busy}
             aria-busy={googleBusy}
           >
             <GoogleMark />
@@ -110,9 +203,55 @@ export default function LoginPage() {
             <ArrowRight size={17} />
           </button>
 
+          <div className="auth-divider"><span>{t.or}</span></div>
+
+          <form id="auth-form" className="auth-form" onSubmit={submitEmail} noValidate
+                role="tabpanel" aria-labelledby={mode === "signup" ? "tab-signup" : "tab-signin"}>
+            <label htmlFor="auth-email">{t.email}</label>
+            <input
+              id="auth-email" type="email" inputMode="email" autoComplete="email"
+              value={email} placeholder={t.emailPlaceholder} disabled={busy}
+              onChange={(event) => { setEmail(event.target.value); setSignInError(""); }}
+            />
+
+            <label htmlFor="auth-password">{t.password}</label>
+            <div className="auth-password">
+              <input
+                id="auth-password"
+                type={showPassword ? "text" : "password"}
+                // Tells a password manager to offer a new password rather than an existing one.
+                autoComplete={mode === "signup" ? "new-password" : "current-password"}
+                value={password} placeholder={t.passwordPlaceholder} disabled={busy}
+                onChange={(event) => { setPassword(event.target.value); setSignInError(""); }}
+              />
+              <button
+                type="button" className="auth-eye" disabled={busy}
+                onClick={() => setShowPassword(!showPassword)}
+                aria-label={showPassword ? t.hidePassword : t.showPassword}
+              >
+                {showPassword ? <EyeOff size={17} /> : <Eye size={17} />}
+              </button>
+            </div>
+
+            <button className="auth-submit" type="submit" disabled={busy} aria-busy={emailBusy}>
+              {emailBusy ? t.busy : mode === "signup" ? t.submitSignUp : t.submitSignIn}
+            </button>
+
+            {mode === "signin" && (
+              <button type="button" className="auth-forgot" onClick={resetPassword} disabled={busy}>
+                {t.forgot}
+              </button>
+            )}
+          </form>
+
           {signInError && (
             <p className="login-error is-error" role="alert">
               {signInError}
+            </p>
+          )}
+          {notice && (
+            <p className="login-error is-saved" role="status">
+              {notice}
             </p>
           )}
 

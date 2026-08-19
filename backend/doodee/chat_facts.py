@@ -259,19 +259,28 @@ TOPICS = (
 _BY_ID = {topic_id: (question, builder) for topic_id, question, builder in TOPICS}
 
 
-def available_topics(analysis_data, lang="th"):
+def available_topics(analysis_data, lang="th", overrides=None):
     """The questions this scan can answer for free, in chip order.
 
     Empty when the scan has no scores yet, so the client shows no chips rather than chips that
     answer with nothing.
+
+    `overrides` is `[(key, label)]` from the admin — wording, order and which chips appear.
+    The answers stay in this module either way: they are computed from the scan's own numbers,
+    which is what makes them free and impossible to get wrong, so a chip that has no formula
+    here cannot be conjured from the admin.
     """
     scores = _scores(analysis_data)
     if not scores:
         return []
+    if overrides is None:
+        pairs = [(topic_id, _pick(question, lang)) for topic_id, question, _ in TOPICS]
+    else:
+        pairs = [(key, label) for key, label in overrides if key in _BY_ID]
     return [
-        {"topic": topic_id, "question": _pick(question, lang)}
-        for topic_id, question, builder in TOPICS
-        if builder(scores, lang) is not None
+        {"topic": key, "question": label}
+        for key, label in pairs
+        if _BY_ID[key][1](scores, lang) is not None
     ]
 
 

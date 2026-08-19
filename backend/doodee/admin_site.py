@@ -46,11 +46,16 @@ class DoodeeAdminSite(AdminSite):
     def reports_view(self, request):
         """The deeper numbers. `admin_view` supplies the login gate and staff check."""
         from .analytics import report
+        from .charts import monthly_chart
 
+        data = report()
         return render(request, "admin/doodee/reports.html", {
             **self.each_context(request),
             "title": "รายงาน",
-            "report": report(),
+            "report": data,
+            # Built from the same rows the table below the chart prints, so the picture and the
+            # numbers can never disagree.
+            "chart": monthly_chart(data["months"], data["tracking_started"]),
         })
 
     @staticmethod

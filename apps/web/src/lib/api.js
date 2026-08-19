@@ -83,6 +83,9 @@ export const previewSimulation = (scanId, selections, consentVersion) => request
 export const getSimulation = (simulationId) => request(`/simulations/${simulationId}/status/`);
 // DOODEE Chat. Only the measurements travel upstream — the backend never sends the photos,
 // and there is deliberately no way to attach one from here.
+// Bumping this records a fresh ConsentEvent for every user, so change it only when what we
+// send, or who we send it to, actually changes.
+export const CHAT_CONSENT_VERSION = '2026.3-chat';
 export const getChats = () => request('/chat/');
 // Questions answerable from the scan's own numbers. No model, no key, no quota — these work
 // even when chat_enabled is false.
@@ -96,10 +99,17 @@ export const getChat = (conversationId) => request(`/chat/${conversationId}/`);
 export const deleteChat = (conversationId) => request(`/chat/${conversationId}/`, { method: 'DELETE' });
 // 429 when the month's turns are gone, 503 without an API key, 502 when Claude is unreachable —
 // each says something different to the user, so none are collapsed into one failure here.
+// chat_consent_version is required and separate from the analysis consent: this is the only
+// call in the app that sends anything to a third party (the measurements, never the photos).
 export const sendChat = ({ message, conversationId, scanId }) => request('/chat/', {
   method: 'POST',
   headers: { 'Content-Type': 'application/json' },
-  body: JSON.stringify({ message, conversation_id: conversationId, scan_id: scanId }),
+  body: JSON.stringify({
+    message,
+    conversation_id: conversationId,
+    scan_id: scanId,
+    chat_consent_version: CHAT_CONSENT_VERSION,
+  }),
 });
 // Plans, coupons and orders. Prices cross the wire in satang (integer) — never baht floats.
 export const getPlans = () => request('/plans/');

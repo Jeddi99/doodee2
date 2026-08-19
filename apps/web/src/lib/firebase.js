@@ -2,8 +2,11 @@ import { getApps, initializeApp } from 'firebase/app';
 import {
   browserPopupRedirectResolver,
   browserLocalPersistence,
+  createUserWithEmailAndPassword,
   GoogleAuthProvider,
   initializeAuth,
+  sendPasswordResetEmail,
+  signInWithEmailAndPassword,
   signInWithPopup,
   signOut,
 } from 'firebase/auth';
@@ -34,6 +37,22 @@ export function getFirebaseAuth() {
 
 export async function googleSignIn() {
   return signInWithPopup(getFirebaseAuth(), new GoogleAuthProvider());
+}
+
+// Email and password, for people without a Google account or who do not want to use one.
+// The backend needs no change for these: it verifies whatever Firebase ID token arrives and
+// creates the Django user on first sight (see backend/doodee/authentication.py).
+export async function emailSignUp(email, password) {
+  return createUserWithEmailAndPassword(getFirebaseAuth(), email.trim(), password);
+}
+
+export async function emailSignIn(email, password) {
+  return signInWithEmailAndPassword(getFirebaseAuth(), email.trim(), password);
+}
+
+// Firebase sends and hosts the reset page, so no password ever reaches this app or the server.
+export async function sendPasswordReset(email) {
+  return sendPasswordResetEmail(getFirebaseAuth(), email.trim());
 }
 
 export const firebaseSignOut = () => signOut(getFirebaseAuth());

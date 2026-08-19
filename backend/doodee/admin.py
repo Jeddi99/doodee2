@@ -14,9 +14,9 @@ from django.http import HttpResponse
 from django.utils import timezone
 
 from .models import (
-    ChatConversation, ChatMessage, ChatUsage, ConsentEvent, Coupon, CouponRedemption,
-    DailyActive, FirebaseIdentity, Order, Plan, PromoCode, PromoRedemption, Scan,
-    Simulation, SimulationPreviewUsage, Subscription,
+    ChatConversation, ChatMessage, ChatSetting, ChatTopic, ChatUsage, ConsentEvent, Coupon,
+    CouponRedemption, DailyActive, FirebaseIdentity, Order, Plan, PromoCode, PromoRedemption,
+    Scan, Simulation, SimulationPreviewUsage, Subscription,
 )
 from .billing import activate
 
@@ -167,7 +167,7 @@ class UserAdmin(DjangoUserAdmin):
             user.groups.remove(*groups)
         self.message_user(request, f"ถอนสิทธิ์ถาวรของ {queryset.count()} บัญชีแล้ว")
 
-    @admin.action(description="Export CSV")
+    @admin.action(description="ดาวน์โหลดเป็นไฟล์ CSV")
     def export_csv(self, request, queryset):
         response = HttpResponse(content_type="text/csv")
         response["Content-Disposition"] = 'attachment; filename="doodee-users.csv"'
@@ -212,20 +212,20 @@ class UserAdmin(DjangoUserAdmin):
             return extra + ("username", "email", "date_joined", "last_login")
         return tuple(super().get_readonly_fields(request, obj)) + extra
 
-    @admin.display(description="Firebase UID")
+    @admin.display(description="รหัสผู้ใช้ Firebase")
     def firebase_uid(self, obj):
         identity = getattr(obj, "firebase_identity", None)
         return identity.firebase_uid if identity else "—"
 
-    @admin.display(description="Account type")
+    @admin.display(description="ประเภทบัญชี")
     def account_type(self, obj):
         return "Admin" if obj.is_superuser else "Staff" if obj.is_staff else "Firebase" if getattr(obj, "firebase_identity", None) else "Django"
 
-    @admin.display(ordering="_effective_plan", description="Plan")
+    @admin.display(ordering="_effective_plan", description="แผนที่ใช้อยู่")
     def effective_plan(self, obj):
         return obj._effective_plan.title()
 
-    @admin.display(ordering="_vip_expires_at", description="VIP expires")
+    @admin.display(ordering="_vip_expires_at", description="VIP หมดอายุ")
     def vip_expires_at(self, obj):
         return obj._vip_expires_at or "—"
 
@@ -260,7 +260,7 @@ class ScanAdmin(ConfirmingModelAdmin):
     readonly_fields = tuple(field.name for field in Scan._meta.fields)
     actions = ("delete_demo_scans",)
 
-    @admin.action(description="Delete the selected sample scans")
+    @admin.action(description="ลบข้อมูลสแกนตัวอย่างที่เลือก")
     def delete_demo_scans(self, request, queryset):
         """Sample scans only. Real scans hold biometric data and are deleted through the
         retention path (request_scan_deletion), which also removes the stored images —
@@ -295,7 +295,7 @@ class PromoCodeAdmin(ConfirmingModelAdmin):
     def get_queryset(self, request):
         return super().get_queryset(request).annotate(_redemptions=Count("redemptions"))
 
-    @admin.display(ordering="_redemptions", description="Redemptions")
+    @admin.display(ordering="_redemptions", description="ถูกใช้ไปแล้ว (ครั้ง)")
     def redemption_count(self, obj):
         return obj._redemptions
 
@@ -339,6 +339,14 @@ class ConsentEventAdmin(ConfirmingModelAdmin):
         was already read-only, so the change form could not alter anything — this closes the
         remaining gap, where saving it still wrote a misleading "changed" entry to the log."""
         return False
+
+
+# LogEntry belongs to django.contrib.admin, so its name cannot be set on the model the way
+# every DOODEE model sets its own. Renamed here rather than behind a proxy model: a proxy
+# would mint a second set of permission rows and a migration, all to change one label.
+# Display only — no field, table or permission is affected.
+LogEntry._meta.verbose_name = "บันทึกการแก้ไข"
+LogEntry._meta.verbose_name_plural = "บันทึกการแก้ไข"
 
 
 @admin.register(LogEntry)
@@ -405,11 +413,11 @@ class ChatConversationAdmin(ConfirmingModelAdmin):
             _tokens_out=Sum("messages__output_tokens"),
         )
 
-    @admin.display(ordering="_turns", description="messages")
+    @admin.display(ordering="_turns", description="จำนวนข้อความ")
     def turns(self, obj):
         return obj._turns
 
-    @admin.display(ordering="_tokens_out", description="output tokens")
+    @admin.display(ordering="_tokens_out", description="โทเค็นขาออก")
     def tokens_out(self, obj):
         return obj._tokens_out or 0
 
@@ -431,6 +439,64 @@ class ChatUsageAdmin(admin.ModelAdmin):
     autocomplete_fields = ("user",)
 
 
+@admin.register(ChatSetting)
+class ChatSettingAdmin(ConfirmingModelAdmin):
+    """One row, edited in place. Add and delete are off so there is exactly one answer to
+    "what is the chat doing right now"."""
+
+    fieldsets = (
+        ("บุคลิกของ AI", {
+            "fields": ("persona",),
+            "description": (
+                "<strong>กฎความปลอดภัยแก้จากตรงนี้ไม่ได้</strong> — ระบบต่อท้ายทุกครั้งที่ตอบ: "
+                "ห้ามตัดสินว่าสวยหรือไม่สวย · ไม่ใช่คำวินิจฉัยทางการแพทย์ · ห้ามรับประกันผลหัตถการ · "
+                "อ้างได้เฉพาะตัวเลขที่วัดจริง และกฎเหล่านี้มีผลเหนือข้อความที่เขียนด้านล่างเสมอ"
+            ),
+        }),
+        ("โมเดลและค่าใช้จ่าย", {
+            "fields": ("provider", "model", "base_url", "effort", "max_tokens"),
+            "description": (
+                "ยิ่งโมเดลใหญ่ ระดับการคิดสูง และคำตอบยาว ค่าใช้จ่ายต่อคำถามยิ่งสูง · "
+                "<strong>คีย์ไม่ได้เก็บที่นี่</strong> ใส่ใน <code>.env</code> แล้ว restart: "
+                "Anthropic ใช้ <code>ANTHROPIC_API_KEY</code> · เจ้าอื่นใช้ <code>CHAT_API_KEY</code> · "
+                "<strong>OpenAI-compatible มีไว้ทดสอบ</strong> ไม่มี prompt caching (รายงานค่าใช้จ่ายจะขึ้นแคช 0) "
+                "และโมเดลฟรีตัวเล็กทำตามกฎความปลอดภัยได้ไม่แน่นอนเท่า Claude — ไม่ควรเปิดให้ผู้ใช้จริง"
+            ),
+        }),
+        ("โควตา", {"fields": ("free_turns", "paid_turns")}),
+        ("ระบบ", {"fields": ("updated_at",)}),
+    )
+    readonly_fields = ("updated_at",)
+
+    def has_add_permission(self, request):
+        return ChatSetting.objects.count() == 0
+
+    def has_delete_permission(self, request, obj=None):
+        """Deleting it would silently reset the chat to the values compiled into the code."""
+        return False
+
+
+@admin.register(ChatTopic)
+class ChatTopicAdmin(ConfirmingModelAdmin):
+    """Wording, order and visibility only.
+
+    `key` is read-only and rows cannot be added or removed because each one is bound to a
+    formula in chat_facts.py — a row with no formula behind it would be a button that answers
+    nothing, and deleting a row would take the working button away with it.
+    """
+
+    list_display = ("label_th", "label_en", "key", "is_active", "sort_order")
+    list_editable = ("is_active", "sort_order")
+    list_filter = ("is_active",)
+    readonly_fields = ("key",)
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+
 def satang(value):
     """฿ from satang. Display only — nothing in the database is ever a decimal."""
     return f"฿{value / 100:,.2f}"
@@ -443,7 +509,7 @@ class PlanAdmin(ConfirmingModelAdmin):
     search_fields = ("code", "name_en", "name_th")
     list_editable = ("is_active", "sort_order")
 
-    @admin.display(ordering="price_satang", description="price")
+    @admin.display(ordering="price_satang", description="ราคา")
     def price(self, obj):
         return satang(obj.price_satang)
 
@@ -465,13 +531,13 @@ class CouponAdmin(ConfirmingModelAdmin):
     filter_horizontal = ("applies_to_plans",)
     readonly_fields = ("used_count", "created_at")
 
-    @admin.display(description="discount")
+    @admin.display(description="ส่วนลด")
     def discount(self, obj):
         if obj.discount_type == Coupon.DiscountType.PERCENT:
             return f"{obj.discount_value}%"
         return satang(obj.discount_value)
 
-    @admin.display(description="uses")
+    @admin.display(description="ใช้ไป / จำกัด")
     def uses(self, obj):
         return f"{obj.used_count} / {obj.max_uses or '∞'}"
 
@@ -501,11 +567,11 @@ class OrderAdmin(ConfirmingModelAdmin):
     )
     actions = ("mark_paid", "mark_cancelled")
 
-    @admin.display(ordering="total_satang", description="total")
+    @admin.display(ordering="total_satang", description="ยอดที่ต้องจ่าย")
     def total(self, obj):
         return satang(obj.total_satang)
 
-    @admin.display(ordering="discount_satang", description="discount")
+    @admin.display(ordering="discount_satang", description="ส่วนลด")
     def discount(self, obj):
         return satang(obj.discount_satang) if obj.discount_satang else "—"
 
@@ -519,7 +585,7 @@ class OrderAdmin(ConfirmingModelAdmin):
     def has_delete_permission(self, request, obj=None):
         return False
 
-    @admin.action(description="Confirm payment received and grant the plan")
+    @admin.action(description="ยืนยันว่าได้รับเงินแล้ว และเปิดสิทธิ์ให้ผู้ใช้")
     def mark_paid(self, request, queryset):
         if not request.user.is_superuser:
             # This hands out paid entitlement. Staff who can edit users should not also be
@@ -538,7 +604,7 @@ class OrderAdmin(ConfirmingModelAdmin):
         if skipped:
             self.message_user(request, f"{skipped} order(s) were already paid and were left alone.", messages.WARNING)
 
-    @admin.action(description="Cancel unpaid orders")
+    @admin.action(description="ยกเลิกคำสั่งซื้อที่ยังไม่จ่าย")
     def mark_cancelled(self, request, queryset):
         # Paid orders are excluded rather than refused: cancelling one would strip the record
         # behind a subscription that is still running. Refunds are a provider operation.

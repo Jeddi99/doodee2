@@ -3,7 +3,7 @@ from rest_framework.routers import DefaultRouter
 
 from .views import (
     ChatViewSet, OrderViewSet, ProcedureList, ScanViewSet, SimulationViewSet, delete_account,
-    demo_scan, plans, redeem, session, validate_coupon_view,
+    demo_scan, omise_webhook, pay_order, plans, redeem, session, validate_coupon_view,
 )
 
 
@@ -21,6 +21,9 @@ urlpatterns = [
     path("session/", session),
     path("procedures/", ProcedureList.as_view()),
     path("procedures/<slug:procedure_id>/", ProcedureList.as_view()),
+    path("orders/<int:order_id>/pay/", pay_order),
+    # Unauthenticated by design — Omise has no Firebase token. Signature verified instead.
+    path("webhooks/omise/", omise_webhook),
     path("plans/", plans),
     # Prices the total after a discount without spending the coupon — a limited code must
     # not be held just because someone typed it into a box.

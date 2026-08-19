@@ -47,6 +47,9 @@ const COPY = {
     send: "ส่ง",
     thinking: "กำลังคิด…",
     disclaimer: "DOODEE Chat ตอบผิดได้ การตัดสินใจทางการแพทย์ต้องปรึกษาแพทย์",
+    // Said before the box, not buried in a policy page: typing a question is the one action
+    // in DOODEE that sends anything outside this system.
+    privacy: "คำถามที่พิมพ์เองจะถูกส่งไปยัง Anthropic พร้อมค่าที่วัดได้ 12 ค่า ภาพใบหน้าไม่ถูกส่งออกไป คำถามสำเร็จรูปด้านบนตอบจากในระบบ ไม่ส่งข้อมูลออก",
     turnsLeft: (n: number) => `เหลือ ${n} ครั้งเดือนนี้`,
     quotaTitle: "ใช้ครบโควตาเดือนนี้แล้ว",
     quotaBodyFree: "แผนฟรีคุยได้ 5 ครั้งต่อเดือน โควตาจะรีเซ็ตต้นเดือนหน้า",
@@ -76,6 +79,7 @@ const COPY = {
     send: "Send",
     thinking: "Thinking…",
     disclaimer: "DOODEE Chat can make mistakes. Medical decisions require a qualified professional.",
+    privacy: "A question you type is sent to Anthropic along with your 12 measurements. Your photos are never sent. The suggested questions above are answered inside DOODEE and send nothing.",
     turnsLeft: (n: number) => `${n} left this month`,
     quotaTitle: "You've used this month's turns",
     quotaBodyFree: "The free plan includes 5 turns a month. It resets at the start of next month.",
@@ -382,6 +386,9 @@ export default function ChatPanel() {
         )}
 
         <small className="gpt-disclaimer">{copy.disclaimer}</small>
+        {/* Only shown where free text is actually reachable: with chat off or the quota gone
+            the composer is not rendered, and nothing can leave. */}
+        {!chatOff && !outOfTurns && <small className="gpt-disclaimer">{copy.privacy}</small>}
       </GlassCard>
     </div>
   );

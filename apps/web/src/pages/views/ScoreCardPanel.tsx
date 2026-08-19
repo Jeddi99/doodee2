@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { LockKeyhole, ScanFace } from "lucide-react";
+import { ImageOff, LockKeyhole, ScanFace } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { GlassCard } from "../DashboardPage";
 import { getScans, getScoreCard, getSession } from "../../lib/api";
@@ -66,6 +66,13 @@ function DistributionCurve({ z, label }: { z: number; label: string }) {
     </svg>
   );
 }
+
+// Two photos, front and side, as the card was designed. Both are optional: the numbers
+// outlive the photographs by design, so a card with neither still reads correctly.
+const PORTRAITS = [
+  { field: "front_url", caption: "หน้าตรง", alt: "ภาพหน้าตรงของคุณ" },
+  { field: "side_url", caption: "ด้านข้าง", alt: "ภาพด้านข้างของคุณ" },
+] as const;
 
 const CATEGORY_LABELS: Record<string, string> = {
   proportions: "สัดส่วนรวม",
@@ -167,12 +174,23 @@ export default function ScoreCardPanel() {
 
       <GlassCard className="score-card">
         <div className="score-card__portraits">
-          {data.front_url ? (
-            <figure>
-              <img src={data.front_url} alt="ภาพหน้าตรงของคุณ" />
-              <figcaption>หน้าตรง</figcaption>
-            </figure>
-          ) : null}
+          {PORTRAITS.map(({ field, caption, alt }) =>
+            data[field] ? (
+              <figure key={field}>
+                {/* No crossOrigin and no download affordance: the URL is a short-lived signed
+                    link to the user's own photo, and it should not outlive the page. */}
+                <img src={data[field]} alt={alt} loading="lazy" />
+                <figcaption>{caption}</figcaption>
+              </figure>
+            ) : (
+              <figure key={field} className="is-empty">
+                <div className="score-card__portrait-empty" aria-hidden="true">
+                  <ImageOff size={20} />
+                </div>
+                <figcaption>{caption}</figcaption>
+              </figure>
+            ),
+          )}
           <div className="score-card__headline">
             <strong>
               {data.overall_score ?? "—"}
@@ -181,6 +199,16 @@ export default function ScoreCardPanel() {
             <span>ดัชนีความใกล้ค่าอ้างอิง</span>
           </div>
         </div>
+
+        {/* Said once, under the photos, rather than left as two silent grey boxes. The card
+            itself is built from analysis_data, which survives the photos being deleted. */}
+        {(!data.front_url || !data.side_url) && (
+          <p className="score-card__portrait-note" role="status">
+            {data.images_expired
+              ? "ภาพถ่ายถูกลบตามกำหนด 30 วันแล้ว ตัวเลขและคะแนนทั้งหมดยังอยู่ครบ"
+              : "ยังไม่มีภาพสำหรับมุมนี้ — สแกนใหม่แบบเก็บภาพด้านข้างจะแสดงได้ครบทั้งสองมุม"}
+          </p>
+        )}
 
         {percentile !== null ? (
           <div className="score-card__percentile">

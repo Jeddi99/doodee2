@@ -11,22 +11,27 @@ from django.db import transaction
 from django.db.models import F
 from django.utils import timezone
 from rest_framework import mixins, status, viewsets
-from rest_framework.decorators import action, api_view
+from rest_framework.decorators import action, api_view, authentication_classes, permission_classes
 from rest_framework.exceptions import NotFound, ValidationError
 from rest_framework.parsers import FormParser, MultiPartParser
+from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from .models import (
-    ChatConversation, ChatMessage, ChatUsage, ConsentEvent, Order, Plan, PromoCode,
-    PromoRedemption, Scan, Simulation, SimulationPreviewUsage,
+    ChatConversation, ChatMessage, ChatSetting, ChatTopic, ChatUsage, ConsentEvent, Order,
+    Plan, PromoCode, PromoRedemption, Scan, Simulation, SimulationPreviewUsage,
 )
-from .billing import CouponError, create_order, quote, sync_entitlement, validate_coupon
+from .billing import CouponError, activate, create_order, quote, sync_entitlement, validate_coupon
+from .omise import (
+    OmiseError, configured as omise_configured, create_promptpay_charge,
+    verify_signature as verify_omise_signature,
+)
 from .demo_data import create_demo_scan
 from .procedures import PROCEDURES
 from .chat import (
     HISTORY_TURNS, MAX_QUESTION_CHARS, ChatUnavailable, chat_enabled, reply as chat_reply,
-    scan_context, title_for,
+    scan_context, system_prompt, title_for,
 )
 from .chat_facts import answer as topic_answer, available_topics
 from .serializers import (
@@ -190,6 +195,17 @@ def _record_simulation_consent(user, version):
         ConsentEvent.objects.create(user=user, purpose=ConsentEvent.Purpose.SIMULATION, policy_version=version)
 
 
+def _record_chat_consent(user, version):
+    """Recorded once per user per policy version, before the first question is sent.
+
+    Only the free-text path calls this. Topic answers are computed here from numbers already
+    in the database and reach no third party, so asking for consent to forward data would be
+    describing something that does not happen.
+    """
+    if not ConsentEvent.objects.filter(user=user, purpose=ConsentEvent.Purpose.CHAT, policy_version=version, accepted=True).exists():
+        ConsentEvent.objects.create(user=user, purpose=ConsentEvent.Purpose.CHAT, policy_version=version)
+
+
 def _claim_free_preview(user):
     """Unreachable while simulation is entitlement-only, and kept deliberately.
 
@@ -349,7 +365,17 @@ class ScanViewSet(viewsets.GenericViewSet, mixins.ListModelMixin, mixins.Retriev
                 {"detail": "score_card_unavailable", "scan_status": scan.status},
                 status=status.HTTP_409_CONFLICT,
             )
-        return Response({**card, "scan_id": str(scan.id), "front_url": ScanSerializer(scan).data.get("front_url")})
+        # Two photos, the shape the card was designed around. Signed on request and short
+        # lived, and both may be None once the 30-day purge has run — the card is built from
+        # `analysis_data`, which outlives the photographs, so it still renders without them.
+        serializer = ScanSerializer(scan)
+        return Response({
+            **card,
+            "scan_id": str(scan.id),
+            "front_url": serializer.data.get("front_url"),
+            "side_url": serializer.side_url(scan),
+            "images_expired": serializer.data.get("images_expired"),
+        })
 
     def destroy(self, request, pk=None):
         request_scan_deletion(self.get_object())
@@ -517,9 +543,24 @@ def delete_account(request):
     return Response(status=status.HTTP_204_NO_CONTENT)
 
 
+def _topic_overrides(lang):
+    """Admin wording and order for the chips, or None to fall back to the ones in code.
+
+    None rather than an empty list when the table is empty: a database that has not been
+    seeded yet should show the built-in chips, not silently show none at all.
+    """
+    rows = list(ChatTopic.objects.filter(is_active=True))
+    return [(row.key, row.label(lang)) for row in rows] or None
+
+
 def _chat_limit(user):
-    """Turns allowed this month. Free is a hard cap; paid is a soft cap against abuse."""
-    return settings.CHAT_FREE_TURNS if _user_plan(user) == "free" else settings.CHAT_PAID_TURNS
+    """Turns allowed this month. Free is a hard cap; paid is a soft cap against abuse.
+
+    Read from the admin settings row so the ceiling can be moved without a deploy; the
+    environment variables remain the defaults that row is created with.
+    """
+    config = ChatSetting.current()
+    return config.free_turns if _user_plan(user) == "free" else config.paid_turns
 
 
 def _chat_remaining(user):
@@ -588,7 +629,11 @@ class ChatViewSet(viewsets.GenericViewSet, mixins.ListModelMixin, mixins.Retriev
         return Response({
             "lang": lang,
             "scan_id": str(scan.id) if scan else None,
-            "topics": available_topics(scan.analysis_data if scan else None, lang),
+            # Wording, order and visibility come from the admin; which chips can actually
+            # answer still comes from the scan.
+            "topics": available_topics(
+                scan.analysis_data if scan else None, lang, overrides=_topic_overrides(lang),
+            ),
         })
 
     def _answer_topic(self, request, conversation, scan, topic):
@@ -637,6 +682,12 @@ class ChatViewSet(viewsets.GenericViewSet, mixins.ListModelMixin, mixins.Retriev
         # must not be blocked by a missing API key — that check belongs after this fork.
         if not topic and not chat_enabled():
             return Response({"detail": "chat_unavailable"}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+        # Demanded before the question is read, not after: a typed question is the one thing
+        # here that leaves for a third party, and consent recorded afterwards is a receipt,
+        # not a choice. Topic answers never reach this branch.
+        chat_consent_version = str(request.data.get("chat_consent_version", "")).strip()
+        if not topic and not chat_consent_version:
+            raise ValidationError({"chat_consent_version": "Separate chat consent is required"})
 
         conversation_id = request.data.get("conversation_id")
         if conversation_id:
@@ -652,6 +703,7 @@ class ChatViewSet(viewsets.GenericViewSet, mixins.ListModelMixin, mixins.Retriev
             return self._answer_topic(request, conversation, scan, topic)
 
         question = message
+        _record_chat_consent(request.user, chat_consent_version)
         remaining = _claim_chat_turn(request.user)
         if remaining is None:
             return Response(
@@ -666,8 +718,17 @@ class ChatViewSet(viewsets.GenericViewSet, mixins.ListModelMixin, mixins.Retriev
                 history.append({"role": message.role, "content": message.content})
         history.append({"role": "user", "content": question})
 
+        config = ChatSetting.current()
         try:
-            answer, usage = chat_reply(scan_context(scan), history)
+            answer, usage = chat_reply(
+                f"{system_prompt(config.persona)}\n\n{scan_context(scan)}",
+                history,
+                model=config.model,
+                effort=config.effort,
+                max_tokens=config.max_tokens,
+                provider=config.provider,
+                base_url=config.base_url,
+            )
         except ChatUnavailable as exc:
             # The turn was reserved before the call; an upstream failure must not spend it.
             _refund_chat_turn(request.user)
@@ -808,3 +869,98 @@ def demo_scan(request):
         ScanSerializer(scan).data,
         status=status.HTTP_200_OK if existing else status.HTTP_201_CREATED,
     )
+
+
+@api_view(("POST",))
+def pay_order(request, order_id):
+    """Turn a pending order into a PromptPay QR.
+
+    Kept separate from order creation so the order exists before the provider is ever
+    contacted: a charge that arrives with no order behind it is unattributable money.
+    Repeating the call reuses the existing charge rather than opening a second one for the
+    same order — otherwise a double-click leaves two live QR codes and one of them can be paid
+    after the order is already settled.
+    """
+    order = Order.objects.filter(id=order_id, user=request.user).select_related("plan").first()
+    if not order:
+        raise NotFound("Order not found")
+    if order.status != Order.Status.PENDING:
+        return Response({"detail": "order_not_payable", "status": order.status}, status=status.HTTP_409_CONFLICT)
+    if not omise_configured():
+        return Response({"detail": "payments_unavailable"}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+
+    if order.provider == Order.Provider.OMISE and order.provider_charge_id:
+        return Response({"detail": "charge_already_open", "order_id": str(order.id)}, status=status.HTTP_409_CONFLICT)
+
+    try:
+        charge_id, qr, expires_at = create_promptpay_charge(order.total_satang, order.id)
+    except OmiseError as exc:
+        # The order stays pending and payable: a provider outage must not cost the user their
+        # coupon or make them re-enter anything.
+        return Response({"detail": "payment_provider_error", "reason": str(exc)[:200]},
+                        status=status.HTTP_502_BAD_GATEWAY)
+
+    order.provider = Order.Provider.OMISE
+    order.provider_charge_id = charge_id
+    order.save(update_fields=("provider", "provider_charge_id"))
+    return Response({
+        "order_id": str(order.id),
+        "total_satang": order.total_satang,
+        "qr_image_url": qr,
+        "expires_at": expires_at,
+        # The client polls the order; it must never decide it is paid on its own.
+        "poll_url": f"/orders/{order.id}/",
+    })
+
+
+@api_view(("POST",))
+@authentication_classes(())
+@permission_classes((AllowAny,))
+def omise_webhook(request):
+    """Where a PromptPay payment becomes entitlement.
+
+    This is the ONLY thing that marks an order paid. The browser is never believed: anyone can
+    replay a redirect URL, and the customer's device is not a party we control.
+
+    Answers 200 to anything it has already handled or deliberately ignores, so Omise stops
+    retrying. Only a genuine failure on our side returns 5xx.
+    """
+    if not verify_omise_signature(
+        request.body,
+        request.headers.get("Omise-Signature", ""),
+        request.headers.get("Omise-Signature-Timestamp", ""),
+    ):
+        # Includes the case where no secret is configured — an endpoint that grants paid
+        # entitlement must fail closed.
+        return Response({"detail": "invalid_signature"}, status=status.HTTP_401_UNAUTHORIZED)
+
+    event = request.data or {}
+    if event.get("key") != "charge.complete":
+        return Response({"detail": "ignored"})
+
+    charge = event.get("data") or {}
+    charge_id = charge.get("id") or ""
+    if charge.get("status") != "successful":
+        Order.objects.filter(provider=Order.Provider.OMISE, provider_charge_id=charge_id,
+                             status=Order.Status.PENDING).update(status=Order.Status.FAILED)
+        return Response({"detail": "not_successful"})
+
+    order = Order.objects.filter(provider=Order.Provider.OMISE, provider_charge_id=charge_id).first()
+    if not order:
+        # Fall back to the id we attached at charge time, in case the charge was recorded
+        # against the order after the webhook raced us.
+        order_id = ((charge.get("metadata") or {}).get("order_id") or "").strip()
+        order = Order.objects.filter(id=order_id).first() if order_id else None
+    if not order:
+        # 200 on purpose: retrying will not make an order we have never seen appear.
+        return Response({"detail": "unknown_order"})
+
+    # A charge that says a different number than the order is either a bug or an attack; in
+    # both cases granting the plan would be wrong.
+    if int(charge.get("amount") or 0) != order.total_satang:
+        return Response({"detail": "amount_mismatch"}, status=status.HTTP_409_CONFLICT)
+
+    # activate() is idempotent and is the same call the manual bank-transfer path makes, so a
+    # replayed webhook cannot extend the subscription or spend the coupon twice.
+    activate(order, charge_id=charge_id)
+    return Response({"detail": "ok"})

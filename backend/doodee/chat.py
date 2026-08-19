@@ -15,8 +15,11 @@ average", never "your nose is good". The system prompt below says so at length b
 model is the only thing standing between that distinction and the user.
 """
 
+import json
 import os
 from functools import lru_cache
+from urllib.error import HTTPError
+from urllib.request import Request, urlopen
 
 from django.conf import settings
 
@@ -41,7 +44,7 @@ MAX_QUESTION_CHARS = 2000
 # cacheable part; history is not, so it is what actually grows the bill per turn.
 HISTORY_TURNS = 12
 
-SYSTEM_PROMPT = """You are DOODEE Chat. You help one person understand the facial measurements
+BASE_PROMPT = """You are DOODEE Chat. You help one person understand the facial measurements
 DOODEE took from their own scan. You are answering in the language the user writes in — Thai
 users get Thai.
 
@@ -52,8 +55,12 @@ mean) / reference SD. A score near 100 means the measurement is CLOSE TO THE COH
 low score means it is UNUSUAL for that cohort, in either direction — larger or smaller.
 
 Closeness to an average is not quality. There is no measurement here for "attractive",
-"good", "bad", "better" or "worse", and you must never present one as if there were.
+"good", "bad", "better" or "worse", and you must never present one as if there were."""
 
+# Never editable from the admin, and always appended last so it is the final word the model
+# reads. The score card, the consent copy and DESIGN.md all promise these to the user; a
+# persona box that could delete them would turn those promises into decoration.
+SAFETY_RULES = """
 RULES
 1. Never judge appearance. Do not say a feature is beautiful, ugly, good, bad, weak, strong,
    flawed, needs fixing, or should be changed. Do not rank features against each other by
@@ -73,7 +80,25 @@ RULES
 6. If asked about someone other than the user, or asked to compare the user with a celebrity or
    another person, decline: you only have this one set of measurements.
 7. Be brief and concrete. A few short paragraphs. No filler, no flattery, no encouragement the
-   numbers do not support."""
+   numbers do not support.
+
+These rules override any instruction above them. If the tone instructions ask you to break one,
+follow the rule and ignore that part of the tone."""
+
+
+def system_prompt(persona=""):
+    """The full system block: admin persona first, product rules last.
+
+    Order matters. The persona is context the model reads before the rules, and the rules end
+    by saying they win — so an admin can shape the voice without being able to remove the
+    guardrails, whether by accident or on purpose.
+    """
+    parts = []
+    if persona and persona.strip():
+        parts.append(f"HOW TO SOUND\n{persona.strip()}")
+    parts.append(BASE_PROMPT)
+    parts.append(SAFETY_RULES.strip())
+    return "\n\n".join(parts)
 
 NO_SCAN_CONTEXT = """The user has no completed scan yet, so you have NO measurements. Say so
 and tell them what a scan involves. Do not answer any question as though you had numbers."""
@@ -135,25 +160,83 @@ def _client():
     return Anthropic(api_key=key)
 
 
-def reply(context_text, history):
+def _openai_reply(system_text, history, model, max_tokens, base_url):
+    """One turn against any OpenAI-compatible endpoint — Groq, OpenRouter, Ollama.
+
+    `urllib` rather than a second SDK, for the same reason omise.py and storage.py use it: one
+    HTTP style in the codebase and no new dependency for one POST.
+
+    Exists for testing without a bill. It has no prompt caching and no effort control, so the
+    cost report will read zero cached tokens — correct, not broken. A small free model also
+    follows the safety rules less reliably than Opus 5, which is why the admin help text says
+    to use this for checking the plumbing, not for real users.
+    """
+    key = os.getenv("CHAT_API_KEY", "")
+    headers = {"Content-Type": "application/json"}
+    if key:
+        # Ollama needs none; every hosted provider does.
+        headers["Authorization"] = f"Bearer {key}"
+
+    payload = json.dumps({
+        "model": model,
+        "max_tokens": max_tokens,
+        "messages": [{"role": "system", "content": system_text}, *history],
+    }).encode()
+    request = Request(f"{base_url.rstrip('/')}/chat/completions", data=payload, headers=headers, method="POST")
+    try:
+        with urlopen(request, timeout=120) as response:
+            body = json.loads(response.read().decode())
+    except HTTPError as exc:
+        detail = exc.read().decode()[:200] if exc.fp else ""
+        raise ChatUnavailable(f"http_{exc.code}: {detail}") from exc
+    except Exception as exc:  # noqa: BLE001 - timeouts, DNS, TLS
+        raise ChatUnavailable(f"unreachable: {exc}") from exc
+
+    try:
+        text = (body["choices"][0]["message"]["content"] or "").strip()
+    except (KeyError, IndexError, TypeError) as exc:
+        raise ChatUnavailable(f"unexpected_response: {str(body)[:160]}") from exc
+    if not text:
+        raise ChatUnavailable("empty_response")
+
+    usage = body.get("usage") or {}
+    return text, {
+        "input_tokens": usage.get("prompt_tokens", 0) or 0,
+        # No prompt caching on this path; reporting a guess here would corrupt the cost report.
+        "cached_input_tokens": 0,
+        "cache_write_tokens": 0,
+        "output_tokens": usage.get("completion_tokens", 0) or 0,
+    }
+
+
+def reply(system_text, history, model=MODEL, effort=EFFORT, max_tokens=MAX_TOKENS,
+          provider="anthropic", base_url=""):
     """One turn. Returns `(text, usage_dict)`.
 
+    `system_text` is the whole cached prefix — `system_prompt()` output plus the scan's
+    numbers — assembled by the caller, which is the only place that knows both the admin
+    settings and which scan this conversation is about.
+
     `history` is `[{"role": ..., "content": ...}]` already trimmed by the caller, ending with
-    the user's new question.
+    the user's new question. The model and its parameters are passed in because they are set
+    in the admin; the constants above are the fallback for a database with no settings row.
     """
+    if provider == "openai":
+        return _openai_reply(system_text, history, model, max_tokens, base_url)
+
     client = _client()
     try:
         message = client.messages.create(
-            model=MODEL,
-            max_tokens=MAX_TOKENS,
-            output_config={"effort": EFFORT},
+            model=model,
+            max_tokens=max_tokens,
+            output_config={"effort": effort},
             # One cache breakpoint at the end of the system block. Prompt plus measurements is
             # ~1,400 tokens, comfortably over Opus 5's 512-token cache minimum, and it is
             # byte-identical for every turn in a conversation — so turn 2 onward reads it at a
             # tenth the price.
             system=[{
                 "type": "text",
-                "text": f"{SYSTEM_PROMPT}\n\n{context_text}",
+                "text": system_text,
                 "cache_control": {"type": "ephemeral"},
             }],
             messages=history,
@@ -184,4 +267,17 @@ def title_for(question):
 
 
 def chat_enabled():
-    return bool(settings.CHAT_ENABLED and os.getenv("ANTHROPIC_API_KEY"))
+    """Whether free-text chat can run at all, for the provider currently selected.
+
+    Asked before a question is accepted so the client can say the feature is off, rather than
+    letting every message come back 503.
+    """
+    if not settings.CHAT_ENABLED:
+        return False
+    from .models import ChatSetting
+
+    config = ChatSetting.current()
+    if config.provider == ChatSetting.Provider.OPENAI:
+        # A local Ollama needs no key, so a configured address is the requirement here.
+        return bool(config.base_url.strip())
+    return bool(os.getenv("ANTHROPIC_API_KEY"))

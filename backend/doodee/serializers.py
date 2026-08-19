@@ -43,7 +43,12 @@ class ScanSerializer(serializers.ModelSerializer):
         return obj.status == Scan.Status.COMPLETED and not (obj.image_objects or {})
 
     def get_front_url(self, obj):
-        object_name = (obj.image_objects or {}).get("front")
+        return self._signed(obj, "front")
+
+    def _signed(self, obj, *views):
+        """A signed URL for the first of `views` this scan actually has."""
+        images = obj.image_objects or {}
+        object_name = next((images[view] for view in views if images.get(view)), None)
         if obj.status != Scan.Status.COMPLETED or not object_name:
             return None
         try:
@@ -52,6 +57,11 @@ class ScanSerializer(serializers.ModelSerializer):
             # Storage being unreachable is temporary; `images_expired` stays False so the
             # client offers a retry rather than claiming the photo was deleted.
             return None
+
+    def side_url(self, obj):
+        """Whichever profile was taken. Not a serializer field — the score card asks for it
+        directly, and no other client needs a second photo."""
+        return self._signed(obj, "left_profile", "right_profile", "left_oblique", "right_oblique")
 
 
 class SimulationSerializer(serializers.ModelSerializer):

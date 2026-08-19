@@ -22,6 +22,22 @@
   .rp-cards div { background: var(--darkened-bg); border: 1px solid var(--hairline-color); border-radius: 4px; padding: 1rem; }
   .rp-cards strong { display: block; font-size: 1.5rem; line-height: 1.2; }
   .rp-cards small { color: var(--body-quiet-color); }
+  /* Chart. Colours come from admin CSS variables so both themes work without a second rule. */
+  /* Capped: stretched to a 2000px monitor the 720x220 viewBox becomes a wall of whitespace. */
+  .rp-chart { width: 100%; max-width: 880px; height: auto; display: block; overflow: visible; }
+  .rp-chart .rp-axis { stroke: var(--hairline-color); stroke-width: 1; }
+  .rp-chart .rp-grid { stroke: var(--hairline-color); stroke-width: 1; opacity: .45; }
+  .rp-chart .rp-tick { fill: var(--body-quiet-color); font-size: 9px; }
+  .rp-chart .rp-month { fill: var(--body-quiet-color); font-size: 8.5px; text-anchor: middle; }
+  .rp-chart .rp-col { fill: var(--primary); }
+  /* Hollow, not short: a month before tracking began is unknown, not zero. */
+  .rp-chart .rp-col.is-untracked { fill: none; stroke: var(--body-quiet-color); stroke-width: 1; stroke-dasharray: 2 2; }
+  .rp-chart .rp-line { fill: none; stroke: var(--error-fg); stroke-width: 2; stroke-linejoin: round; }
+  .rp-chart .rp-dot { fill: var(--error-fg); }
+  .rp-legend { display: flex; flex-wrap: wrap; gap: 1.2rem; font-size: .8rem; margin: .1rem 0 .7rem; }
+  .rp-legend span { display: inline-flex; align-items: center; gap: .4rem; color: var(--body-quiet-color); }
+  .rp-key { width: .85rem; height: .55rem; border-radius: 2px; background: var(--primary); }
+  .rp-key.is-line { height: 0; border-top: 2px solid var(--error-fg); border-radius: 0; }
 </style>
 
 <div class="rp-section">
@@ -42,6 +58,56 @@
   </table>
 </div>
 
+{% if chart %}
+<div class="rp-section">
+  <h2>คนเข้าใช้รายเดือน และยอดผู้ใช้สะสม</h2>
+  <div class="rp-legend">
+    <span><i class="rp-key"></i> คนเข้าใช้ในเดือนนั้น (แกนซ้าย)</span>
+    <span><i class="rp-key is-line"></i> ยอดผู้ใช้สะสมทั้งหมด (แกนขวา)</span>
+  </div>
+  <p class="rp-note">
+    นับเฉพาะผู้ใช้ที่ล็อกอินแล้ว — คนที่เปิดเว็บแต่ยังไม่สมัครไม่ถูกนับ · หนึ่งคนนับครั้งเดียวต่อเดือน
+    ไม่ว่าจะเข้ากี่รอบ · <strong>สองเส้นใช้สเกลคนละแกน เทียบความสูงข้ามกันไม่ได้</strong>
+  </p>
+  <svg class="rp-chart" viewBox="0 0 {{ chart.width }} {{ chart.height }}" role="img"
+       aria-label="กราฟแท่งแสดงคนเข้าใช้รายเดือน และเส้นแสดงยอดผู้ใช้สะสม ย้อนหลัง 12 เดือน">
+    {% for tick in chart.left_ticks %}
+      <line class="rp-grid" x1="{{ chart.plot_left }}" y1="{{ tick.y }}" x2="{{ chart.plot_right }}" y2="{{ tick.y }}" />
+      <text class="rp-tick" x="{{ chart.plot_left }}" y="{{ tick.y }}" dx="-6" dy="3" text-anchor="end">{{ tick.value }}</text>
+    {% endfor %}
+    {% for tick in chart.right_ticks %}
+      <text class="rp-tick" x="{{ chart.plot_right }}" y="{{ tick.y }}" dx="6" dy="3">{{ tick.value }}</text>
+    {% endfor %}
+
+    {% for bar in chart.bars %}
+      <rect class="rp-col{% if bar.untracked %} is-untracked{% endif %}"
+            x="{{ bar.x }}" y="{% if bar.untracked %}{{ chart.baseline_y|add:"-6" }}{% else %}{{ bar.y }}{% endif %}"
+            width="{{ bar.width }}" height="{% if bar.untracked %}6{% else %}{{ bar.height }}{% endif %}" rx="2">
+        <title>{{ bar.label }} — {% if bar.untracked %}ยังไม่ได้เริ่มบันทึก{% else %}{{ bar.value }} คน{% endif %}</title>
+      </rect>
+      <text class="rp-month" x="{{ bar.label_x }}" y="{{ chart.baseline_y|add:"14" }}">{{ bar.label }}</text>
+    {% endfor %}
+
+    <polyline class="rp-line" points="{{ chart.line }}" />
+    {% for dot in chart.dots %}
+      <circle class="rp-dot" cx="{{ dot.x }}" cy="{{ dot.y }}" r="2.5">
+        <title>สะสม {{ dot.value }} คน</title>
+      </circle>
+    {% endfor %}
+
+    <line class="rp-axis" x1="{{ chart.plot_left }}" y1="{{ chart.baseline_y }}" x2="{{ chart.plot_right }}" y2="{{ chart.baseline_y }}" />
+  </svg>
+  <p class="rp-note">
+    {% if report.tracking_started %}
+      แท่งประจุดคือเดือนก่อนเริ่มบันทึกผู้เข้าใช้ ({{ report.tracking_started }}) — ไม่ใช่ศูนย์คน แต่คือไม่มีข้อมูล
+      ส่วนเส้นสะสมย้อนหลังได้ครบทุกเดือน เพราะวันสมัครถูกบันทึกมาตลอด
+    {% else %}
+      ยังไม่มีข้อมูลผู้เข้าใช้เลย แท่งทั้งหมดจึงเป็นช่วงที่ยังไม่ได้บันทึก — เริ่มนับตั้งแต่ deploy ครั้งนี้เป็นต้นไป
+    {% endif %}
+  </p>
+</div>
+{% endif %}
+
 <div class="rp-section">
   <h2>ย้อนหลัง 12 เดือน</h2>
   <p class="rp-note">
@@ -53,13 +119,14 @@
   </p>
   <table class="rp-table">
     <thead>
-      <tr><th>เดือน</th><th>สมัครใหม่</th><th>เข้าใช้</th><th>สแกน</th><th>เทิร์นแชท</th><th>ออเดอร์</th><th>รายได้</th><th>ค่าแชท</th></tr>
+      <tr><th>เดือน</th><th>สมัครใหม่</th><th>สะสม</th><th>เข้าใช้</th><th>สแกน</th><th>เทิร์นแชท</th><th>ออเดอร์</th><th>รายได้</th><th>ค่าแชท</th></tr>
     </thead>
     <tbody>
       {% for row in report.months %}
         <tr>
           <td>{{ row.month|date:"Y-m" }}</td>
           <td>{{ row.signups }}</td>
+          <td>{{ row.cumulative_users }}</td>
           <td>{{ row.active }}</td>
           <td>{{ row.scans }}</td>
           <td>{{ row.chat_turns }}</td>
