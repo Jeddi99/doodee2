@@ -15,3 +15,7 @@ opencv-python-headless>=4.10,<5
 numpy>=1.26,<3
 # DOODEE Chat. Only the derived measurements are sent upstream, never the images.
 anthropic>=0.75,<1
+# Fernet, for the bank account numbers in PayoutAccount. Present transitively via firebase-admin
+# already, but pinned here on purpose: a library that encrypts customer bank details must not be
+# able to vanish because something else stopped depending on it.
+cryptography>=42,<52

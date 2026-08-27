@@ -122,8 +122,55 @@ def cohort_is_comparable(reference_scores):
     )
 
 
-def score_card(analysis_data):
-    """Everything the score card renders, or None when the scan cannot support one."""
+# How many category scores a partial-depth plan may read. Two rather than none: the free tier is
+# meant to show that the analysis is real, and a card with every number missing demonstrates
+# nothing. Two rather than all five: the remaining three are what the plan is for.
+VISIBLE_CATEGORIES_WHEN_REDACTED = 2
+
+
+def redact(card):
+    """The partial-depth version of a full card.
+
+    Withholding happens here, server-side, and the withheld numbers are simply absent from the
+    payload. A client that receives every figure and paints a blur over three of them has not
+    withheld anything — the numbers are in the response body, and anyone who opens the network
+    tab has them.
+
+    Category *keys* stay, and only their scores go. Seeing that a "nose" score exists and is
+    unreadable is the honest shape of a teaser; hiding the row entirely would misrepresent how
+    much the analysis actually covers.
+
+    `similarity_percentile` gets a separate `_locked` flag rather than reusing the existing None.
+    That None already means something specific and different — "this face is outside the
+    published cohort, so we will not claim a percentile for it" (see `cohort_is_comparable`) —
+    and collapsing "we won't say" into "pay to see" would make the paid product look like it
+    unlocks a number that, for those users, does not exist.
+    """
+    ranked = sorted(
+        card.get("categories") or [],
+        key=lambda item: (item.get("score") is None, -(item.get("score") or 0)),
+    )
+    visible, hidden = ranked[:VISIBLE_CATEGORIES_WHEN_REDACTED], ranked[VISIBLE_CATEGORIES_WHEN_REDACTED:]
+    return {
+        **card,
+        "categories": [
+            *visible,
+            *({"key": item.get("key"), "score": None,
+               "metric_count": item.get("metric_count"), "locked": True} for item in hidden),
+        ],
+        "similarity_percentile": None,
+        "marker_z": None,
+        "similarity_percentile_locked": True,
+        "locked_categories": [item.get("key") for item in hidden],
+        "redacted": True,
+    }
+
+
+def score_card(analysis_data, redacted=False):
+    """Everything the score card renders, or None when the scan cannot support one.
+
+    `redacted=True` returns the partial-depth card for a plan whose `analysis_depth` is `partial`.
+    """
     if not isinstance(analysis_data, dict):
         return None
     scores = analysis_data.get("reference_scores")
@@ -133,7 +180,7 @@ def score_card(analysis_data):
     percentile = similarity_percentile(scores)
     comparable = cohort_is_comparable(scores)
     reference = scores.get("reference") or {}
-    return {
+    card = {
         "overall_score": scores.get("overall_score"),
         "categories": scores.get("categories") or [],
         # Withheld rather than zeroed when the user is outside the cohort: an absent number is
@@ -148,4 +195,6 @@ def score_card(analysis_data):
         "age_range": reference.get("age_range"),
         "reference_version": reference.get("version"),
         "assumes_independent_metrics": True,
+        "redacted": False,
     }
+    return redact(card) if redacted else card

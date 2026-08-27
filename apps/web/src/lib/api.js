@@ -28,11 +28,18 @@ async function request(path, options = {}) {
   } catch (cause) {
     const error = new Error(`Cannot reach the API at ${API_URL}`, { cause });
     error.code = 'api_unreachable';
+    // No `status`: the request never reached the server. `queryRetry.isRetriable` reads the
+    // absence as "worth one more try", which is what a dead socket deserves.
     throw error;
   }
   if (!response.ok) {
     const payload = await response.json().catch(() => null);
-    throw new Error(errorMessage(payload) || `Request failed (${response.status})`);
+    const error = new Error(errorMessage(payload) || `Request failed (${response.status})`);
+    // Carried so `queryRetry` can tell a 503 worth retrying from a 429 that is already the
+    // final answer. Nothing read these before, so adding them cannot change existing behaviour.
+    error.status = response.status;
+    error.payload = payload;
+    throw error;
   }
   return response.status === 204 ? null : response.json();
 }
@@ -42,7 +49,7 @@ export async function signIn() {
   return request('/session/');
 }
 
-export function uploadScan(files, ageBand, referenceAgeBand, referenceProfile, referencePopulation, consentVersion, scanMode = 'standard') {
+export function uploadScan(files, ageBand, referenceAgeBand, referenceProfile, referencePopulation, consentVersion, scanMode = 'standard', captureMethod = 'web_camera') {
   const body = new FormData();
   for (const [view, file] of Object.entries(files)) {
     if (file) body.append(view, file);
@@ -53,6 +60,9 @@ export function uploadScan(files, ageBand, referenceAgeBand, referenceProfile, r
   body.append('reference_population', referencePopulation);
   body.append('analysis_consent_version', consentVersion);
   body.append('scan_mode', scanMode);
+  // For the admin report only. The server accepts nothing but its own two values and treats an
+  // absent one as unknown, so an older client is never described as a browser it is not.
+  body.append('capture_method', captureMethod);
   return request('/scans/', { method: 'POST', body });
 }
 
@@ -65,6 +75,9 @@ export const getScans = () => request('/scans/');
 // different thing for each, so neither is smoothed into an empty result here.
 export const getScoreCard = (scanId) => request(`/scans/${scanId}/score-card/`);
 export const getSession = () => request('/session/');
+// หน้าโปรไฟล์: identity, plan and expiry, quotas, benefits, referral summary and the last ten
+// receipts in one read — the page is a single answer, not four.
+export const getProfile = () => request('/profile/');
 export const deleteScan = (scanId) => request(`/scans/${scanId}/`, { method: 'DELETE' });
 // Without a region this returns the whole catalog, which the simulation view needs: a stacked
 // selection has to name shapes and procedures for regions whose tab is not open.
@@ -90,6 +103,8 @@ export const getChats = () => request('/chat/');
 // Questions answerable from the scan's own numbers. No model, no key, no quota — these work
 // even when chat_enabled is false.
 export const getChatFacts = (lang) => request(`/chat/facts/?lang=${lang === 'en' ? 'en' : 'th'}`);
+// The three voices. Wording and order come from the admin, so they are fetched, not listed here.
+export const getChatRoles = (lang) => request(`/chat/roles/?lang=${lang === 'en' ? 'en' : 'th'}`);
 export const askChatTopic = ({ topic, conversationId, scanId, lang }) => request('/chat/', {
   method: 'POST',
   headers: { 'Content-Type': 'application/json' },
@@ -101,13 +116,16 @@ export const deleteChat = (conversationId) => request(`/chat/${conversationId}/`
 // each says something different to the user, so none are collapsed into one failure here.
 // chat_consent_version is required and separate from the analysis consent: this is the only
 // call in the app that sends anything to a third party (the measurements, never the photos).
-export const sendChat = ({ message, conversationId, scanId }) => request('/chat/', {
+// `role` is honoured only when opening a new conversation: the server keeps an existing
+// thread on the voice it started with, so the cached prompt prefix stays byte-identical.
+export const sendChat = ({ message, conversationId, scanId, role }) => request('/chat/', {
   method: 'POST',
   headers: { 'Content-Type': 'application/json' },
   body: JSON.stringify({
     message,
     conversation_id: conversationId,
     scan_id: scanId,
+    role,
     chat_consent_version: CHAT_CONSENT_VERSION,
   }),
 });
@@ -121,10 +139,63 @@ export const validateCoupon = (code, plan) => request('/coupons/validate/', {
   headers: { 'Content-Type': 'application/json' },
   body: JSON.stringify({ code, plan }),
 });
-export const createOrder = (plan, coupon) => request('/orders/', {
+// `useCredit` spends referral credit against this order. The server re-reads the real balance
+// when the order settles, so what is asked for here is a request, not a reservation.
+export const createOrder = (plan, coupon, useCredit = false) => request('/orders/', {
   method: 'POST',
   headers: { 'Content-Type': 'application/json' },
-  body: JSON.stringify({ plan, coupon }),
+  body: JSON.stringify({ plan, coupon, use_credit: useCredit }),
+});
+// ชวนเพื่อน. The overview mints this account's code on first read, so calling it is what
+// creates one — there is nothing to POST.
+export const getReferral = () => request('/referral/');
+// Records that this account was invited and hands over the friend discount. The inviter's ฿30
+// is not paid here; it vests when this account first pays for something.
+export const claimReferral = (code) => request('/referral/claim/', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ code }),
+});
+// Which link brought this account here, for the admin marketing report. Written once server
+// side and never updated, so calling it twice is harmless. The arrival itself is counted by
+// lib/visit.js, which must not go through this client — see the note in sendVisit().
+export const postAttribution = (utm) => request('/attribution/', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({
+    utm_source: utm?.source || 'direct',
+    utm_medium: utm?.medium || 'direct',
+    utm_campaign: utm?.campaign || 'direct',
+    landing_path: utm?.landing_path || '/',
+  }),
+});
+export const getCredits = () => request('/credits/');
+// Where withdrawals are sent. The GET never returns the full number — there is no endpoint that
+// does. Only an operator making a transfer can read it, through an audited action in the admin.
+export const getPayoutAccount = () => request('/payout-account/');
+export const savePayoutAccount = (account) => request('/payout-account/', {
+  method: 'PUT',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify(account),
+});
+export const getWithdrawals = () => request('/withdrawals/');
+// Omit `amountSatang` to withdraw the whole withdrawable balance. Creating a request deducts the
+// credit immediately, so it cannot also be spent on a subscription while an operator processes it.
+export const requestWithdrawal = (amountSatang) => request('/withdrawals/', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ amount_satang: amountSatang ?? null }),
+});
+export const cancelWithdrawal = (id) => request(`/withdrawals/${id}/cancel/`, { method: 'POST' });
+// แผนพัฒนาตนเอง. 403 on the free tier and 409 before the scan has been scored — the caller says
+// something different for each, so neither is flattened into an empty plan here.
+export const getDevelopmentPlan = (scanId, lang) =>
+  request(`/scans/${scanId}/development-plan/?lang=${lang === 'en' ? 'en' : 'th'}`);
+export const getNotifications = () => request('/notifications/');
+export const markNotificationsRead = (ids) => request('/notifications/read/', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ ids }),
 });
 export const deleteAccount = () => request('/account/', { method: 'DELETE' });
 export const redeemCode = (code) => request('/redeem/', {

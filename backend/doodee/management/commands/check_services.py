@@ -138,6 +138,49 @@ def check_supabase():
         return result.fail(f"ต่อไม่ได้: {exc.reason}", "ตรวจ SUPABASE_URL และอินเทอร์เน็ต")
 
 
+def check_chat_provider():
+    """Whichever provider the admin has actually selected — not always Anthropic.
+
+    Asking Anthropic while the chat is pointed at Groq gives an answer that is true and
+    useless: "skipped", when what the operator wants to know is whether chat works.
+    """
+    from doodee.models import ChatSetting
+
+    config = ChatSetting.current()
+    if config.provider != ChatSetting.Provider.OPENAI:
+        return check_anthropic()
+
+    result = Result("แชท (OpenAI-compatible)", "DOODEE Chat (คำถามพิมพ์เอง)")
+    if not config.base_url.strip():
+        return result.fail("เลือก OpenAI-compatible แต่ไม่ได้ตั้งที่อยู่ API",
+                           "ตั้งที่ /admin → ตั้งค่า AI แชท")
+
+    from doodee.chat import USER_AGENT
+
+    headers = {"User-Agent": USER_AGENT}
+    if os.getenv("CHAT_API_KEY"):
+        headers["Authorization"] = f"Bearer {os.environ['CHAT_API_KEY']}"
+    url = f"{config.base_url.rstrip('/')}/models"
+    try:
+        with urlopen(Request(url, headers=headers), timeout=20) as response:
+            body = json.loads(response.read().decode())
+    except HTTPError as exc:
+        if exc.code in (401, 403):
+            return result.fail(f"คีย์ถูกปฏิเสธ (HTTP {exc.code})",
+                               "ตรวจ CHAT_API_KEY ใน .env แล้ว restart api")
+        return result.fail(f"HTTP {exc.code}", "ตรวจที่อยู่ API ที่ตั้งไว้ในแอดมิน")
+    except URLError as exc:
+        return result.fail(f"ต่อไม่ได้: {exc.reason}", "ตรวจที่อยู่ API และอินเทอร์เน็ต")
+
+    names = [item.get("id") for item in body.get("data") or []]
+    if config.model not in names:
+        return result.fail(
+            f"เรียกได้ {len(names)} รุ่น แต่ไม่มี '{config.model}' ที่ตั้งไว้",
+            f"เปลี่ยนโมเดลในแอดมินเป็นรุ่นที่มีจริง เช่น {', '.join(names[:3]) or '—'}",
+        )
+    return result.ok(f"{config.base_url} · {config.model} · เรียกได้ {len(names)} รุ่น")
+
+
 def check_anthropic():
     result = Result("Anthropic", "DOODEE Chat (คำถามพิมพ์เอง)")
     if _missing(result, "ANTHROPIC_API_KEY"):
@@ -202,7 +245,7 @@ CHECKS = {
     "redis": check_redis,
     "firebase": check_firebase,
     "supabase": check_supabase,
-    "anthropic": check_anthropic,
+    "anthropic": check_chat_provider,
     "omise": check_omise,
 }
 

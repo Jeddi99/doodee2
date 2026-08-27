@@ -87,46 +87,16 @@ export default function ScoreCardPanel() {
   const session = useQuery({ queryKey: ["session"], queryFn: getSession });
   const scans = useQuery({ queryKey: ["scans"], queryFn: getScans });
   const scanId = new URLSearchParams(window.location.search).get("scan_id") || scans.data?.[0]?.id;
-  const locked = session.data?.score_card_locked === true;
 
   const card = useQuery({
     queryKey: ["score-card", scanId],
     queryFn: () => getScoreCard(scanId),
-    // Never fire while the gate is unresolved or closed: a 403 in the network tab is noise,
-    // and the answer is already known.
-    enabled: Boolean(scanId) && session.isSuccess && !locked,
+    enabled: Boolean(scanId) && session.isSuccess,
     retry: false,
   });
 
   if (session.isPending || scans.isPending) {
     return <div className="app-view" aria-busy="true" />;
-  }
-
-  if (locked) {
-    return (
-      <div className="app-view score-card-view">
-        <div className="app-page-title">
-          <span className="eyebrow">การ์ดคะแนน</span>
-          <h1>เฉพาะสมาชิก</h1>
-        </div>
-        <GlassCard className="score-card-locked">
-          <LockKeyhole />
-          <h2>การ์ดคะแนนเปิดให้สมาชิก</h2>
-          <p>
-            ผลวิเคราะห์และประวัติการสแกนของคุณยังใช้ได้ตามปกติ การ์ดนี้เพิ่มการเทียบกับกลุ่มอ้างอิง
-            คนไทย 240 คน อายุ 18–35 ปี
-          </p>
-          <div className="score-card-locked__actions">
-            <button type="button" onClick={() => navigate("/settings")}>
-              ใช้โค้ดรับสิทธิ์
-            </button>
-            <button type="button" onClick={() => navigate("/pricing")}>
-              ดูแผน
-            </button>
-          </div>
-        </GlassCard>
-      </div>
-    );
   }
 
   if (!scanId) {
@@ -161,6 +131,10 @@ export default function ScoreCardPanel() {
 
   const data = card.data;
   const percentile = data.similarity_percentile as number | null;
+  // The free tier now gets a real card with parts withheld, instead of a 403. `redacted` comes
+  // from the server, which is also where the withholding happened — the locked figures are not
+  // in this payload at all, so there is nothing here to reveal by inspecting it.
+  const redacted = data.redacted === true;
 
   return (
     <div className="app-view score-card-view">
@@ -210,7 +184,19 @@ export default function ScoreCardPanel() {
           </p>
         )}
 
-        {percentile !== null ? (
+        {/* Two different reasons for a missing percentile, and they must not read the same.
+            `similarity_percentile_locked` means "this exists, a paid plan shows it". A plain
+            null means "you are outside the published cohort, so no honest number exists" —
+            telling that user to upgrade would be selling something they cannot receive. */}
+        {data.similarity_percentile_locked ? (
+          <div className="score-card__percentile is-locked">
+            <strong aria-hidden="true"><LockKeyhole /></strong>
+            <span>
+              การเทียบตำแหน่งกับกลุ่มอ้างอิงเปิดให้แผนพลัสและโปร
+              <button type="button" onClick={() => navigate("/pricing")}>ดูแผน</button>
+            </span>
+          </div>
+        ) : percentile !== null ? (
           <div className="score-card__percentile">
             <strong>{percentile}%</strong>
             {/* The one sentence that keeps the whole card honest: this measures closeness to
@@ -230,16 +216,32 @@ export default function ScoreCardPanel() {
 
         {data.categories?.length ? (
           <div className="score-card__categories">
-            {data.categories.map((category: { key: string; score: number; metric_count: number }) => (
-              <article key={category.key}>
+            {data.categories.map((category: { key: string; score: number | null; metric_count: number; locked?: boolean }) => (
+              /* A locked row keeps its name and its metric count. Seeing that a "จมูก" score
+                 exists and is unreadable is honest; hiding the row would understate how much
+                 the analysis actually covers. */
+              <article className={category.locked ? "is-locked" : ""} key={category.key}>
                 <span>{CATEGORY_LABELS[category.key] || category.key}</span>
-                <strong>{category.score}</strong>
-                <i style={{ width: `${category.score}%` }} />
+                <strong>{category.locked ? <LockKeyhole size={16} /> : category.score}</strong>
+                <i style={{ width: `${category.locked ? 0 : category.score}%` }} />
                 <small>{category.metric_count} ค่า</small>
               </article>
             ))}
           </div>
         ) : null}
+
+        {redacted && (
+          <div className="score-card__upgrade">
+            <p>
+              แผนฟรีเห็นคะแนนรวมและหมวดที่ใกล้ค่าอ้างอิงที่สุดสองหมวด
+              แผนพลัสและโปรเห็นครบทุกหมวด พร้อมตำแหน่งบนการแจกแจงและแผนพัฒนาตนเอง
+            </p>
+            <div className="score-card-locked__actions">
+              <button type="button" onClick={() => navigate("/pricing")}>ดูแผน</button>
+              <button type="button" onClick={() => navigate("/settings")}>ใช้โค้ดรับสิทธิ์</button>
+            </div>
+          </div>
+        )}
 
         <footer className="score-card__caveat">
           <p>

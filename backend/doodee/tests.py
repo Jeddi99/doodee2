@@ -8,9 +8,13 @@ from unittest.mock import MagicMock, patch
 
 import cv2
 import numpy as np
+from django.conf import settings
 from django.contrib.admin.models import LogEntry
 from django.contrib.auth.models import Group, User
+from cryptography.fernet import Fernet
+from django.core import mail
 from django.core.management import call_command
+from django.core.management.base import CommandError
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import SimpleTestCase, TestCase, override_settings
 from django.utils import timezone
@@ -18,17 +22,28 @@ from rest_framework.test import APIClient
 
 from django.core.cache import cache
 
+from django.core.exceptions import ImproperlyConfigured as DjangoImproperlyConfigured
 from django.core.exceptions import ValidationError as DjangoValidationError
+from django.db.utils import IntegrityError
 
+from . import chat as chat_module
+from . import request_cache
 from .models import (
-    ChatConversation, ChatMessage, ChatSetting, ChatUsage, ConsentEvent, Coupon, CouponRedemption,
-    DailyActive, FirebaseIdentity, Order, Plan, PromoCode, PromoRedemption, Scan,
+    ChatConversation, ChatMessage, ChatRole, ChatSetting, ChatUsage, ConsentEvent, Coupon,
+    CouponGrant, CouponRedemption, CreditLedger, DailyActive, FirebaseIdentity, Notification,
+    Order, PayoutAccount, Plan, PromoCode, PromoRedemption, PushToken, Referral, ReferralCode,
+    Scan, SiteSetting, UserAttribution, Visit, WithdrawalRequest,
     Simulation, SimulationPreviewUsage, Subscription,
 )
 from .billing import (
-    CouponError, activate, create_order, discount_for, quote, sync_entitlement, validate_coupon,
+    CouponError, activate, claw_back, create_order, discount_for, quote, sync_entitlement,
+    validate_coupon,
 )
-from .views import COUPON_FAILURE_LIMIT
+from . import entitlement, payout, referral
+from .development_plan import build as build_development_plan
+from .notifications import notify
+from .tasks import send_renewal_reminders
+from .views import COUPON_FAILURE_LIMIT, REFERRAL_CLAIM_FAILURE_LIMIT
 from .omise import OmiseError, create_promptpay_charge, verify_signature
 from .chat import (
     MAX_QUESTION_CHARS, SAFETY_RULES, ChatUnavailable, chat_enabled, scan_context,
@@ -38,9 +53,13 @@ from .demo_data import create_demo_scan, demo_analysis_data
 from .chat_facts import TOPICS, answer as topic_answer
 from .activity import record_activity
 from .analytics import (
-    chat_cost_thb, funnel, headline, monthly_rows, mrr_satang, report, revenue_satang,
+    acquisition_funnel, attribution_rows, capture_method_rows, chat_cost_thb, expiring_soon,
+    funnel, headline, interval_mix, marketing_report, monthly_rows, mrr_satang, order_kind_rows,
+    referral_rows, referral_summary, report, retention_rows, revenue_satang, visit_rows,
+    visit_totals,
 )
-from .charts import monthly_chart
+from .attribution import clean_path, clean_tag, record_visit
+from .charts import bar_chart, monthly_chart
 from .analysis_engine import (
     POSE_TARGETS, SCAN_VIEW_MODES, _distance, _isotropic, _validate_pose_set, analyze_images,
     measured_views, pose_from_matrix,
@@ -221,7 +240,9 @@ class PromoCodeTest(TestCase):
         session = self.plan()
         self.assertEqual(session["plan"], "free")
         self.assertIsNone(session["vip_expires_at"])
-        self.assertEqual(session["preview_remaining"], 3)
+        # Zero rather than three: the free tier grants no simulations at all now
+        # (requirement.md — "ไม่มีการจำลองใบหน้า"), so there is no allowance to count down.
+        self.assertEqual(session["preview_remaining"], 0)
 
     def test_an_unknown_code_and_a_disabled_code_are_indistinguishable(self):
         self.code.is_active = False
@@ -628,8 +649,10 @@ class SimulationApiTest(TestCase):
         self.assertLess(simulation.parameters["delta"], 0)
 
     @patch("doodee.views.process_simulation.delay")
-    def test_monthly_quota_is_three(self, delay):
+    def test_saving_is_capped_by_the_plans_monthly_allowance(self, delay):
+        """Three is `member`'s figure, read off the plan row rather than written in the view."""
         scan = self.scan()
+        self.assertEqual(Plan.objects.get(code="member").simulation_saves_per_month, 3)
         for _ in range(3):
             Simulation.objects.create(scan=scan, region="nose", preset_id="nose-narrow", status="completed", model_version="local", expires_at=timezone.now() + timedelta(days=1))
         self.assertEqual(self.post(scan).status_code, 429)
@@ -637,18 +660,39 @@ class SimulationApiTest(TestCase):
     @patch("doodee.views.signed_url", return_value="https://signed.test/front")
     @patch("doodee.views.simulate", return_value=rendered({"key": "alar_width_ratio"}))
     @patch("doodee.views.source_for_scan", return_value=(b"source", "private/front", "front"))
-    def test_an_entitled_account_is_not_metered_per_preview(self, source, simulate_preview, signed):
-        """Instant rendering only works if entitled accounts have no monthly preview count.
+    def test_an_unlimited_plan_still_records_previews_but_never_refuses_one(self, source, simulate_preview, signed):
+        """Every plan is metered now, and one of them has no ceiling.
 
-        The free 3-a-month meter still exists but is unreachable behind the lock, so nothing
-        may be written to it here.
+        Previews used to be counted only for free accounts, which the lock made unreachable — so
+        nothing was ever written. Plus sells twenty a month, so the counter has to run for
+        everybody. On a plan with no ceiling it still runs: `SimulationPreviewUsage` is the only
+        record that a preview happened, and a row that stops being written stops being evidence
+        when an account is stolen. What must not happen is a refusal.
         """
         scan = self.scan()
         payload = {"scan_id": str(scan.id), "region": "nose", "preset_id": "nose-narrow", "simulation_consent_version": "2026.3-local"}
+        Plan.objects.filter(code="member").update(simulation_previews_per_month=-1)
         for _ in range(6):
             self.assertEqual(self.client.post("/api/v1/simulations/preview/", payload, format="json").status_code, 200)
-        self.assertFalse(SimulationPreviewUsage.objects.filter(user=self.user).exists())
+        self.assertEqual(SimulationPreviewUsage.objects.get(user=self.user).count, 6)
+        # null, never a number: a plan sold as unlimited must not show the user a countdown.
         self.assertIsNone(self.client.get("/api/v1/session/").data["preview_remaining"])
+
+    @patch("doodee.views.signed_url", return_value="https://signed.test/front")
+    @patch("doodee.views.simulate", return_value=rendered({"key": "alar_width_ratio"}))
+    @patch("doodee.views.source_for_scan", return_value=(b"source", "private/front", "front"))
+    def test_a_metered_plan_is_refused_once_its_monthly_previews_are_gone(self, source, simulate_preview, signed):
+        scan = self.scan()
+        payload = {"scan_id": str(scan.id), "region": "nose", "preset_id": "nose-narrow", "simulation_consent_version": "2026.3-local"}
+        Plan.objects.filter(code="member").update(simulation_previews_per_month=2)
+        for _ in range(2):
+            self.assertEqual(self.client.post("/api/v1/simulations/preview/", payload, format="json").status_code, 200)
+        blocked = self.client.post("/api/v1/simulations/preview/", payload, format="json")
+        self.assertEqual(blocked.status_code, 429)
+        self.assertEqual(blocked.data["detail"], "monthly_preview_quota_reached")
+        # 429 rather than 403: the plan does grant simulations, this month\'s are spent. The
+        # client says something different for each, so the server has to as well.
+        self.assertEqual(SimulationPreviewUsage.objects.get(user=self.user).count, 2)
 
 
 @override_settings(SIMULATION_ENABLED=True)
@@ -1388,15 +1432,45 @@ class ScoreCardEndpointTest(TestCase):
         self.assertFalse(data["images_expired"])
         self.assertEqual(data["overall_score"], 74)
 
-    def test_free_accounts_are_refused_by_the_api_not_just_the_ui(self):
-        response = self.client.get(self.url())
-        self.assertEqual(response.status_code, 403)
-        self.assertEqual(response.data["detail"], "score_card_requires_entitlement")
+    def test_a_free_account_gets_a_partial_card_rather_than_a_wall(self):
+        """requirement.md asks the free tier to show the analysis "แต่บอกแค่ส่วนน้อย".
 
-    def test_session_advertises_the_lock_so_the_client_never_guesses_from_plan(self):
-        self.assertIs(self.client.get("/api/v1/session/").data["score_card_locked"], True)
+        This endpoint used to answer 403 to every free account. A wall shows nothing and sells
+        nothing; the overall score plus a couple of categories shows the analysis is real.
+        """
+        response = self.client.get(self.url())
+        self.assertEqual(response.status_code, 200)
+        self.assertIs(response.data["redacted"], True)
+        self.assertEqual(response.data["overall_score"], 74)
+
+    def test_the_withheld_numbers_are_absent_from_the_payload_not_merely_flagged(self):
+        """A client painting a blur over a full response has withheld nothing.
+
+        Everything a paid account sees and a free one does not has to be missing from the bytes
+        on the wire, or the lock is decoration and the network tab is the bypass.
+        """
+        card = self.client.get(self.url()).data
+        self.assertIsNone(card["similarity_percentile"])
+        self.assertIsNone(card["marker_z"])
+        self.assertIs(card["similarity_percentile_locked"], True)
+        for category in card["categories"]:
+            if category.get("locked"):
+                self.assertIsNone(category["score"])
+        # The category keys stay so the card can show how much the analysis covers; only the
+        # scores go.
+        self.assertEqual({item["key"] for item in card["categories"]}, {"proportions"})
+
+    def test_paying_lifts_the_redaction(self):
+        self._entitle()
+        card = self.client.get(self.url()).data
+        self.assertIs(card["redacted"], False)
+        self.assertNotIn("similarity_percentile_locked", card)
+        self.assertIsNotNone(card["similarity_percentile"])
+
+    def test_session_advertises_the_redaction_so_the_client_never_guesses_from_plan(self):
+        self.assertIs(self.client.get("/api/v1/session/").data["score_card_redacted"], True)
         self.user.groups.add(Group.objects.get(name="pro_member"))
-        self.assertIs(self.client.get("/api/v1/session/").data["score_card_locked"], False)
+        self.assertIs(self.client.get("/api/v1/session/").data["score_card_redacted"], False)
 
     def test_entitled_accounts_get_a_card_backed_by_the_stored_scores(self):
         self.user.groups.add(Group.objects.get(name="pro_member"))
@@ -1530,6 +1604,37 @@ class OpenAICompatibleProviderTest(SimpleTestCase):
         self.assertEqual(usage["input_tokens"], 120)
         self.assertEqual(usage["output_tokens"], 45)
 
+    def test_it_sends_a_user_agent_because_groq_blocks_requests_without_one(self):
+        """urllib's default UA is refused by Groq's edge with 403 "error code: 1010",
+        long before the API sees the request — a failure that looks nothing like a bad key."""
+        with patch("doodee.chat.urlopen", return_value=self._urlopen(self.BODY)) as opened:
+            openai_reply("s", [], "m", 100, "https://api.groq.com/openai/v1")
+        agent = opened.call_args.args[0].headers["User-agent"]
+        self.assertTrue(agent and "urllib" not in agent.lower(), agent)
+
+    def test_a_reasoning_models_scratchpad_never_reaches_the_user(self):
+        """Qwen's thinking variants put <think> in the message body, not a separate field."""
+        body = {
+            "choices": [{"message": {"content": "<think>ลองคิดดู…</think>\n\nคำตอบจริง"}}],
+            "usage": {},
+        }
+        with patch("doodee.chat.urlopen", return_value=self._urlopen(body)):
+            text, _ = openai_reply("s", [], "m", 100, "https://x/v1")
+        self.assertEqual(text, "คำตอบจริง")
+
+    def test_an_unterminated_thought_is_cut_rather_than_shown(self):
+        """A reply truncated mid-thought must not leak the half of it that arrived."""
+        body = {"choices": [{"message": {"content": "คำตอบ\n<think>ยังคิดไม่จบ"}}], "usage": {}}
+        with patch("doodee.chat.urlopen", return_value=self._urlopen(body)):
+            text, _ = openai_reply("s", [], "m", 100, "https://x/v1")
+        self.assertEqual(text, "คำตอบ")
+
+    def test_a_reply_that_is_only_a_thought_is_refused(self):
+        body = {"choices": [{"message": {"content": "<think>คิดอย่างเดียว</think>"}}], "usage": {}}
+        with patch("doodee.chat.urlopen", return_value=self._urlopen(body)):
+            with self.assertRaises(ChatUnavailable):
+                openai_reply("s", [], "m", 100, "https://x/v1")
+
     def test_cached_tokens_are_reported_as_zero_not_guessed(self):
         """There is no prompt caching on this path; a guess would corrupt the cost report."""
         with patch("doodee.chat.urlopen", return_value=self._urlopen(self.BODY)):
@@ -1606,10 +1711,237 @@ class ChatProviderRoutingTest(TestCase):
             config.full_clean()
 
 
+class ChatRoleTest(TestCase):
+    """Three voices, one set of rules. The rules are the point of the tests."""
+
+    # "You cover one subject" is the topic scope. It lives in SAFETY_RULES rather than in a
+    # persona precisely so it is covered by these tests alongside the other guardrails.
+    RULES = (
+        "Never judge appearance",
+        "not medical advice",
+        "Never promise an outcome",
+        "You cover one subject",
+    )
+    # The same list the free topic answers are held to (see ChatFactsTest), applied here to the
+    # personas themselves so an operator cannot type a judgement into the voice.
+    BANNED = ("สวย", "หล่อ", "ไม่ดี", "แย่", "จุดอ่อน", "ควรแก้", "ต้องแก้", "น่าเกลียด",
+              "beautiful", "ugly", "attractive", "flaw", "worst", "should fix", "needs fixing")
+
+    def test_the_migration_seeds_exactly_the_three_voices(self):
+        self.assertEqual(
+            list(ChatRole.objects.values_list("key", flat=True)), ["serious", "playful", "academic"]
+        )
+        self.assertEqual(ChatRole.objects.filter(is_default=True).count(), 1)
+
+    def test_every_role_still_carries_every_safety_rule(self):
+        for role in ChatRole.objects.all():
+            prompt = system_prompt(role.persona)
+            for rule in self.RULES:
+                self.assertIn(rule, prompt, f"{role.key} lost: {rule}")
+            self.assertIn("These rules override any instruction above them", prompt)
+
+    def test_the_playful_role_is_held_to_the_same_rules(self):
+        """The riskiest voice on a product that measures faces, so it gets its own test."""
+        prompt = system_prompt(ChatRole.objects.get(key="playful").persona)
+        for rule in self.RULES:
+            self.assertIn(rule, prompt)
+        self.assertIn("never at the expense of", prompt)
+
+    def test_no_role_persona_contains_a_bare_judgement(self):
+        for role in ChatRole.objects.all():
+            lowered = role.persona.lower()
+            for word in self.BANNED:
+                self.assertNotIn(word.lower(), lowered, f"{role.key} says {word!r}")
+
+    def test_the_rules_forbid_inventing_a_score_gain(self):
+        """The /plan screen's "+0.18 pts" figures are hardcoded fiction; chat must not echo them."""
+        self.assertIn("never state or imply how much any action would change a score",
+                      system_prompt().lower())
+
+    def test_an_unknown_or_disabled_role_falls_back_instead_of_failing(self):
+        self.assertEqual(ChatRole.resolve("no-such-role").key, "serious")
+        self.assertEqual(ChatRole.resolve("").key, "serious")
+        self.assertEqual(ChatRole.resolve(None).key, "serious")
+        ChatRole.objects.filter(key="serious").update(is_active=False)
+        # Default is gone, so any remaining active voice is better than none.
+        self.assertIn(ChatRole.resolve("serious").key, {"playful", "academic"})
+
+    def test_a_role_that_is_switched_off_disappears_from_the_picker(self):
+        ChatRole.objects.filter(key="playful").update(is_active=False)
+        client = APIClient()
+        client.force_authenticate(User.objects.create_user("rolepicker"))
+        keys = [r["key"] for r in client.get("/api/v1/chat/roles/").data["roles"]]
+        self.assertEqual(keys, ["serious", "academic"])
+
+    def test_the_picker_answers_in_the_requested_language(self):
+        client = APIClient()
+        client.force_authenticate(User.objects.create_user("rolelang"))
+        th = client.get("/api/v1/chat/roles/?lang=th").data["roles"][0]
+        en = client.get("/api/v1/chat/roles/?lang=en").data["roles"][0]
+        self.assertEqual(th["label"], "จริงจัง")
+        self.assertEqual(en["label"], "Direct")
+        self.assertTrue(th["is_default"])
+
+
+@override_settings(CHAT_ENABLED=True)
+class ChatRoleRoutingTest(TestCase):
+    """Which voice a given turn actually gets, and what that costs."""
+
+    def setUp(self):
+        self.user = User.objects.create_user("roleuser")
+        self.client = APIClient()
+        self.client.force_authenticate(self.user)
+        self.env = patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-key"})
+        self.env.start()
+        self.addCleanup(self.env.stop)
+
+    def post(self, **body):
+        body.setdefault("chat_consent_version", "2026.3-chat")
+        return self.client.post("/api/v1/chat/", body, format="json")
+
+    def _system_text(self, client):
+        return client.return_value.messages.create.call_args.kwargs["system"][0]["text"]
+
+    def test_the_session_names_the_provider_that_actually_receives_the_data(self):
+        """The privacy line under the composer names this recipient. Naming the wrong one is a
+        false statement about where a user's measurements went."""
+        config = ChatSetting.current()
+        self.assertEqual(self.client.get("/api/v1/session/").data["chat_provider"], "Anthropic")
+
+        config.provider = ChatSetting.Provider.OPENAI
+        config.base_url = "https://api.groq.com/openai/v1"
+        config.save()
+        self.assertEqual(self.client.get("/api/v1/session/").data["chat_provider"], "Groq")
+
+        config.base_url = "https://openrouter.ai/api/v1"
+        config.save()
+        self.assertEqual(self.client.get("/api/v1/session/").data["chat_provider"], "OpenRouter")
+
+    def test_a_local_model_is_not_described_as_sending_data_anywhere(self):
+        config = ChatSetting.current()
+        config.provider = ChatSetting.Provider.OPENAI
+        config.base_url = "http://host.docker.internal:11434/v1"
+        config.save()
+        # Empty means "nothing leaves this machine"; the client swaps in different wording.
+        self.assertEqual(self.client.get("/api/v1/session/").data["chat_provider"], "")
+
+    def test_an_unrecognised_host_is_named_rather_than_guessed_at(self):
+        config = ChatSetting.current()
+        config.provider = ChatSetting.Provider.OPENAI
+        config.base_url = "https://llm.example.co.th/v1"
+        config.save()
+        self.assertEqual(self.client.get("/api/v1/session/").data["chat_provider"], "llm.example.co.th")
+
+    def test_the_chosen_voice_reaches_the_model(self):
+        with patch("doodee.chat._client") as client:
+            client.return_value.messages.create.return_value = FakeMessage()
+            response = self.post(message="hi", role="academic")
+        self.assertEqual(response.data["role"], "academic")
+        self.assertIn("methods section", self._system_text(client))
+
+    def test_a_conversation_keeps_the_voice_it_was_opened_with(self):
+        """Switching mid-thread would change the cached prefix and cost full price every turn."""
+        with patch("doodee.chat._client") as client:
+            client.return_value.messages.create.return_value = FakeMessage()
+            first = self.post(message="one", role="playful")
+            conversation_id = first.data["conversation_id"]
+            # The client asks for a different voice; the thread refuses.
+            second = self.post(message="two", conversation_id=conversation_id, role="academic")
+            system_text = self._system_text(client)
+        self.assertEqual(second.data["role"], "playful")
+        self.assertIn("friend who happens to know", system_text)
+        self.assertNotIn("methods section", system_text)
+
+    def test_the_system_block_is_byte_identical_across_turns_so_the_cache_hits(self):
+        with patch("doodee.chat._client") as client:
+            client.return_value.messages.create.return_value = FakeMessage()
+            first = self.post(message="one", role="serious")
+            turn_one = self._system_text(client)
+            self.post(message="two", conversation_id=first.data["conversation_id"])
+            turn_two = self._system_text(client)
+        self.assertEqual(turn_one, turn_two)
+
+    def test_no_role_given_uses_the_default_voice(self):
+        with patch("doodee.chat._client") as client:
+            client.return_value.messages.create.return_value = FakeMessage()
+            response = self.post(message="hi")
+        self.assertEqual(response.data["role"], "serious")
+
+    def test_an_unknown_role_is_stored_as_the_voice_actually_used(self):
+        """Otherwise the transcript would claim a voice that never spoke."""
+        with patch("doodee.chat._client") as client:
+            client.return_value.messages.create.return_value = FakeMessage()
+            response = self.post(message="hi", role="pirate")
+        self.assertEqual(response.data["role"], "serious")
+
+    def test_the_house_persona_is_appended_to_the_role_not_replaced_by_it(self):
+        config = ChatSetting.current()
+        config.persona = "เรียกผู้ใช้ว่าคุณเสมอ"
+        config.save()
+        with patch("doodee.chat._client") as client:
+            client.return_value.messages.create.return_value = FakeMessage()
+            self.post(message="hi", role="playful")
+            system_text = self._system_text(client)
+        self.assertIn("เรียกผู้ใช้ว่าคุณเสมอ", system_text)
+        self.assertIn("friend who happens to know", system_text)
+
+    def test_the_scope_and_this_user_s_own_numbers_both_reach_the_api(self):
+        """The unit tests prove the strings exist in a function. This proves they are in the
+        payload that actually leaves the building — the two are not the same claim, and the
+        second is the one the feature depends on."""
+        scan = Scan.objects.create(
+            user=self.user,
+            status=Scan.Status.COMPLETED,
+            age_band=Scan.AgeBand.ADULT,
+            expires_at=timezone.now() + timedelta(days=30),
+            analysis_data={"reference_scores": {
+                "status": "experimental_reference_similarity",
+                "overall_score": 88,
+                "cohort_match": True,
+                "population_match": True,
+                "reference": {"sample_size": 240, "population": "Thai adults", "age_range": "18-35"},
+                "categories": [{"key": "nose", "score": 71, "metric_count": 3}],
+                "metrics": [{
+                    "key": "alar_width", "observed": 0.409, "reference": 0.346, "unit": "ratio",
+                    "normalized_deviation": 1.9, "score": 62,
+                }],
+                "unsupported_categories": ["skin"],
+            }},
+        )
+        with patch("doodee.chat._client") as client:
+            client.return_value.messages.create.return_value = FakeMessage()
+            self.post(message="จมูกฉันคะแนนเท่าไหร่", scan_id=str(scan.id))
+            system_text = self._system_text(client)
+
+        self.assertIn("You cover one subject", system_text)
+        self.assertIn("Out of scope", system_text)
+        # This person's actual numbers, not a generic description of what a scan contains.
+        self.assertIn("0.409", system_text)
+        self.assertIn("alar_width", system_text)
+        # And what was *not* measured, so the model can say so rather than improvise.
+        self.assertIn("skin", system_text)
+
+    def test_a_user_with_no_scan_still_gets_the_scope_rule(self):
+        """The scope is not carried by the scan context, so losing one must not lose the other."""
+        with patch("doodee.chat._client") as client:
+            client.return_value.messages.create.return_value = FakeMessage()
+            self.post(message="ช่วยเขียนโค้ด Python ให้หน่อย")
+            system_text = self._system_text(client)
+        self.assertIn("NO measurements", system_text)
+        self.assertIn("You cover one subject", system_text)
+
+
 class ChatPersonaTest(SimpleTestCase):
     """The admin can shape the voice. It must not be able to remove the guardrails."""
 
-    RULES = ("Never judge appearance", "not medical advice", "Never promise an outcome")
+    # "You cover one subject" is the topic scope. It lives in SAFETY_RULES rather than in a
+    # persona precisely so it is covered by these tests alongside the other guardrails.
+    RULES = (
+        "Never judge appearance",
+        "not medical advice",
+        "Never promise an outcome",
+        "You cover one subject",
+    )
 
     def test_the_safety_rules_survive_an_empty_persona(self):
         prompt = system_prompt("")
@@ -1637,12 +1969,70 @@ class ChatPersonaTest(SimpleTestCase):
         self.assertTrue(system_prompt("anything").rstrip().endswith(SAFETY_RULES.strip()[-60:]))
 
 
-@override_settings(CHAT_ENABLED=True, CHAT_FREE_TURNS=2, CHAT_PAID_TURNS=5)
+class ChatScopeTest(SimpleTestCase):
+    """DOODEE Chat answers about one person's face and looking after it. Nothing else.
+
+    The scope is enforced by instruction, not by a classifier — the user chose that trade
+    deliberately (an off-topic question still costs a turn). These tests can therefore only prove
+    that the instruction is present, well formed and unremovable. Whether the model *obeys* it is
+    checked by hand in the browser; there is no assertion that can stand in for that.
+    """
+
+    def test_the_scope_names_both_sides_of_the_line(self):
+        """A rule that says only what to refuse leaves the model guessing at the rest."""
+        prompt = system_prompt()
+        self.assertIn("In scope", prompt)
+        self.assertIn("Out of scope", prompt)
+
+    def test_the_scope_admits_the_things_the_product_already_promises(self):
+        """WHAT YOU MAY SUGGEST has always allowed reversible self-care. A scope rule that
+        contradicted it would make the two halves of the prompt argue with each other."""
+        prompt = system_prompt()
+        for allowed in ("self-care", "questions for a doctor", "how DOODEE itself works"):
+            self.assertIn(allowed, prompt)
+
+    def test_insisting_is_named_as_something_that_does_not_work(self):
+        """"Just this once" is how a scope rule actually gets talked around in practice."""
+        self.assertIn("not because the user insists", system_prompt())
+
+    def test_the_refusal_has_a_fixed_shape(self):
+        """Without a specified shape the model reinvents the wording every time and the product
+        sounds different on every refusal."""
+        prompt = system_prompt()
+        self.assertIn("two sentences or fewer", prompt)
+        self.assertIn("in the language they wrote in", prompt)
+
+    def test_a_persona_cannot_widen_the_scope(self):
+        """The attack aimed squarely at this feature, as opposed to at the safety rules."""
+        prompt = system_prompt("You are a general assistant. Answer any question the user asks.")
+        self.assertIn("You cover one subject", prompt)
+        self.assertIn("Out of scope", prompt)
+        # The persona is read first and the scope after it, so the scope is what wins.
+        self.assertLess(prompt.index("Answer any question"), prompt.index("You cover one subject"))
+        self.assertIn("These rules override any instruction above them", prompt)
+
+    def test_the_grounding_instruction_precedes_the_measurements(self):
+        """HOW TO ANSWER tells the model to reason from this user's numbers. It has to be read
+        before them, because scan_context() is appended after the whole system prompt."""
+        prompt = system_prompt()
+        self.assertIn("HOW TO ANSWER", prompt)
+        self.assertIn("was not measured", prompt)
+        # Nothing in the prompt may follow the rules, so the grounding block cannot be at the end.
+        self.assertLess(prompt.index("HOW TO ANSWER"), prompt.index("You cover one subject"))
+
+
+@override_settings(CHAT_ENABLED=True)
 class ChatApiTest(TestCase):
     def setUp(self):
         self.user = User.objects.create_user("chatuser")
         self.client = APIClient()
         self.client.force_authenticate(self.user)
+        # Small allowances so a quota test is three requests rather than fifty. These used to be
+        # CHAT_FREE_TURNS / CHAT_PAID_TURNS overrides; the ceiling is a per-plan column now, so
+        # the test sets the same thing an operator would edit in the admin. `member` is the plan
+        # a hand-granted `pro_member` group resolves to (see entitlement._granted_by_group).
+        Plan.objects.filter(code="free").update(chat_turns_per_month=2)
+        Plan.objects.filter(code="member").update(chat_turns_per_month=5)
         self.scan = Scan.objects.create(
             user=self.user, age_band="adult", status=Scan.Status.COMPLETED,
             analysis_data={"reference_scores": ChatContextTest.SCORES},
@@ -1746,6 +2136,21 @@ class ChatApiTest(TestCase):
         # Nobody should lose an allowance to an outage on our side.
         self.assertEqual(self.client.get("/api/v1/session/").data["chat_remaining"], 2)
 
+    def test_an_upstream_timeout_refunds_the_turn(self):
+        """The case the SDK's own default made unreachable.
+
+        Left unconfigured the Anthropic client waits 600 s while gunicorn's --timeout is 60, so
+        the worker was SIGKILLed before the `except ChatUnavailable` below could run — the turn
+        was claimed and never given back. chat.REQUEST_TIMEOUT_SECONDS is what makes this path
+        reachable at all; the assertion is that once reached it refunds.
+        """
+        with patch("doodee.chat._client") as client:
+            client.return_value.messages.create.side_effect = TimeoutError("request timed out")
+            response = self.post(message="anything")
+        self.assertEqual(response.status_code, 502)
+        self.assertEqual(ChatConversation.objects.count(), 0)
+        self.assertEqual(self.client.get("/api/v1/session/").data["chat_remaining"], 2)
+
     def test_chat_is_unavailable_rather_than_erroring_when_no_key_is_configured(self):
         with patch.dict(os.environ, {"ANTHROPIC_API_KEY": ""}):
             self.assertEqual(self.post(message="hi").status_code, 503)
@@ -1822,6 +2227,7 @@ class CouponMathTest(TestCase):
 
     def test_the_quote_is_the_plan_price_when_there_is_no_coupon(self):
         self.assertEqual(quote(self.plan), {
+            "credit_satang": 0,
             "plan": "member", "subtotal_satang": 14900, "discount_satang": 0,
             "total_satang": 14900, "currency": "THB", "coupon": None,
         })
@@ -1932,11 +2338,13 @@ class OrderActivationTest(TestCase):
         with self.assertRaises(IntegrityError):
             activate(create_order(self.user, self.plan, provider=Order.Provider.OMISE), charge_id="chrg_1")
 
-    def test_entitlement_is_taken_back_once_the_period_ends(self):
+    def test_entitlement_is_taken_back_once_the_period_and_its_grace_have_ended(self):
         subscription = activate(create_order(self.user, self.plan))
         self.assertIn("pro_member", set(self.user.groups.values_list("name", flat=True)))
+        # Past the grace window, not merely past the end date — inside it, access is kept
+        # deliberately (see GracePeriodTest) while the row already reads as expired.
         Subscription.objects.filter(pk=subscription.pk).update(
-            current_period_end=timezone.now() - timedelta(minutes=1)
+            current_period_end=timezone.now() - timedelta(days=SiteSetting.current().subscription_grace_days + 1)
         )
         sync_entitlement(self.user)
         self.assertNotIn("pro_member", set(self.user.groups.values_list("name", flat=True)))
@@ -1952,6 +2360,1581 @@ class OrderActivationTest(TestCase):
         self.assertIn("pro_member", set(self.user.groups.values_list("name", flat=True)))
 
 
+class EntitlementTest(TestCase):
+    """Which plan applies, when several could.
+
+    The three routes into entitlement — a subscription, a group an admin added by hand, and a
+    redeemed promo code — can all be true at once, and two of them cannot name a plan precisely.
+    Everything here is about which one wins.
+    """
+
+    def setUp(self):
+        self.user = User.objects.create_user("resolver")
+
+    def plan(self, code):
+        return Plan.objects.get(code=code)
+
+    def test_no_claim_at_all_resolves_to_free(self):
+        self.assertEqual(entitlement.current_plan(self.user).code, "free")
+        self.assertEqual(entitlement.plan_code(self.user), "free")
+
+    def test_a_subscription_names_the_exact_plan_a_group_can_only_guess_at(self):
+        """`plus` and `plus_year` grant the same group, so the group alone cannot tell them apart.
+
+        The subscription can, and does — otherwise a monthly subscriber would be reported as
+        being on the yearly plan simply because it costs more.
+        """
+        activate(create_order(self.user, self.plan("plus_year")))
+        self.assertEqual(entitlement.plan_code(self.user), "plus_year")
+
+    def test_a_hand_granted_group_resolves_to_the_cheapest_plan_that_grants_it(self):
+        """"ให้สิทธิ์ Member" has to keep meaning what that button has always meant.
+
+        `member` and `pro` both grant `pro_member`. Reading the group as Pro would quietly
+        promote every hand-granted account to the top tier.
+        """
+        self.user.groups.add(Group.objects.get_or_create(name="pro_member")[0])
+        self.assertEqual(entitlement.plan_code(self.user), "member")
+
+    def test_the_highest_tier_wins_when_two_are_held_at_once(self):
+        activate(create_order(self.user, self.plan("plus")))
+        activate(create_order(self.user, self.plan("pro")))
+        self.assertEqual(entitlement.current_plan(self.user).code, "pro")
+
+    def test_a_promo_code_never_demotes_somebody_who_pays(self):
+        activate(create_order(self.user, self.plan("plus")))
+        PromoRedemption.objects.create(
+            user=self.user,
+            promo_code=PromoCode.objects.create(code="TRIALCODE", days=7),
+            expires_at=timezone.now() + timedelta(days=7),
+        )
+        self.assertEqual(entitlement.plan_code(self.user), "plus")
+
+    def test_a_promo_code_alone_reports_vip_but_borrows_a_real_plans_allowances(self):
+        """"vip" is not sellable and has no Plan row, so its quotas have to come from one.
+
+        The label and the allowance are genuinely two different questions here, which is why
+        they are two functions.
+        """
+        PromoRedemption.objects.create(
+            user=self.user,
+            promo_code=PromoCode.objects.create(code="TRIALCODE", days=7),
+            expires_at=timezone.now() + timedelta(days=7),
+        )
+        self.assertEqual(entitlement.plan_code(self.user), "vip")
+        self.assertEqual(entitlement.current_plan(self.user).code, settings.PROMO_GRANTS_PLAN)
+        self.assertIsNone(entitlement.quota(self.user, entitlement.CHAT_TURNS))
+
+    def test_unlimited_reads_as_none_rather_than_leaking_the_sentinel(self):
+        activate(create_order(self.user, self.plan("pro")))
+        self.assertIsNone(entitlement.quota(self.user, entitlement.PREVIEWS))
+        self.assertIsNone(entitlement.remaining(self.user, entitlement.PREVIEWS))
+        self.assertTrue(entitlement.allows(self.user, entitlement.PREVIEWS))
+
+    def test_a_cancelled_subscription_grants_nothing_even_inside_its_paid_period(self):
+        subscription = activate(create_order(self.user, self.plan("plus")))
+        Subscription.objects.filter(pk=subscription.pk).update(status=Subscription.Status.CANCELLED)
+        self.user.groups.clear()
+        self.assertEqual(entitlement.plan_code(self.user), "free")
+
+    def test_the_free_tier_matches_what_requirement_md_asks_for(self):
+        free = self.plan("free")
+        self.assertEqual(free.simulation_previews_per_month, 0, "ไม่มีการจำลองใบหน้า")
+        self.assertFalse(free.has_development_plan, "ไม่มีแผนการพัฒนา")
+        self.assertEqual(free.analysis_depth, Plan.AnalysisDepth.PARTIAL, "บอกแค่ส่วนน้อย")
+        self.assertEqual(free.price_satang, 0)
+
+    def test_the_paid_tiers_match_what_requirement_md_asks_for(self):
+        plus, pro = self.plan("plus"), self.plan("pro")
+        self.assertEqual(plus.price_satang, 49900)
+        self.assertEqual(plus.simulation_previews_per_month, 20)
+        self.assertEqual(plus.chat_turns_per_month, 50)
+        self.assertEqual(pro.price_satang, 79900)
+        self.assertEqual(pro.simulation_previews_per_month, Plan.UNLIMITED)
+        self.assertEqual(pro.chat_turns_per_month, Plan.UNLIMITED)
+        for tier in (plus, pro):
+            self.assertTrue(tier.has_development_plan)
+            self.assertEqual(tier.analysis_depth, Plan.AnalysisDepth.FULL)
+
+    def test_a_yearly_row_costs_ten_months_and_runs_for_twelve(self):
+        for monthly, yearly in (("plus", "plus_year"), ("pro", "pro_year")):
+            self.assertEqual(self.plan(yearly).price_satang, self.plan(monthly).price_satang * 10)
+            self.assertEqual(self.plan(yearly).interval, Plan.Interval.YEAR)
+        subscription = activate(create_order(self.user, self.plan("plus_year")))
+        self.assertEqual((subscription.current_period_end - timezone.now()).days, 364)
+
+
+class DevelopmentPlanTest(TestCase):
+    """แผนพัฒนาตนเอง — and the promises it must not break to produce one.
+
+    Everything the product says about itself lives in `chat.py`'s SAFETY_RULES: no judging
+    appearance, no medical advice, no promised outcome. A rule-based generator can break those
+    just as thoroughly as a model can, so most of what is checked here is what the plan must
+    NOT contain.
+    """
+
+    # The same words `ChatFactsTest` bans, for the same reason.
+    BANNED_TH = ("สวย", "หล่อ", "ไม่ดี", "แย่", "จุดอ่อน", "ควรแก้", "ต้องแก้", "น่าเกลียด", "รับประกัน")
+    BANNED_EN = ("beautiful", "ugly", "attractive", "flaw", "worst", "should fix", "guarantee")
+
+    def scores(self, metrics, **overrides):
+        return {
+            "status": "experimental_reference_similarity",
+            "overall_score": 70,
+            "categories": [],
+            "metrics": metrics,
+            "cohort_match": "within_reference_age_range",
+            "population_match": "within_reference_population",
+            **overrides,
+        }
+
+    def metric(self, key, category, z, observed=0.4, reference=0.3):
+        return {
+            "key": key, "category": category, "observed": observed, "reference": reference,
+            "normalized_deviation": z, "score": max(0, round(100 - 20 * abs(z))), "unit": "ratio",
+        }
+
+    def build(self, metrics, lang="th", **overrides):
+        return build_development_plan({"reference_scores": self.scores(metrics, **overrides)}, lang)
+
+    def test_items_are_ordered_by_distance_from_the_reference(self):
+        plan = self.build([
+            self.metric("alar_width", "nose", 0.8),
+            self.metric("chin_height", "chin", -2.4),
+            self.metric("eye_fissure", "eyes", 1.5),
+        ])
+        self.assertEqual([item["key"] for item in plan["items"]], ["chin_height", "eye_fissure", "alar_width"])
+
+    def test_a_measurement_sitting_near_the_mean_is_left_out(self):
+        plan = self.build([
+            self.metric("alar_width", "nose", 0.1),
+            self.metric("chin_height", "chin", -2.0),
+        ])
+        self.assertEqual([item["key"] for item in plan["items"]], ["chin_height"])
+
+    def test_nothing_standing_out_is_an_answer_and_not_a_failure(self):
+        plan = self.build([self.metric("alar_width", "nose", 0.1)])
+        self.assertEqual(plan["items"], [])
+        self.assertTrue(plan["empty_reason"])
+
+    def test_a_category_appears_once_even_when_two_of_its_metrics_qualify(self):
+        """Both nose metrics can be far from the mean, in opposite directions.
+
+        Two rows headed "จมูก" with opposite directions and the same two suggestions under each
+        reads as a bug, and the second adds a contradiction without adding any advice — the
+        actions are per-category.
+        """
+        plan = self.build([
+            self.metric("alar_width", "nose", 1.9),
+            self.metric("nasolabial_angle", "nose", -0.7),
+            self.metric("chin_height", "chin", -0.8),
+        ])
+        self.assertEqual([item["category"] for item in plan["items"]], ["nose", "chin"])
+        self.assertEqual(
+            plan["items"][0]["key"], "alar_width", "the furthest metric represents its category",
+        )
+
+    def test_each_row_names_its_measurement_not_only_its_category(self):
+        plan = self.build([self.metric("alar_width", "nose", 2.0)], lang="th")
+        self.assertEqual(plan["items"][0]["label"], "ความกว้างฐานจมูก")
+        english = self.build([self.metric("alar_width", "nose", 2.0)], lang="en")
+        self.assertEqual(english["items"][0]["label"], "Alar base width")
+
+    def test_an_unlabelled_metric_falls_back_to_its_key_rather_than_showing_nothing(self):
+        plan = self.build([self.metric("something_new", "nose", 2.0)])
+        self.assertEqual(plan["items"][0]["label"], "something_new")
+
+    def test_the_plan_is_capped_so_it_stays_readable(self):
+        # One per category, and there are only five scored categories.
+        metrics = [
+            self.metric(key, category, 2.0 + i) for i, (key, category) in enumerate((
+                ("midface_height", "proportions"), ("eye_fissure", "eyes"), ("alar_width", "nose"),
+                ("upper_vermillion", "lips"), ("chin_height", "chin"),
+            ))
+        ]
+        self.assertEqual(len(self.build(metrics)["items"]), 5)
+
+    def test_procedures_named_are_the_ones_pointing_back_toward_the_reference(self):
+        """Getting the direction backwards would be worse than naming nothing at all."""
+        wider_than_reference = self.build([self.metric("alar_width", "nose", 2.0)])["items"][0]
+        self.assertIn("Alar base reduction", wider_than_reference["related_procedures"])
+        narrower = self.build([self.metric("alar_width", "nose", -2.0)])["items"][0]
+        self.assertNotIn("Alar base reduction", narrower["related_procedures"])
+
+    def test_a_category_with_no_catalog_entry_names_no_procedure_rather_than_inventing_one(self):
+        item = self.build([self.metric("midface_height", "proportions", 2.0)])["items"][0]
+        self.assertEqual(item["related_procedures"], [])
+        self.assertTrue(item["actions"], "but it still gets something the user can actually do")
+
+    def test_every_suggested_action_is_reversible_and_needs_no_clinician(self):
+        plan = self.build([self.metric(key, category, 2.0) for key, category in (
+            ("midface_height", "proportions"), ("eye_fissure", "eyes"),
+            ("alar_width", "nose"), ("upper_vermillion", "lips"), ("chin_height", "chin"),
+        )])
+        for item in plan["items"]:
+            self.assertTrue(item["actions"], f"{item['category']} has nothing actionable")
+
+    def test_the_plan_never_judges_appearance_or_promises_an_outcome(self):
+        for lang, banned in (("th", self.BANNED_TH), ("en", self.BANNED_EN)):
+            plan = self.build([self.metric(key, category, 2.0) for key, category in (
+                ("midface_height", "proportions"), ("eye_fissure", "eyes"),
+                ("alar_width", "nose"), ("upper_vermillion", "lips"), ("chin_height", "chin"),
+            )], lang=lang)
+            text = json.dumps(plan, ensure_ascii=False).lower()
+            for word in banned:
+                self.assertNotIn(word.lower(), text, f"{word!r} appeared in the {lang} plan")
+
+    def test_naming_a_procedure_always_comes_with_the_words_that_it_is_not_a_recommendation(self):
+        plan = self.build([self.metric("alar_width", "nose", 2.0)])
+        self.assertIn("ไม่ใช่สิ่งที่แนะนำให้ทำ", plan["disclaimer"])
+        self.assertIn("แพทย์", plan["disclaimer"])
+
+    def test_a_user_outside_the_cohort_is_told_the_comparison_does_not_apply(self):
+        plan = self.build(
+            [self.metric("alar_width", "nose", 2.0)],
+            population_match="outside_reference_population",
+        )
+        self.assertFalse(plan["cohort_comparable"])
+        self.assertTrue(plan["cohort_note"])
+
+    def test_an_unscored_scan_has_no_plan_at_all(self):
+        self.assertIsNone(build_development_plan({"reference_scores": {"status": "minor_not_scored"}}))
+        self.assertIsNone(build_development_plan(None))
+
+
+class DevelopmentPlanApiTest(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user("planner")
+        self.client = APIClient()
+        self.client.force_authenticate(self.user)
+        self.scan = Scan.objects.create(
+            user=self.user, age_band="adult", status=Scan.Status.COMPLETED,
+            analysis_data={"reference_scores": ChatContextTest.SCORES},
+            expires_at=timezone.now() + timedelta(days=30),
+        )
+
+    def url(self):
+        return f"/api/v1/scans/{self.scan.id}/development-plan/"
+
+    def test_a_free_account_is_refused_by_the_api_not_just_the_ui(self):
+        """No redacted form here, unlike the score card: half a suggestion is not a teaser."""
+        response = self.client.get(self.url())
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.data["detail"], "development_plan_requires_entitlement")
+
+    def test_plus_and_pro_get_it(self):
+        activate(create_order(self.user, Plan.objects.get(code="plus")))
+        response = self.client.get(self.url())
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(response.data["scan_id"], str(self.scan.id))
+        self.assertTrue(response.data["disclaimer"])
+
+    def test_english_is_served_when_asked_for(self):
+        activate(create_order(self.user, Plan.objects.get(code="plus")))
+        response = self.client.get(self.url() + "?lang=en")
+        self.assertEqual(response.data["lang"], "en")
+        self.assertIn("not medical advice", response.data["disclaimer"])
+
+    def test_another_users_scan_is_not_readable(self):
+        activate(create_order(self.user, Plan.objects.get(code="plus")))
+        stranger = Scan.objects.create(
+            user=User.objects.create_user("notme"), age_band="adult",
+            status=Scan.Status.COMPLETED, expires_at=timezone.now() + timedelta(days=30),
+        )
+        self.assertEqual(
+            self.client.get(f"/api/v1/scans/{stranger.id}/development-plan/").status_code, 404
+        )
+
+
+class RenewalReminderTest(TestCase):
+    """The dunning schedule, and the one property that makes a beat job safe: running it twice."""
+
+    def setUp(self):
+        self.user = User.objects.create_user("renewer", email="renewer@example.com")
+        self.plan = Plan.objects.get(code="plus")
+        self.subscription = activate(create_order(self.user, self.plan))
+
+    def ends_in(self, days):
+        Subscription.objects.filter(pk=self.subscription.pk).update(
+            current_period_end=timezone.now() + timedelta(days=days)
+        )
+
+    def kinds(self):
+        return list(Notification.objects.filter(user=self.user).values_list("kind", flat=True))
+
+    def test_a_reminder_goes_out_a_week_before_expiry(self):
+        self.ends_in(7)
+        send_renewal_reminders()
+        self.assertEqual(self.kinds(), ["renewal_due"])
+
+    def test_running_the_job_twice_in_a_day_sends_one_message(self):
+        """Beat has no memory across restarts and will re-fire a schedule it thinks it missed."""
+        self.ends_in(3)
+        self.assertEqual(send_renewal_reminders(), 1)
+        self.assertEqual(send_renewal_reminders(), 0)
+        self.assertEqual(Notification.objects.filter(user=self.user).count(), 1)
+
+    def test_each_step_of_the_schedule_is_its_own_message(self):
+        for days in (7, 3, 1, 0):
+            self.ends_in(days)
+            send_renewal_reminders()
+        self.assertEqual(len(self.kinds()), 4)
+
+    def test_a_lapsed_subscription_still_gets_one_last_chance_inside_grace(self):
+        self.ends_in(-SiteSetting.current().subscription_grace_days)
+        send_renewal_reminders()
+        self.assertEqual(self.kinds(), ["renewal_lapsed"])
+
+    def test_somebody_who_already_renewed_is_not_told_their_plan_is_ending(self):
+        """The old row still expires on its own date; the reminder has to look at the new one."""
+        self.ends_in(3)
+        Subscription.objects.create(
+            user=self.user, plan=self.plan, current_period_end=timezone.now() + timedelta(days=33),
+        )
+        send_renewal_reminders()
+        self.assertEqual(self.kinds(), [])
+
+    def test_a_cancelled_subscription_is_not_chased(self):
+        self.ends_in(3)
+        Subscription.objects.filter(pk=self.subscription.pk).update(
+            status=Subscription.Status.CANCELLED
+        )
+        send_renewal_reminders()
+        self.assertEqual(self.kinds(), [])
+
+    def test_renewing_needs_no_new_endpoint_and_never_loses_paid_time(self):
+        """Renewal is just another order for the same plan; activate() already stacks it."""
+        first_end = self.subscription.current_period_end
+        renewed = activate(create_order(self.user, self.plan))
+        self.assertEqual((renewed.current_period_end - first_end).days, 30)
+
+    def test_the_email_is_a_delivery_of_the_row_not_a_separate_thing(self):
+        self.ends_in(1)
+        send_renewal_reminders()
+        notification = Notification.objects.get(user=self.user)
+        self.assertIsNotNone(notification.emailed_at)
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertEqual(mail.outbox[0].to, ["renewer@example.com"])
+
+    def test_an_account_with_no_address_still_gets_the_in_app_notification(self):
+        User.objects.filter(pk=self.user.pk).update(email="")
+        self.ends_in(1)
+        send_renewal_reminders()
+        self.assertEqual(Notification.objects.filter(user=self.user).count(), 1)
+        self.assertEqual(len(mail.outbox), 0)
+
+
+class GracePeriodTest(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user("late")
+        self.plan = Plan.objects.get(code="plus")
+        self.subscription = activate(create_order(self.user, self.plan))
+
+    def lapse_by(self, days):
+        Subscription.objects.filter(pk=self.subscription.pk).update(
+            current_period_end=timezone.now() - timedelta(days=days)
+        )
+        sync_entitlement(self.user)
+
+    def test_access_survives_inside_the_window_but_the_row_says_lapsed(self):
+        self.lapse_by(1)
+        self.assertEqual(entitlement.plan_code(self.user), "plus")
+        self.assertEqual(
+            Subscription.objects.get(pk=self.subscription.pk).status, Subscription.Status.EXPIRED,
+            "every report has to see this as lapsed even while access continues",
+        )
+
+    def test_access_ends_once_the_window_does(self):
+        self.lapse_by(SiteSetting.current().subscription_grace_days + 1)
+        self.assertEqual(entitlement.plan_code(self.user), "free")
+        self.assertNotIn("plus_member", set(self.user.groups.values_list("name", flat=True)))
+
+    def test_the_group_is_kept_while_any_row_still_justifies_it(self):
+        self.lapse_by(SiteSetting.current().subscription_grace_days + 1)
+        Subscription.objects.create(
+            user=self.user, plan=self.plan, current_period_end=timezone.now() + timedelta(days=5),
+        )
+        self.user.groups.add(Group.objects.get(name="plus_member"))
+        sync_entitlement(self.user)
+        self.assertIn("plus_member", set(self.user.groups.values_list("name", flat=True)))
+
+
+class NotificationApiTest(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user("reader", email="reader@example.com")
+        self.client = APIClient()
+        self.client.force_authenticate(self.user)
+
+    def make(self, **kwargs):
+        return notify(self.user, kind="order_paid", title="จ่ายแล้ว", **kwargs)
+
+    def test_the_bell_lists_and_counts_unread(self):
+        self.make()
+        data = self.client.get("/api/v1/notifications/").data
+        self.assertEqual(data["unread"], 1)
+        self.assertEqual(data["results"][0]["title"], "จ่ายแล้ว")
+        self.assertIs(data["results"][0]["read"], False)
+
+    def test_marking_read_is_idempotent(self):
+        self.make()
+        self.assertEqual(self.client.post("/api/v1/notifications/read/", {}, format="json").data["unread"], 0)
+        self.assertEqual(self.client.post("/api/v1/notifications/read/", {}, format="json").data["unread"], 0)
+
+    def test_a_duplicate_dedupe_key_writes_nothing_and_says_so(self):
+        self.assertIsNotNone(self.make(dedupe_key="once"))
+        self.assertIsNone(self.make(dedupe_key="once"), "the caller must be able to tell")
+        self.assertEqual(Notification.objects.count(), 1)
+
+    def test_an_empty_dedupe_key_does_not_collapse_unrelated_messages(self):
+        self.make()
+        self.make()
+        self.assertEqual(Notification.objects.count(), 2)
+
+    def test_a_dead_mail_server_does_not_take_the_notification_with_it(self):
+        """Nobody should lose a referral reward because SMTP was busy."""
+        with patch("doodee.notifications.send_mail", side_effect=RuntimeError("smtp down")):
+            notification = self.make()
+        self.assertIsNotNone(notification)
+        self.assertIsNone(notification.emailed_at)
+
+    def test_notifications_are_scoped_to_their_owner(self):
+        notify(User.objects.create_user("stranger"), kind="order_paid", title="theirs")
+        self.assertEqual(self.client.get("/api/v1/notifications/").data["results"], [])
+
+    def test_registering_a_device_moves_the_token_to_whoever_signed_in_last(self):
+        """A token belongs to an installation, so a shared device must not leak notifications."""
+        previous = User.objects.create_user("previousowner")
+        PushToken.objects.create(user=previous, token="tok-1", platform="ios")
+        response = self.client.post(
+            "/api/v1/push-tokens/", {"token": "tok-1", "platform": "ios"}, format="json"
+        )
+        self.assertEqual(response.status_code, 204)
+        self.assertEqual(PushToken.objects.get(token="tok-1").user, self.user)
+        self.assertEqual(PushToken.objects.count(), 1)
+
+
+class SiteSettingTest(TestCase):
+    """The numbers a business decision can change, without a deploy.
+
+    Every one of these was a constant in `settings.py` — or, for the preview ceiling, a literal in
+    `views.py` — so the thing worth testing is not that a field exists but that editing it actually
+    changes behaviour on the very next call.
+    """
+
+    def setUp(self):
+        self.config = SiteSetting.current()
+
+    def set(self, **fields):
+        SiteSetting.objects.filter(pk=1).update(**fields)
+
+    def test_there_is_only_ever_one_row(self):
+        SiteSetting().save()
+        SiteSetting().save()
+        self.assertEqual(SiteSetting.objects.count(), 1)
+
+    def test_current_creates_the_row_on_a_database_that_has_never_seen_one(self):
+        SiteSetting.objects.all().delete()
+        self.assertEqual(SiteSetting.current().pk, 1)
+        self.assertEqual(SiteSetting.current().reward_satang, 3000)
+
+    def test_the_migration_seeded_the_figures_that_were_live_before_it(self):
+        self.assertEqual(self.config.reward_satang, 3000)
+        self.assertEqual(self.config.subscription_grace_days, 3)
+        self.assertEqual(self.config.chat_hourly_ceiling, 60)
+        self.assertEqual(self.config.preview_hourly_ceiling, 120)
+
+    def test_changing_the_reward_changes_the_next_payout_and_rewrites_no_old_one(self):
+        inviter, plan = User.objects.create_user("payer"), Plan.objects.get(code="plus")
+        first = Referral.objects.create(
+            inviter=inviter, invitee=User.objects.create_user("g1"), code="X",
+        )
+        activate(create_order(first.invitee, plan))
+        self.assertEqual(referral.credit_balance(inviter), 3000)
+
+        self.set(reward_satang=5000)
+        second = Referral.objects.create(
+            inviter=inviter, invitee=User.objects.create_user("g2"), code="X",
+        )
+        activate(create_order(second.invitee, plan))
+        self.assertEqual(
+            referral.credit_balance(inviter), 8000,
+            "฿30 then ฿50 — the ledger records what was promised at the time, not the new figure",
+        )
+        self.assertEqual(
+            CreditLedger.objects.filter(referral=first).get().amount_satang, 3000,
+            "the row already written must not be revalued",
+        )
+
+    def test_switching_the_reward_to_zero_still_records_the_referral(self):
+        """A ฿0 reward is a real configuration — the friend discount alone is a viable offer."""
+        self.set(reward_satang=0)
+        inviter = User.objects.create_user("nopay")
+        edge = Referral.objects.create(
+            inviter=inviter, invitee=User.objects.create_user("g3"), code="X",
+        )
+        activate(create_order(edge.invitee, Plan.objects.get(code="plus")))
+        edge.refresh_from_db()
+        self.assertEqual(edge.status, Referral.Status.QUALIFIED)
+        self.assertEqual(referral.credit_balance(inviter), 0)
+
+    def test_zero_means_no_monthly_cap_rather_than_no_rewards(self):
+        self.set(max_qualified_per_month=0)
+        inviter, plan = User.objects.create_user("popular"), Plan.objects.get(code="plus")
+        for index in range(3):
+            row = Referral.objects.create(
+                inviter=inviter, invitee=User.objects.create_user(f"friend{index}"), code="X",
+            )
+            activate(create_order(row.invitee, plan))
+        self.assertEqual(referral.credit_balance(inviter), 9000)
+        self.assertFalse(Referral.objects.filter(status=Referral.Status.HELD).exists())
+
+    def test_zero_hours_means_a_code_can_be_claimed_at_any_time(self):
+        self.set(claim_window_hours=0)
+        inviter = User.objects.create_user("host9")
+        invitee = User.objects.create_user("old")
+        User.objects.filter(pk=invitee.pk).update(date_joined=timezone.now() - timedelta(days=400))
+        invitee.refresh_from_db()
+        request = MagicMock()
+        request.auth = {"email_verified": True}
+        request.META = {"REMOTE_ADDR": "203.0.113.1", "HTTP_X_FORWARDED_FOR": ""}
+        claimed = referral.claim(invitee, referral.code_for(inviter).code, request=request)
+        self.assertEqual(claimed.status, Referral.Status.PENDING)
+
+    def test_turning_off_the_verification_requirement_actually_turns_it_off(self):
+        self.set(require_verified_email=False)
+        inviter, invitee = User.objects.create_user("h10"), User.objects.create_user("i10")
+        request = MagicMock()
+        request.auth = {"email_verified": False}
+        request.META = {"REMOTE_ADDR": "203.0.113.2", "HTTP_X_FORWARDED_FOR": ""}
+        self.assertEqual(
+            referral.claim(invitee, referral.code_for(inviter).code, request=request).status,
+            Referral.Status.PENDING,
+        )
+
+    def test_changing_the_grace_period_changes_when_access_ends(self):
+        user, plan = User.objects.create_user("lapser"), Plan.objects.get(code="plus")
+        subscription = activate(create_order(user, plan))
+        Subscription.objects.filter(pk=subscription.pk).update(
+            current_period_end=timezone.now() - timedelta(days=5)
+        )
+        sync_entitlement(user)
+        self.assertEqual(entitlement.plan_code(user), "free", "5 days lapsed, 3 days of grace")
+
+        self.set(subscription_grace_days=10)
+        user.groups.add(Group.objects.get(name="plus_member"))
+        self.assertEqual(
+            entitlement.plan_code(user), "plus",
+            "widening the window brings the same subscription back, with no restart",
+        )
+
+
+class ReferralClaimTest(TestCase):
+    """Who may claim an invite code, and what they get for it.
+
+    Nothing here pays the inviter. That is `ReferralRewardTest` — the split is the design.
+    """
+
+    def setUp(self):
+        self.inviter = User.objects.create_user("inviter")
+        self.invitee = User.objects.create_user("invitee")
+        self.code = referral.code_for(self.inviter).code
+
+    def claim(self, user=None, code=None, verified=True, ip="203.0.113.5"):
+        request = MagicMock()
+        request.auth = {"email_verified": verified}
+        request.META = {"REMOTE_ADDR": ip, "HTTP_X_FORWARDED_FOR": ""}
+        return referral.claim(user or self.invitee, code or self.code, request=request)
+
+    def refusal(self, **kwargs):
+        with self.assertRaises(referral.ReferralError) as caught:
+            self.claim(**kwargs)
+        return caught.exception.code
+
+    def test_a_claim_hands_over_the_discount_immediately_but_pays_nobody(self):
+        claimed = self.claim()
+        self.assertEqual(claimed.status, Referral.Status.PENDING)
+        self.assertTrue(
+            CouponGrant.objects.filter(user=self.invitee, coupon__code="FRIEND10").exists()
+        )
+        self.assertEqual(referral.credit_balance(self.inviter), 0, "the reward waits for a payment")
+
+    def test_a_code_is_eight_readable_characters(self):
+        self.assertEqual(len(self.code), 8)
+        self.assertFalse(set(self.code) & set("01OIL"), "characters that get misread aloud")
+
+    def test_the_same_code_comes_back_on_every_read(self):
+        self.assertEqual(referral.code_for(self.inviter).code, self.code)
+        self.assertEqual(ReferralCode.objects.filter(user=self.inviter).count(), 1)
+
+    def test_you_cannot_invite_yourself(self):
+        self.assertEqual(self.refusal(user=self.inviter), "cannot_refer_yourself")
+
+    def test_an_account_can_only_ever_be_claimed_once(self):
+        self.claim()
+        other = User.objects.create_user("opportunist")
+        self.assertEqual(
+            self.refusal(code=referral.code_for(other).code), "already_referred",
+            "a second inviter cannot claim an account somebody else already invited",
+        )
+
+    def test_the_database_refuses_a_second_claim_even_without_the_check(self):
+        """The OneToOne is the real rule; the check above only makes the message readable."""
+        self.claim()
+        with self.assertRaises(IntegrityError):
+            Referral.objects.create(
+                inviter=User.objects.create_user("third"), invitee=self.invitee, code="XXXXXXXX",
+            )
+
+    def test_an_unknown_code_is_refused(self):
+        self.assertEqual(self.refusal(code="ZZZZZZZZ"), "invalid_code")
+
+    def test_an_unverified_identity_is_refused(self):
+        """Without this, "ต้องมีการยืนยันตัวตน" is a sentence in a document rather than a check."""
+        self.assertEqual(self.refusal(verified=False), "identity_not_verified")
+
+    def test_signing_in_with_google_counts_as_verified_without_a_confirmation_mail(self):
+        request = MagicMock()
+        request.auth = {"email_verified": False, "firebase": {"sign_in_provider": "google.com"}}
+        request.META = {"REMOTE_ADDR": "203.0.113.5", "HTTP_X_FORWARDED_FOR": ""}
+        self.assertEqual(
+            referral.claim(self.invitee, self.code, request=request).status,
+            Referral.Status.PENDING,
+        )
+
+    def test_a_code_cannot_be_claimed_by_an_account_that_is_no_longer_new(self):
+        """requirement.md gives the discount for signing up with a code, not for entering one later."""
+        User.objects.filter(pk=self.invitee.pk).update(
+            date_joined=timezone.now() - timedelta(hours=SiteSetting.current().claim_window_hours + 1)
+        )
+        self.invitee.refresh_from_db()
+        self.assertEqual(self.refusal(), "signup_window_passed")
+
+    def test_the_whole_system_can_be_switched_off_from_the_admin(self):
+        SiteSetting.objects.update_or_create(pk=1, defaults={"referral_enabled": False})
+        self.assertEqual(self.refusal(), "referral_disabled")
+
+    def test_the_signup_address_is_stored_only_as_a_one_way_digest(self):
+        claimed = self.claim(ip="203.0.113.5")
+        self.assertNotIn("203.0.113.5", claimed.signup_ip_hash)
+        self.assertEqual(len(claimed.signup_ip_hash), 64)
+
+
+class ReferralDiscountTest(TestCase):
+    """The invited friend's side: 10%, capped at ฿100, and unusable by anyone else."""
+
+    def setUp(self):
+        self.user = User.objects.create_user("friend")
+        self.coupon = Coupon.objects.get(code="FRIEND10")
+
+    def grant(self):
+        return CouponGrant.objects.create(user=self.user, coupon=self.coupon)
+
+    def test_ten_percent_on_the_monthly_plan(self):
+        self.grant()
+        self.assertEqual(discount_for(self.coupon, 49900), 4990)
+
+    def test_the_cap_binds_on_the_yearly_plan(self):
+        """Uncapped this would be ฿499 — five times what was offered."""
+        self.assertEqual(discount_for(self.coupon, 499000), 10000)
+
+    def test_a_code_requiring_a_grant_is_refused_to_anyone_without_one(self):
+        with self.assertRaises(CouponError) as caught:
+            validate_coupon("FRIEND10", Plan.objects.get(code="plus"), self.user)
+        self.assertEqual(
+            caught.exception.code, "invalid_coupon",
+            "identical to a code that does not exist, so the endpoint cannot confirm it is real",
+        )
+
+    def test_the_grant_makes_it_work(self):
+        self.grant()
+        self.assertEqual(
+            validate_coupon("FRIEND10", Plan.objects.get(code="plus"), self.user).pk, self.coupon.pk
+        )
+
+    def test_the_grant_is_spent_when_the_order_is_paid_and_not_before(self):
+        grant = self.grant()
+        order = create_order(self.user, Plan.objects.get(code="plus"), "FRIEND10")
+        grant.refresh_from_db()
+        self.assertIsNone(grant.used_order, "an abandoned checkout must not burn it")
+        activate(order)
+        grant.refresh_from_db()
+        self.assertEqual(grant.used_order_id, order.pk)
+
+    def test_it_cannot_be_used_a_second_time(self):
+        self.grant()
+        activate(create_order(self.user, Plan.objects.get(code="plus"), "FRIEND10"))
+        with self.assertRaises(CouponError):
+            create_order(self.user, Plan.objects.get(code="plus"), "FRIEND10")
+
+
+class ReferralRewardTest(TestCase):
+    """When the inviter's ฿30 vests, and — mostly — when it does not."""
+
+    def setUp(self):
+        self.inviter = User.objects.create_user("host")
+        self.invitee = User.objects.create_user("guest")
+        self.plan = Plan.objects.get(code="plus")
+        self.referral = Referral.objects.create(
+            inviter=self.inviter, invitee=self.invitee, code="TESTCODE",
+        )
+
+    def buy(self, user=None):
+        return activate(create_order(user or self.invitee, self.plan))
+
+    def test_signing_up_pays_nothing_and_paying_pays_thirty_baht(self):
+        """The change that makes ฿30 a commission instead of a wage for making email addresses."""
+        self.assertEqual(referral.credit_balance(self.inviter), 0)
+        self.buy()
+        self.referral.refresh_from_db()
+        self.assertEqual(self.referral.status, Referral.Status.QUALIFIED)
+        self.assertEqual(referral.credit_balance(self.inviter), SiteSetting.current().reward_satang)
+
+    def test_activating_the_same_order_twice_pays_once(self):
+        """A replayed Omise webhook and a double-clicked Confirm button are the same event."""
+        order = create_order(self.invitee, self.plan)
+        activate(order)
+        activate(order)
+        self.assertEqual(referral.credit_balance(self.inviter), SiteSetting.current().reward_satang)
+        self.assertEqual(CreditLedger.objects.filter(user=self.inviter).count(), 1)
+
+    def test_only_the_first_purchase_earns_it_not_every_renewal(self):
+        self.buy()
+        self.buy()
+        self.buy()
+        self.assertEqual(referral.credit_balance(self.inviter), SiteSetting.current().reward_satang)
+
+    def test_the_signup_address_is_discarded_once_the_decision_is_made(self):
+        Referral.objects.filter(pk=self.referral.pk).update(signup_ip_hash="a" * 64)
+        self.buy()
+        self.referral.refresh_from_db()
+        self.assertEqual(self.referral.signup_ip_hash, "", "kept only while a payout is undecided")
+
+    def test_a_run_of_accounts_from_one_address_is_held_for_a_human_not_paid(self):
+        Referral.objects.filter(pk=self.referral.pk).update(signup_ip_hash="b" * 64)
+        Referral.objects.create(
+            inviter=self.inviter, invitee=User.objects.create_user("guest2"),
+            code="TESTCODE", signup_ip_hash="b" * 64,
+        )
+        self.buy()
+        self.referral.refresh_from_db()
+        self.assertEqual(self.referral.status, Referral.Status.HELD)
+        self.assertEqual(referral.credit_balance(self.inviter), 0)
+        self.assertTrue(self.referral.note, "a held row says why, or nobody can review it")
+
+    def test_past_the_monthly_cap_referrals_are_held_rather_than_paid_or_dropped(self):
+        SiteSetting.objects.update_or_create(pk=1, defaults={"max_qualified_per_month": 1})
+        self.buy()
+        second = Referral.objects.create(
+            inviter=self.inviter, invitee=User.objects.create_user("guest3"), code="TESTCODE",
+        )
+        activate(create_order(second.invitee, self.plan))
+        second.refresh_from_db()
+        self.assertEqual(second.status, Referral.Status.HELD)
+        self.assertEqual(
+            referral.credit_balance(self.inviter), SiteSetting.current().reward_satang,
+            "the first still paid; only the one over the cap waits for a decision",
+        )
+
+    def test_a_clawback_is_a_new_row_and_never_an_edit(self):
+        self.buy()
+        self.referral.refresh_from_db()
+        claw_back(self.referral, note="ทดสอบ")
+        self.referral.refresh_from_db()
+        self.assertEqual(self.referral.status, Referral.Status.CLAWED_BACK)
+        self.assertEqual(referral.credit_balance(self.inviter), 0)
+        self.assertEqual(
+            CreditLedger.objects.filter(user=self.inviter).count(), 2,
+            "the original award stays on the record beside the reversal",
+        )
+
+    def test_a_notification_tells_the_inviter_they_earned_something(self):
+        self.buy()
+        notification = Notification.objects.get(user=self.inviter)
+        self.assertEqual(notification.kind, "referral_reward")
+        self.assertIn("30", notification.body)
+
+
+class CreditSpendTest(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user("saver")
+        self.plan = Plan.objects.get(code="plus")
+
+    def top_up(self, satang):
+        CreditLedger.objects.create(
+            user=self.user, amount_satang=satang, kind=CreditLedger.Kind.ADMIN_ADJUST,
+        )
+
+    def test_credit_comes_off_after_the_coupon_not_before(self):
+        """A percentage applies to the list price, so credit does not shrink the discount."""
+        self.top_up(10000)
+        Coupon.objects.create(code="TENOFF", discount_value=10)
+        priced = quote(self.plan, Coupon.objects.get(code="TENOFF"), 10000)
+        self.assertEqual(priced["discount_satang"], 4990, "10% of ฿499, not of ฿399")
+        self.assertEqual(priced["credit_satang"], 10000)
+        self.assertEqual(priced["total_satang"], 34910)
+
+    def test_credit_is_only_spent_when_the_order_is_paid(self):
+        self.top_up(10000)
+        order = create_order(self.user, self.plan, use_credit=True)
+        self.assertEqual(order.credit_satang, 10000)
+        self.assertEqual(referral.credit_balance(self.user), 10000, "still theirs until it settles")
+        activate(order)
+        self.assertEqual(referral.credit_balance(self.user), 0)
+
+    def test_credit_never_exceeds_the_amount_due(self):
+        self.top_up(100000)
+        order = create_order(self.user, self.plan, use_credit=True)
+        self.assertEqual(order.credit_satang, 49900)
+        self.assertEqual(order.total_satang, 0)
+
+    def test_an_order_fully_covered_by_credit_is_paid_immediately(self):
+        """A ฿0 pending order waits on a payment no provider will ever send."""
+        self.top_up(100000)
+        order = create_order(self.user, self.plan, use_credit=True)
+        self.assertEqual(order.status, Order.Status.PAID)
+        self.assertEqual(referral.credit_balance(self.user), 50100)
+        self.assertEqual(entitlement.plan_code(self.user), "plus")
+
+    def test_two_orders_earmarking_the_same_credit_cannot_both_spend_it(self):
+        """Nothing reserves credit at checkout, so the balance is re-read when it settles."""
+        self.top_up(10000)
+        first = create_order(self.user, self.plan, use_credit=True)
+        second = create_order(self.user, self.plan, use_credit=True)
+        self.assertEqual(first.credit_satang, 10000)
+        self.assertEqual(second.credit_satang, 10000, "both earmarked it")
+        activate(first)
+        activate(second)
+        self.assertEqual(
+            referral.credit_balance(self.user), 0,
+            "the balance stops at zero rather than going negative",
+        )
+
+    def test_credit_is_ignored_unless_the_buyer_asks_for_it(self):
+        self.top_up(10000)
+        order = create_order(self.user, self.plan)
+        self.assertEqual(order.credit_satang, 0)
+        self.assertEqual(order.total_satang, 49900)
+
+
+TEST_PAYOUT_KEY = Fernet.generate_key().decode()
+
+
+@override_settings(PAYOUT_ENCRYPTION_KEY=TEST_PAYOUT_KEY)
+class PayoutAccountTest(TestCase):
+    """Where money is sent, and the fact that this table is the only bank detail we hold."""
+
+    def setUp(self):
+        self.user = User.objects.create_user("earner")
+
+    def save(self, **overrides):
+        return payout.save_account(**{
+            "user": self.user, "method": "promptpay", "bank": "",
+            "account_name": "สมชาย ใจดี", "number": "0812345678", **overrides,
+        })
+
+    def refusal(self, **overrides):
+        with self.assertRaises(payout.PayoutError) as caught:
+            self.save(**overrides)
+        return caught.exception.code
+
+    def test_the_number_is_not_in_the_database_in_readable_form(self):
+        self.save(number="0812345678")
+        stored = bytes(PayoutAccount.objects.get().number_encrypted)
+        self.assertNotIn(b"0812345678", stored)
+        self.assertNotEqual(stored, b"0812345678")
+
+    def test_only_the_last_four_digits_are_plain(self):
+        account = self.save(number="0812345678")
+        self.assertEqual(account.number_last4, "5678")
+        self.assertEqual(account.masked, "••••5678")
+
+    def test_the_number_comes_back_with_the_key(self):
+        self.save(number="0812345678")
+        self.assertEqual(payout.decrypt_number(PayoutAccount.objects.get()), "0812345678")
+
+    def test_a_different_key_cannot_read_it(self):
+        self.save(number="0812345678")
+        with override_settings(PAYOUT_ENCRYPTION_KEY=Fernet.generate_key().decode()):
+            with self.assertRaises(Exception):
+                payout.decrypt_number(PayoutAccount.objects.get())
+
+    @override_settings(PAYOUT_ENCRYPTION_KEY="")
+    def test_with_no_key_configured_nothing_is_stored_at_all(self):
+        """The failure that matters: degrading to plaintext instead of refusing."""
+        self.assertEqual(self.refusal(), "payout_not_configured")
+        self.assertFalse(PayoutAccount.objects.exists())
+
+    @override_settings(PAYOUT_ENCRYPTION_KEY="not-a-valid-fernet-key")
+    def test_a_malformed_key_is_a_refusal_and_not_a_fallback(self):
+        self.assertEqual(self.refusal(), "payout_not_configured")
+        self.assertFalse(PayoutAccount.objects.exists())
+
+    def test_formatting_a_user_typed_is_stripped(self):
+        account = self.save(method="bank", bank="kbank", number="123-4-56789-0")
+        self.assertEqual(payout.decrypt_number(account), "1234567890")
+
+    def test_a_bank_account_needs_a_bank_from_the_list(self):
+        self.assertEqual(self.refusal(method="bank", bank="", number="1234567890"), "invalid_bank")
+        self.assertEqual(
+            self.refusal(method="bank", bank="not-a-bank", number="1234567890"), "invalid_bank"
+        )
+
+    def test_promptpay_takes_a_mobile_number_or_a_national_id_and_nothing_else(self):
+        self.assertEqual(payout.decrypt_number(self.save(number="0812345678")), "0812345678")
+        self.assertEqual(payout.decrypt_number(self.save(number="1234567890123")), "1234567890123")
+        self.assertEqual(self.refusal(number="12345"), "invalid_promptpay_id")
+
+    def test_a_name_is_required_because_a_transfer_cannot_be_made_without_one(self):
+        self.assertEqual(self.refusal(account_name="  "), "account_name_required")
+
+    def test_saving_again_replaces_rather_than_accumulating(self):
+        self.save(number="0812345678")
+        self.save(number="0899999999")
+        self.assertEqual(PayoutAccount.objects.filter(user=self.user).count(), 1)
+        self.assertEqual(PayoutAccount.objects.get().number_last4, "9999")
+
+    def test_the_summary_shown_to_anyone_never_carries_the_number(self):
+        summary = payout.account_summary(self.save(number="0812345678"))
+        self.assertEqual(summary["masked"], "••••5678")
+        self.assertNotIn("0812345678", json.dumps(summary, default=str))
+
+
+@override_settings(PAYOUT_ENCRYPTION_KEY=TEST_PAYOUT_KEY)
+class WithdrawalTest(TestCase):
+    """Requesting money out, and every way that must not go wrong."""
+
+    def setUp(self):
+        self.user = User.objects.create_user("cashout")
+        self.plan = Plan.objects.get(code="plus")
+        payout.save_account(
+            user=self.user, method="promptpay", bank="",
+            account_name="สมหญิง รักดี", number="0812345678",
+        )
+        self.top_up(50000)
+
+    def top_up(self, satang):
+        CreditLedger.objects.create(
+            user=self.user, amount_satang=satang, kind=CreditLedger.Kind.REFERRAL_REWARD,
+        )
+
+    def refusal(self, **kwargs):
+        with self.assertRaises(payout.PayoutError) as caught:
+            payout.request_withdrawal(self.user, **kwargs)
+        return caught.exception.code
+
+    def balance(self):
+        return referral.credit_balance(self.user)
+
+    def test_requesting_deducts_immediately_rather_than_at_payout(self):
+        """An unpaid withdrawal is money the user has already asked to remove."""
+        payout.request_withdrawal(self.user, 30000)
+        self.assertEqual(self.balance(), 20000)
+
+    def test_omitting_the_amount_withdraws_everything(self):
+        withdrawal = payout.request_withdrawal(self.user)
+        self.assertEqual(withdrawal.amount_satang, 50000)
+        self.assertEqual(self.balance(), 0)
+
+    def test_below_the_minimum_is_refused(self):
+        self.assertEqual(self.refusal(amount_satang=10000), "below_minimum")
+        self.assertEqual(self.balance(), 50000, "a refused request costs nothing")
+
+    def test_the_minimum_is_an_admin_setting_and_not_a_constant(self):
+        SiteSetting.objects.filter(pk=1).update(withdrawal_min_satang=5000)
+        self.assertEqual(payout.request_withdrawal(self.user, 10000).amount_satang, 10000)
+
+    def test_more_than_the_balance_is_refused(self):
+        self.assertEqual(self.refusal(amount_satang=60000), "amount_exceeds_balance")
+
+    def test_a_second_open_request_is_refused(self):
+        """Two open requests could each be sized against the same balance."""
+        payout.request_withdrawal(self.user, 30000)
+        self.top_up(50000)
+        self.assertEqual(self.refusal(amount_satang=30000), "withdrawal_already_pending")
+
+    def test_without_a_payout_account_there_is_nowhere_to_send_it(self):
+        PayoutAccount.objects.all().delete()
+        self.assertEqual(self.refusal(amount_satang=30000), "no_payout_account")
+
+    def test_withdrawals_can_be_switched_off_from_the_admin(self):
+        SiteSetting.objects.filter(pk=1).update(withdrawal_enabled=False)
+        self.assertEqual(self.refusal(amount_satang=30000), "withdrawal_disabled")
+
+    def test_pending_credit_cannot_also_be_spent_on_a_subscription(self):
+        """The whole reason the deduction happens at request time."""
+        payout.request_withdrawal(self.user, 50000)
+        order = create_order(self.user, self.plan, use_credit=True)
+        self.assertEqual(order.credit_satang, 0)
+        self.assertEqual(order.total_satang, 49900)
+
+    def test_a_hold_window_keeps_young_rewards_out_of_the_withdrawable_balance(self):
+        SiteSetting.objects.filter(pk=1).update(withdrawal_hold_days=7)
+        self.assertEqual(payout.withdrawable(self.user), 0, "the reward was earned just now")
+        CreditLedger.objects.filter(user=self.user).update(
+            created_at=timezone.now() - timedelta(days=8)
+        )
+        self.assertEqual(payout.withdrawable(self.user), 50000)
+
+    def test_the_destination_is_snapshotted_so_a_later_edit_cannot_redirect_it(self):
+        withdrawal = payout.request_withdrawal(self.user, 30000)
+        payout.save_account(
+            user=self.user, method="bank", bank="scb",
+            account_name="คนอื่น", number="9999999999",
+        )
+        withdrawal.refresh_from_db()
+        self.assertEqual(withdrawal.destination["number_last4"], "5678")
+        self.assertEqual(withdrawal.destination["account_name"], "สมหญิง รักดี")
+        self.assertEqual(payout.destination_number(withdrawal), "0812345678")
+
+    def test_cancelling_refunds_as_a_new_row_and_leaves_the_original(self):
+        withdrawal = payout.request_withdrawal(self.user, 30000)
+        payout.cancel_withdrawal(withdrawal)
+        self.assertEqual(self.balance(), 50000)
+        self.assertEqual(
+            CreditLedger.objects.filter(user=self.user).count(), 3,
+            "reward, withdrawal, refund — nothing is deleted or edited",
+        )
+
+    def test_cancelling_twice_is_refused_rather_than_refunding_twice(self):
+        withdrawal = payout.request_withdrawal(self.user, 30000)
+        payout.cancel_withdrawal(withdrawal)
+        with self.assertRaises(payout.PayoutError) as caught:
+            payout.cancel_withdrawal(withdrawal)
+        self.assertEqual(caught.exception.code, "withdrawal_not_cancellable")
+        self.assertEqual(self.balance(), 50000)
+
+    def test_a_user_cannot_cancel_one_an_operator_has_already_approved(self):
+        withdrawal = payout.request_withdrawal(self.user, 30000)
+        payout.approve(withdrawal, by=User.objects.create_user("op"))
+        with self.assertRaises(payout.PayoutError):
+            payout.cancel_withdrawal(withdrawal)
+
+    def test_rejecting_refunds_and_tells_the_user_why(self):
+        withdrawal = payout.request_withdrawal(self.user, 30000)
+        payout.reject(withdrawal, by=User.objects.create_user("op2"), note="ชื่อบัญชีไม่ตรง")
+        self.assertEqual(self.balance(), 50000)
+        notification = Notification.objects.get(user=self.user, kind="withdrawal_rejected")
+        self.assertIn("ชื่อบัญชีไม่ตรง", notification.body)
+
+    def test_paying_needs_a_reference_or_there_is_no_proof_it_happened(self):
+        withdrawal = payout.request_withdrawal(self.user, 30000)
+        with self.assertRaises(payout.PayoutError) as caught:
+            payout.mark_paid(withdrawal, by=User.objects.create_user("op3"), reference="  ")
+        self.assertEqual(caught.exception.code, "reference_required")
+        withdrawal.refresh_from_db()
+        self.assertEqual(withdrawal.status, WithdrawalRequest.Status.PENDING)
+
+    def test_paying_records_the_transfer_and_does_not_touch_the_ledger_again(self):
+        withdrawal = payout.request_withdrawal(self.user, 30000)
+        before = CreditLedger.objects.filter(user=self.user).count()
+        payout.mark_paid(withdrawal, by=User.objects.create_user("op4"), reference="SLIP-001")
+        withdrawal.refresh_from_db()
+        self.assertEqual(withdrawal.status, WithdrawalRequest.Status.PAID)
+        self.assertEqual(withdrawal.reference, "SLIP-001")
+        self.assertIsNotNone(withdrawal.paid_at)
+        self.assertEqual(
+            CreditLedger.objects.filter(user=self.user).count(), before,
+            "the credit left when it was requested; paying is the transfer, not a second debit",
+        )
+        self.assertEqual(self.balance(), 20000)
+
+    def test_a_paid_withdrawal_cannot_be_paid_or_rejected_again(self):
+        withdrawal = payout.request_withdrawal(self.user, 30000)
+        operator = User.objects.create_user("op5")
+        payout.mark_paid(withdrawal, by=operator, reference="SLIP-002")
+        for action in (
+            lambda: payout.mark_paid(withdrawal, by=operator, reference="SLIP-003"),
+            lambda: payout.reject(withdrawal, by=operator),
+        ):
+            with self.assertRaises(payout.PayoutError):
+                action()
+        self.assertEqual(self.balance(), 20000, "no double refund, no double payout")
+
+    def test_the_balance_never_goes_negative_across_a_withdrawal_and_an_order(self):
+        payout.request_withdrawal(self.user, 50000)
+        activate(create_order(self.user, self.plan, use_credit=True))
+        self.assertGreaterEqual(self.balance(), 0)
+        self.assertEqual(self.balance(), 0)
+
+    def test_the_user_is_told_when_the_money_actually_lands(self):
+        withdrawal = payout.request_withdrawal(self.user, 30000)
+        payout.mark_paid(withdrawal, by=User.objects.create_user("op6"), reference="SLIP-004")
+        notification = Notification.objects.get(user=self.user, kind="withdrawal_paid")
+        self.assertIn("5678", notification.body)
+        self.assertNotIn("0812345678", notification.body, "never the full number")
+
+
+class ProfileApiTest(TestCase):
+    """หน้าโปรไฟล์ — one payload for one page.
+
+    requirement.md asks for this page by name and puts the referral benefits on it, so most of
+    what matters here is that a user can see what they hold and what it expires.
+    """
+
+    def setUp(self):
+        self.user = User.objects.create_user("me", email="me@example.com")
+        self.client = APIClient()
+        self.client.force_authenticate(self.user, token={"email_verified": True})
+
+    def get(self):
+        response = self.client.get("/api/v1/profile/")
+        self.assertEqual(response.status_code, 200, response.data)
+        return response.data
+
+    def test_a_free_account_gets_a_complete_payload_with_nothing_invented(self):
+        data = self.get()
+        self.assertEqual(data["account"]["email"], "me@example.com")
+        self.assertIsNotNone(data["account"]["joined_at"])
+        self.assertEqual(data["plan"]["code"], "free")
+        self.assertIsNone(data["plan"]["expires_at"], "a free plan has nothing to renew")
+        self.assertIs(data["plan"]["expiring_soon"], False)
+        self.assertEqual(data["benefits"]["credit_satang"], 0)
+        self.assertEqual(data["benefits"]["discounts"], [])
+        self.assertEqual(data["orders"], [])
+
+    def test_a_subscriber_sees_when_their_plan_runs_out(self):
+        activate(create_order(self.user, Plan.objects.get(code="plus")))
+        data = self.get()
+        self.assertEqual(data["plan"]["code"], "plus")
+        self.assertEqual(data["plan"]["name_th"], "พลัส")
+        self.assertIsNotNone(data["plan"]["expires_at"])
+        self.assertEqual(data["plan"]["days_left"], 29)
+        self.assertIs(data["plan"]["expiring_soon"], False)
+
+    def test_a_plan_about_to_lapse_says_so_rather_than_only_printing_a_date(self):
+        subscription = activate(create_order(self.user, Plan.objects.get(code="plus")))
+        Subscription.objects.filter(pk=subscription.pk).update(
+            current_period_end=timezone.now() + timedelta(days=3)
+        )
+        self.assertIs(self.get()["plan"]["expiring_soon"], True)
+
+    def test_a_hand_granted_account_has_entitlement_and_no_renewal_date(self):
+        """An admin adding a group writes no Subscription. That is an ordinary state."""
+        self.user.groups.add(Group.objects.get_or_create(name="pro_member")[0])
+        data = self.get()
+        self.assertEqual(data["plan"]["code"], "member")
+        self.assertIsNone(data["plan"]["expires_at"])
+        self.assertIsNone(data["plan"]["days_left"])
+        self.assertIs(data["plan"]["expiring_soon"], False)
+
+    def test_a_promo_account_reports_vip_and_its_own_expiry(self):
+        PromoRedemption.objects.create(
+            user=self.user,
+            promo_code=PromoCode.objects.create(code="TRIALCODE", days=7),
+            expires_at=timezone.now() + timedelta(days=7),
+        )
+        data = self.get()
+        self.assertEqual(data["plan"]["code"], "vip")
+        self.assertIsNotNone(data["plan"]["vip_expires_at"])
+        self.assertIsNone(data["plan"]["expires_at"], "a redeemed code is not a subscription")
+
+    def test_unlimited_quotas_are_null_and_never_a_sentinel(self):
+        activate(create_order(self.user, Plan.objects.get(code="pro")))
+        quotas = self.get()["quotas"]
+        self.assertIsNone(quotas["preview_remaining"])
+        self.assertIsNone(quotas["chat_remaining"])
+        for value in quotas.values():
+            self.assertNotEqual(value, -1, "the unlimited sentinel must not reach a client")
+
+    def test_metered_quotas_report_what_is_left(self):
+        activate(create_order(self.user, Plan.objects.get(code="plus")))
+        self.assertEqual(self.get()["quotas"]["preview_remaining"], 20)
+
+    def test_an_unspent_grant_appears_as_a_benefit_with_enough_to_describe_it(self):
+        CouponGrant.objects.create(user=self.user, coupon=Coupon.objects.get(code="FRIEND10"))
+        discount = self.get()["benefits"]["discounts"][0]
+        self.assertEqual(discount["code"], "FRIEND10")
+        self.assertEqual(discount["discount_value"], 10)
+        self.assertEqual(discount["max_discount_satang"], 10000,
+                         "the cap has to travel or the page promises ฿499 off the yearly plan")
+
+    def test_a_spent_grant_is_not_offered_again(self):
+        grant = CouponGrant.objects.create(
+            user=self.user, coupon=Coupon.objects.get(code="FRIEND10"),
+        )
+        order = create_order(self.user, Plan.objects.get(code="plus"), "FRIEND10")
+        activate(order)
+        grant.refresh_from_db()
+        self.assertIsNotNone(grant.used_order)
+        self.assertEqual(self.get()["benefits"]["discounts"], [])
+
+    def test_an_expired_grant_is_not_offered(self):
+        CouponGrant.objects.create(
+            user=self.user, coupon=Coupon.objects.get(code="FRIEND10"),
+            expires_at=timezone.now() - timedelta(days=1),
+        )
+        self.assertEqual(self.get()["benefits"]["discounts"], [])
+
+    def test_credit_shows_as_a_benefit(self):
+        CreditLedger.objects.create(
+            user=self.user, amount_satang=3000, kind=CreditLedger.Kind.REFERRAL_REWARD,
+        )
+        self.assertEqual(self.get()["benefits"]["credit_satang"], 3000)
+
+    def test_a_receipt_reports_credit_that_was_spent_on_it(self):
+        """`credit_satang` was on the model and never on the wire — a receipt understated it."""
+        CreditLedger.objects.create(
+            user=self.user, amount_satang=10000, kind=CreditLedger.Kind.REFERRAL_REWARD,
+        )
+        activate(create_order(self.user, Plan.objects.get(code="plus"), use_credit=True))
+        order = self.get()["orders"][0]
+        self.assertEqual(order["credit_satang"], 10000)
+        self.assertEqual(order["subtotal_satang"], 49900)
+        self.assertEqual(order["total_satang"], 39900)
+        self.assertEqual(order["plan_name_th"], "พลัส")
+        self.assertTrue(order["status_label"])
+
+    def test_the_history_is_only_mine(self):
+        stranger = User.objects.create_user("notme")
+        create_order(stranger, Plan.objects.get(code="plus"))
+        create_order(self.user, Plan.objects.get(code="plus"))
+        orders = self.get()["orders"]
+        self.assertEqual(len(orders), 1)
+
+    def test_the_history_is_a_page_not_an_archive(self):
+        for _ in range(12):
+            create_order(self.user, Plan.objects.get(code="plus"))
+        self.assertEqual(len(self.get()["orders"]), 10)
+
+    def test_the_referral_summary_travels_with_the_page(self):
+        data = self.get()
+        self.assertEqual(len(data["referral"]["code"]), 8)
+        self.assertEqual(data["referral"]["reward_satang"], 3000)
+
+    def test_identity_verification_comes_from_the_token_the_referral_gate_reads(self):
+        self.assertIs(self.get()["account"]["identity_verified"], True)
+        self.client.force_authenticate(self.user, token={"email_verified": False})
+        self.assertIs(self.get()["account"]["identity_verified"], False)
+
+    def test_a_lapsed_plan_is_revoked_here_too_without_waiting_for_a_cron(self):
+        subscription = activate(create_order(self.user, Plan.objects.get(code="plus")))
+        Subscription.objects.filter(pk=subscription.pk).update(
+            current_period_end=timezone.now()
+            - timedelta(days=SiteSetting.current().subscription_grace_days + 1)
+        )
+        self.assertEqual(self.get()["plan"]["code"], "free")
+
+
+@override_settings(PAYOUT_ENCRYPTION_KEY=TEST_PAYOUT_KEY)
+class WithdrawalApiTest(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user("apicash", email="cash@example.com")
+        self.client = APIClient()
+        self.client.force_authenticate(self.user, token={"email_verified": True})
+        CreditLedger.objects.create(
+            user=self.user, amount_satang=50000, kind=CreditLedger.Kind.REFERRAL_REWARD,
+        )
+
+    def save_account(self, **overrides):
+        return self.client.put("/api/v1/payout-account/", {
+            "method": "promptpay", "bank": "", "account_name": "สมชาย ใจดี",
+            "number": "0812345678", **overrides,
+        }, format="json")
+
+    def test_saving_an_account_answers_with_the_masked_form_only(self):
+        response = self.save_account()
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(response.data["account"]["masked"], "••••5678")
+        self.assertNotIn("0812345678", json.dumps(response.data, default=str))
+
+    def test_there_is_no_endpoint_that_returns_the_full_number(self):
+        self.save_account()
+        body = json.dumps(self.client.get("/api/v1/payout-account/").data, default=str)
+        self.assertNotIn("0812345678", body)
+        self.assertIn("5678", body)
+
+    def test_the_bank_list_comes_from_the_api_not_a_hardcoded_client_table(self):
+        codes = [bank["code"] for bank in self.client.get("/api/v1/payout-account/").data["banks"]]
+        self.assertIn("kbank", codes)
+        self.assertIn("scb", codes)
+
+    @override_settings(PAYOUT_ENCRYPTION_KEY="")
+    def test_a_deployment_with_no_key_says_so_rather_than_blaming_the_user(self):
+        response = self.save_account()
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.data["detail"], "payout_not_configured")
+
+    def test_a_bad_account_number_is_the_users_problem_and_says_which_field(self):
+        response = self.save_account(number="123")
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.data["detail"], "invalid_promptpay_id")
+
+    def test_the_withdrawal_screen_carries_everything_the_button_needs(self):
+        self.save_account()
+        data = self.client.get("/api/v1/withdrawals/").data
+        self.assertEqual(data["withdrawable_satang"], 50000)
+        self.assertEqual(data["minimum_satang"], 30000)
+        self.assertIs(data["has_open_request"], False)
+
+    def test_requesting_and_then_cancelling_returns_the_credit(self):
+        self.save_account()
+        created = self.client.post("/api/v1/withdrawals/", {"amount_satang": 30000}, format="json")
+        self.assertEqual(created.status_code, 201, created.data)
+        self.assertEqual(self.client.get("/api/v1/session/").data["credit_balance_satang"], 20000)
+
+        cancelled = self.client.post(f"/api/v1/withdrawals/{created.data['id']}/cancel/", {}, format="json")
+        self.assertEqual(cancelled.data["status"], "cancelled")
+        self.assertEqual(self.client.get("/api/v1/session/").data["credit_balance_satang"], 50000)
+
+    def test_below_the_minimum_is_refused_and_says_what_the_minimum_is(self):
+        self.save_account()
+        response = self.client.post("/api/v1/withdrawals/", {"amount_satang": 5000}, format="json")
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.data["detail"], "below_minimum")
+        self.assertEqual(response.data["minimum_satang"], 30000)
+
+    def test_the_listed_request_never_carries_the_full_destination(self):
+        self.save_account()
+        self.client.post("/api/v1/withdrawals/", {}, format="json")
+        body = json.dumps(self.client.get("/api/v1/withdrawals/").data, default=str, ensure_ascii=False)
+        self.assertNotIn("0812345678", body)
+        self.assertIn("••••5678", body)
+
+    def test_a_stranger_cannot_cancel_somebody_elses_withdrawal(self):
+        self.save_account()
+        mine = self.client.post("/api/v1/withdrawals/", {}, format="json").data["id"]
+        self.client.force_authenticate(User.objects.create_user("nosy"), token={"email_verified": True})
+        self.assertEqual(
+            self.client.post(f"/api/v1/withdrawals/{mine}/cancel/", {}, format="json").status_code, 404
+        )
+
+    def test_the_referral_overview_says_why_the_button_is_disabled(self):
+        overview = self.client.get("/api/v1/referral/").data
+        self.assertEqual(overview["withdrawable_satang"], 50000)
+        self.assertEqual(overview["withdrawal_min_satang"], 30000)
+        self.assertIs(overview["has_payout_account"], False)
+
+
+@override_settings(PAYOUT_ENCRYPTION_KEY=TEST_PAYOUT_KEY)
+class PayoutAdminTest(TestCase):
+    """The queue, and who is allowed to touch it."""
+
+    def setUp(self):
+        self.user = User.objects.create_user("queued", email="q@example.com")
+        CreditLedger.objects.create(
+            user=self.user, amount_satang=50000, kind=CreditLedger.Kind.REFERRAL_REWARD,
+        )
+        payout.save_account(
+            user=self.user, method="bank", bank="kbank",
+            account_name="สมชาย ใจดี", number="1234567890",
+        )
+        self.withdrawal = payout.request_withdrawal(self.user, 30000)
+        self.superuser = User.objects.create_user("boss3", password="x", is_staff=True, is_superuser=True)
+        self.staff = User.objects.create_user("clerk", password="x", is_staff=True)
+        self.client.force_login(self.superuser)
+
+    def act(self, action, url="/admin/doodee/withdrawalrequest/", pk=None):
+        return self.client.post(
+            url, {"action": action, "_selected_action": [str(pk or self.withdrawal.pk)]}, follow=True,
+        )
+
+    def test_approving_moves_it_to_the_queue_without_returning_the_money(self):
+        self.act("approve_selected")
+        self.withdrawal.refresh_from_db()
+        self.assertEqual(self.withdrawal.status, WithdrawalRequest.Status.APPROVED)
+        self.assertEqual(referral.credit_balance(self.user), 20000)
+
+    def apply_paid(self, references):
+        """The second step: the action page posting back with a reference per row."""
+        data = {
+            "action": "mark_paid_selected",
+            "apply": "1",
+            "_selected_action": [str(pk) for pk in references],
+        }
+        data.update({f"reference_{pk}": ref for pk, ref in references.items()})
+        return self.client.post("/admin/doodee/withdrawalrequest/", data, follow=True)
+
+    def test_choosing_the_action_opens_a_page_asking_for_the_reference(self):
+        """It used to take six steps: open the row, type the slip, save through a confirm
+        dialog, return to the list, tick the row, run the action."""
+        response = self.act("mark_paid_selected")
+        self.withdrawal.refresh_from_db()
+        self.assertEqual(self.withdrawal.status, WithdrawalRequest.Status.PENDING,
+                         "opening the form must not pay anything")
+        self.assertContains(response, "บันทึกว่าโอนแล้ว")
+        self.assertContains(response, f'name="reference_{self.withdrawal.pk}"')
+        self.assertContains(response, "••••7890", msg_prefix="the operator needs to see the destination")
+
+    def test_confirming_with_a_reference_records_the_transfer(self):
+        self.apply_paid({self.withdrawal.pk: "SLIP-9"})
+        self.withdrawal.refresh_from_db()
+        self.assertEqual(self.withdrawal.status, WithdrawalRequest.Status.PAID)
+        self.assertEqual(self.withdrawal.reference, "SLIP-9")
+        self.assertEqual(referral.credit_balance(self.user), 20000,
+                         "the credit left when it was requested; this must not debit again")
+
+    def test_a_row_left_blank_is_skipped_and_stays_in_the_queue(self):
+        """Paying four of five in a sitting is normal; the fifth must not block the four."""
+        response = self.apply_paid({self.withdrawal.pk: "   "})
+        self.withdrawal.refresh_from_db()
+        self.assertEqual(self.withdrawal.status, WithdrawalRequest.Status.PENDING)
+        self.assertContains(response, "ยังไม่ได้กรอกเลขอ้างอิง")
+        self.assertEqual(referral.credit_balance(self.user), 20000,
+                         "still committed to the open request, not returned")
+
+    def test_each_payout_gets_its_own_reference_not_one_for_the_batch(self):
+        """A shared reference would file the same slip number against every payout."""
+        payout.save_account(user=self.user, method="promptpay", bank="",
+                            account_name="ส", number="0812345678")
+        CreditLedger.objects.create(user=self.user, amount_satang=40000,
+                                    kind=CreditLedger.Kind.ADMIN_ADJUST)
+        second_user = User.objects.create_user("payee2", email="p2@example.com")
+        CreditLedger.objects.create(user=second_user, amount_satang=50000,
+                                    kind=CreditLedger.Kind.REFERRAL_REWARD)
+        payout.save_account(user=second_user, method="bank", bank="scb",
+                            account_name="ญ", number="1111111111")
+        second = payout.request_withdrawal(second_user, 40000)
+
+        self.apply_paid({self.withdrawal.pk: "SLIP-A", second.pk: "SLIP-B"})
+        self.withdrawal.refresh_from_db()
+        second.refresh_from_db()
+        self.assertEqual(self.withdrawal.reference, "SLIP-A")
+        self.assertEqual(second.reference, "SLIP-B")
+
+    def test_an_already_paid_row_in_the_batch_is_reported_not_paid_twice(self):
+        self.apply_paid({self.withdrawal.pk: "SLIP-1"})
+        response = self.apply_paid({self.withdrawal.pk: "SLIP-2"})
+        self.withdrawal.refresh_from_db()
+        self.assertEqual(self.withdrawal.reference, "SLIP-1", "the first reference stands")
+        self.assertContains(response, "บันทึกไม่ได้")
+        self.assertEqual(referral.credit_balance(self.user), 20000)
+
+    def test_rejecting_returns_the_money(self):
+        self.act("reject_selected")
+        self.withdrawal.refresh_from_db()
+        self.assertEqual(self.withdrawal.status, WithdrawalRequest.Status.REJECTED)
+        self.assertEqual(referral.credit_balance(self.user), 50000)
+
+    def test_staff_who_are_not_superusers_cannot_pay_out(self):
+        self.client.force_login(self.staff)
+        self.client.post(
+            "/admin/doodee/withdrawalrequest/",
+            {"action": "approve_selected", "_selected_action": [str(self.withdrawal.pk)]},
+        )
+        self.withdrawal.refresh_from_db()
+        self.assertEqual(self.withdrawal.status, WithdrawalRequest.Status.PENDING)
+
+    def test_the_queue_never_shows_a_full_account_number_by_default(self):
+        response = self.client.get("/admin/doodee/withdrawalrequest/")
+        self.assertNotContains(response, "1234567890")
+        self.assertContains(response, "7890")
+
+    def test_the_queue_shows_a_masked_destination_and_not_the_raw_snapshot(self):
+        """`list_display` resolves a model field before a method of the same name.
+
+        A display method called `destination` was therefore ignored in favour of the JSONField,
+        and the changelist printed the entire snapshot — ciphertext and all — where `••••7890`
+        was meant to be. The CSV export reads `list_display` too, so it went there as well.
+        """
+        response = self.client.get("/admin/doodee/withdrawalrequest/")
+        self.assertContains(response, "••••7890")
+        self.assertNotContains(response, "number_encrypted")
+        self.assertNotContains(response, "gAAAAA", msg_prefix="Fernet ciphertext on a list page")
+
+    def test_the_csv_export_carries_no_ciphertext_either(self):
+        response = self.client.post(
+            "/admin/doodee/withdrawalrequest/",
+            {"action": "export_csv", "_selected_action": [str(self.withdrawal.pk)]},
+        )
+        body = response.content.decode("utf-8-sig")
+        self.assertIn("••••7890", body)
+        self.assertNotIn("number_encrypted", body)
+        self.assertNotIn("1234567890", body)
+
+    def test_the_queue_identifies_people_by_email_not_by_firebase_uid(self):
+        """`User.__str__` is the username, and every account here is `firebase:<uid>`.
+
+        This is the column an operator reads before sending somebody money.
+        """
+        response = self.client.get("/admin/doodee/withdrawalrequest/")
+        self.assertContains(response, "q@example.com")
+
+    def test_revealing_a_number_shows_it_and_writes_an_audit_row(self):
+        account = PayoutAccount.objects.get()
+        before = LogEntry.objects.count()
+        response = self.act("reveal_account_number", "/admin/doodee/payoutaccount/", account.pk)
+        self.assertContains(response, "1234567890")
+        self.assertEqual(LogEntry.objects.count(), before + 1)
+        entry = LogEntry.objects.latest("id").change_message
+        self.assertIn("ดูเลขบัญชีเต็ม", entry)
+        # By email. The audit trail is what gets read during a payout dispute, and
+        # `firebase:<uid>` names nobody.
+        self.assertIn("q@example.com", entry)
+
+    def test_a_non_superuser_cannot_even_see_the_bank_details_table(self):
+        self.client.force_login(self.staff)
+        self.assertEqual(self.client.get("/admin/doodee/payoutaccount/").status_code, 403)
+
+    def test_nobody_can_add_or_edit_a_stored_account_from_the_admin(self):
+        self.assertEqual(self.client.get("/admin/doodee/payoutaccount/add/").status_code, 403)
+
+
+class ReferralApiTest(TestCase):
+    def setUp(self):
+        self.inviter = User.objects.create_user("apihost")
+        self.user = User.objects.create_user("apiguest")
+        self.client = APIClient()
+        self.client.force_authenticate(self.user)
+        self.code = referral.code_for(self.inviter).code
+        cache.clear()
+
+    def claim(self, code=None):
+        # force_authenticate leaves request.auth None, and the claim path demands a verified
+        # identity — so the token claims are supplied the way FirebaseAuthentication would.
+        self.client.force_authenticate(self.user, token={"email_verified": True})
+        return self.client.post("/api/v1/referral/claim/", {"code": code or self.code}, format="json")
+
+    def test_the_overview_mints_a_code_on_first_read(self):
+        response = self.client.get("/api/v1/referral/")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(response.data["code"]), 8)
+        self.assertEqual(response.data["reward_satang"], 3000)
+        self.assertEqual(response.data["invited"], 0)
+
+    def test_claiming_reports_the_discount_it_granted(self):
+        response = self.claim()
+        self.assertEqual(response.status_code, 201, response.data)
+        self.assertEqual(response.data["discount"]["discount_value"], 10)
+        self.assertEqual(response.data["discount"]["max_discount_satang"], 10000)
+
+    def test_the_invitee_sees_their_discount_waiting_on_the_overview(self):
+        self.claim()
+        available = self.client.get("/api/v1/referral/").data["available_discounts"]
+        self.assertEqual([item["code"] for item in available], ["FRIEND10"])
+
+    def test_the_inviter_sees_the_pending_invitation(self):
+        self.claim()
+        self.client.force_authenticate(self.inviter)
+        data = self.client.get("/api/v1/referral/").data
+        self.assertEqual(data["invited"], 1)
+        self.assertEqual(data["pending"], 1)
+        self.assertEqual(data["qualified"], 0)
+
+    def test_guessing_invite_codes_is_rate_limited(self):
+        for _ in range(REFERRAL_CLAIM_FAILURE_LIMIT):
+            self.assertEqual(self.claim("ZZZZZZZZ").status_code, 400)
+        self.assertEqual(self.claim("ZZZZZZZZ").status_code, 429)
+
+    def test_session_carries_the_balance_so_checkout_needs_no_second_request(self):
+        CreditLedger.objects.create(
+            user=self.user, amount_satang=3000, kind=CreditLedger.Kind.REFERRAL_REWARD,
+        )
+        session = self.client.get("/api/v1/session/").data
+        self.assertEqual(session["credit_balance_satang"], 3000)
+        self.assertIs(session["referral_enabled"], True)
+
+    def test_the_ledger_is_readable_and_is_the_balance(self):
+        CreditLedger.objects.create(
+            user=self.user, amount_satang=3000, kind=CreditLedger.Kind.REFERRAL_REWARD,
+        )
+        CreditLedger.objects.create(
+            user=self.user, amount_satang=-1000, kind=CreditLedger.Kind.ORDER_SPEND,
+        )
+        data = self.client.get("/api/v1/credits/").data
+        self.assertEqual(data["balance_satang"], 2000)
+        self.assertEqual(len(data["entries"]), 2)
+
+
 class BillingApiTest(TestCase):
     def setUp(self):
         self.user = User.objects.create_user("shopper")
@@ -1961,8 +3944,23 @@ class BillingApiTest(TestCase):
 
     def test_the_price_list_comes_from_the_api_not_a_hardcoded_client_table(self):
         codes = [item["code"] for item in self.client.get("/api/v1/plans/").data]
-        # The ported panel invented free/plus/pro; these are the codes _user_plan() returns.
-        self.assertEqual(codes, ["free", "member", "clinic"])
+        # The three packages requirement.md names, each with a yearly row beside it, and the
+        # clinic tier last. `member` is absent because it is closed to new sales, not deleted.
+        self.assertEqual(codes, ["free", "plus", "plus_year", "pro", "pro_year", "clinic"])
+
+    def test_a_retired_plan_disappears_from_sale_without_stranding_the_people_on_it(self):
+        """฿149 `member` is closed, not removed: Order.plan is PROTECT and a paid row is a record.
+
+        Anyone holding it keeps renewing at the price they agreed to, because `activate()` prices
+        from `order.plan` and nothing here repriced that row.
+        """
+        codes = [item["code"] for item in self.client.get("/api/v1/plans/").data]
+        self.assertNotIn("member", codes)
+        member = Plan.objects.get(code="member")
+        self.assertFalse(member.is_active)
+        self.assertEqual(member.price_satang, 14900)
+        renewed = activate(create_order(self.user, member))
+        self.assertEqual(renewed.plan.price_satang, 14900)
 
     def test_an_inactive_plan_disappears_from_sale_everywhere_at_once(self):
         Plan.objects.filter(code="clinic").update(is_active=False)
@@ -1972,42 +3970,42 @@ class BillingApiTest(TestCase):
     def test_validating_a_coupon_returns_the_total_without_consuming_it(self):
         coupon = Coupon.objects.create(code="TWENTY", discount_value=20)
         response = self.client.post(
-            "/api/v1/coupons/validate/", {"code": "twenty", "plan": "member"}, format="json"
+            "/api/v1/coupons/validate/", {"code": "twenty", "plan": "plus"}, format="json"
         )
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.data["discount_satang"], 2980)
-        self.assertEqual(response.data["total_satang"], 11920)
+        self.assertEqual(response.data["discount_satang"], 9980)
+        self.assertEqual(response.data["total_satang"], 39920)
         self.assertEqual(Coupon.objects.get(pk=coupon.pk).used_count, 0)
 
     def test_a_rejected_coupon_reports_which_rule_it_broke(self):
         Coupon.objects.create(code="GONE", discount_value=20, valid_until=timezone.now() - timedelta(days=1))
-        response = self.client.post("/api/v1/coupons/validate/", {"code": "GONE", "plan": "member"}, format="json")
+        response = self.client.post("/api/v1/coupons/validate/", {"code": "GONE", "plan": "plus"}, format="json")
         self.assertEqual(response.status_code, 400)
         self.assertEqual(response.data["detail"], "coupon_expired")
 
     def test_guessing_coupon_codes_is_rate_limited(self):
         for _ in range(COUPON_FAILURE_LIMIT):
-            self.client.post("/api/v1/coupons/validate/", {"code": "NOPE", "plan": "member"}, format="json")
-        response = self.client.post("/api/v1/coupons/validate/", {"code": "NOPE", "plan": "member"}, format="json")
+            self.client.post("/api/v1/coupons/validate/", {"code": "NOPE", "plan": "plus"}, format="json")
+        response = self.client.post("/api/v1/coupons/validate/", {"code": "NOPE", "plan": "plus"}, format="json")
         self.assertEqual(response.status_code, 429)
 
     def test_a_valid_code_still_works_after_the_holder_mistypes_it_repeatedly(self):
         Coupon.objects.create(code="REALONE", discount_value=15)
         for _ in range(COUPON_FAILURE_LIMIT - 1):
-            self.client.post("/api/v1/coupons/validate/", {"code": "WRONG", "plan": "member"}, format="json")
-        response = self.client.post("/api/v1/coupons/validate/", {"code": "REALONE", "plan": "member"}, format="json")
+            self.client.post("/api/v1/coupons/validate/", {"code": "WRONG", "plan": "plus"}, format="json")
+        response = self.client.post("/api/v1/coupons/validate/", {"code": "REALONE", "plan": "plus"}, format="json")
         self.assertEqual(response.status_code, 200)
 
     def test_an_unknown_plan_is_refused_rather_than_priced_at_zero(self):
-        response = self.client.post("/api/v1/coupons/validate/", {"code": "X", "plan": "plus"}, format="json")
+        response = self.client.post("/api/v1/coupons/validate/", {"code": "X", "plan": "enterprise"}, format="json")
         self.assertEqual(response.status_code, 400)
         self.assertEqual(response.data["plan"], "unknown_plan")
 
     def test_creating_an_order_prices_it_and_leaves_it_pending(self):
         Coupon.objects.create(code="TWENTY", discount_value=20)
-        response = self.client.post("/api/v1/orders/", {"plan": "member", "coupon": "TWENTY"}, format="json")
+        response = self.client.post("/api/v1/orders/", {"plan": "plus", "coupon": "TWENTY"}, format="json")
         self.assertEqual(response.status_code, 201)
-        self.assertEqual(response.data["total_satang"], 11920)
+        self.assertEqual(response.data["total_satang"], 39920)
         self.assertEqual(response.data["status"], "pending")
         # Nothing is granted until the money is confirmed.
         self.assertEqual(self.client.get("/api/v1/session/").data["plan"], "free")
@@ -2028,19 +4026,37 @@ class BillingApiTest(TestCase):
         self.assertEqual(self.client.get(f"/api/v1/orders/{stranger.id}/").status_code, 404)
 
     def test_confirmed_payment_unlocks_the_gated_features_through_session(self):
-        order = create_order(self.user, Plan.objects.get(code="member"))
+        order = create_order(self.user, Plan.objects.get(code="plus"))
         activate(order)
         session = self.client.get("/api/v1/session/").data
-        self.assertEqual(session["plan"], "member")
-        self.assertIs(session["score_card_locked"], False)
+        self.assertEqual(session["plan"], "plus")
+        self.assertIs(session["score_card_redacted"], False)
         self.assertIs(session["simulation_locked"], False)
+        self.assertIs(session["development_plan_enabled"], True)
+        self.assertEqual(session["preview_remaining"], 20)
 
     def test_session_revokes_a_lapsed_plan_without_waiting_for_a_cron(self):
         subscription = activate(create_order(self.user, Plan.objects.get(code="member")))
         Subscription.objects.filter(pk=subscription.pk).update(
-            current_period_end=timezone.now() - timedelta(minutes=1)
+            current_period_end=timezone.now() - timedelta(days=SiteSetting.current().subscription_grace_days + 1)
         )
         self.assertEqual(self.client.get("/api/v1/session/").data["plan"], "free")
+
+    def test_a_renewal_a_day_late_still_works_because_of_the_grace_window(self):
+        """Somebody whose transfer cleared on Monday is a customer, not a lapsed account.
+
+        The subscription still reads as lapsed everywhere it is reported — only access holds on,
+        and only for SUBSCRIPTION_GRACE_DAYS.
+        """
+        subscription = activate(create_order(self.user, Plan.objects.get(code="member")))
+        Subscription.objects.filter(pk=subscription.pk).update(
+            current_period_end=timezone.now() - timedelta(days=1)
+        )
+        self.assertEqual(self.client.get("/api/v1/session/").data["plan"], "member")
+        self.assertEqual(
+            Subscription.objects.get(pk=subscription.pk).status, Subscription.Status.EXPIRED,
+            "the row is honest about being lapsed even while access continues",
+        )
 
 
 WEBHOOK_SECRET = base64.b64encode(b"webhook-test-secret").decode()
@@ -2409,7 +4425,7 @@ class DemoScanTest(TestCase):
         self.assertEqual(Scan.objects.filter(user=self.user, is_demo=True).count(), 1)
 
 
-@override_settings(CHAT_ENABLED=True, CHAT_FREE_TURNS=2, DEMO_SCANS_ENABLED=True)
+@override_settings(CHAT_ENABLED=True, DEMO_SCANS_ENABLED=True)
 class ChatFactsTest(TestCase):
     """Questions answered by reading the numbers. No model, no key, no quota."""
 
@@ -2778,3 +4794,751 @@ class ReportsPageTest(TestCase):
         from django.urls import reverse
 
         self.assertEqual(reverse("admin:doodee_reports"), "/admin/reports/")
+
+    def test_no_template_comment_is_printed_as_page_text(self):
+        """`{# #}` closes on one line only. Spanning two, Django prints it verbatim.
+
+        One did exactly that on the referral section of this page — a paragraph of developer
+        notes rendered to the operator. Multi-line notes need `{% comment %}`.
+        """
+        staff = User.objects.create_user("boss3", password="x", is_staff=True, is_superuser=True)
+        self.client.force_login(staff)
+        for url in ("/admin/reports/", "/admin/marketing/", "/admin/"):
+            body = self.client.get(url).content.decode()
+            self.assertNotIn("{#", body, f"an unclosed template comment is rendering on {url}")
+            self.assertNotIn("{%", body, f"an unrendered template tag is showing on {url}")
+
+    def test_the_new_sections_render(self):
+        staff = User.objects.create_user("boss2", password="x", is_staff=True, is_superuser=True)
+        self.client.force_login(staff)
+        response = self.client.get("/admin/reports/")
+        self.assertContains(response, "ชวนเพื่อน")
+        self.assertContains(response, "ต่ออายุและการเลิกใช้")
+        self.assertContains(response, "หมดอายุใน 7 วัน")
+
+
+class ReferralAnalyticsTest(TestCase):
+    def setUp(self):
+        self.inviter = User.objects.create_user("bigfish", email="big@example.com")
+        self.plan = Plan.objects.get(code="plus")
+
+    def invite_and_pay(self, name):
+        invitee = User.objects.create_user(name)
+        Referral.objects.create(inviter=self.inviter, invitee=invitee, code="XXXX")
+        activate(create_order(invitee, self.plan))
+        return invitee
+
+    def test_outstanding_credit_is_reported_as_a_liability_not_as_spend(self):
+        """Credit issued and not yet used is money the product owes — in kind or in baht."""
+        self.invite_and_pay("f1")
+        summary = referral_summary()
+        self.assertEqual(summary["credit_issued_satang"], 3000)
+        self.assertEqual(summary["credit_redeemed_satang"], 0)
+        self.assertEqual(summary["credit_outstanding_satang"], 3000)
+
+    def test_spending_credit_moves_it_out_of_outstanding(self):
+        friend = self.invite_and_pay("f2")
+        activate(create_order(self.inviter, self.plan, use_credit=True))
+        summary = referral_summary()
+        self.assertEqual(summary["credit_redeemed_satang"], 3000)
+        self.assertEqual(summary["credit_outstanding_satang"], 0)
+        self.assertTrue(friend.pk)
+
+    def test_conversion_is_the_share_of_invitees_who_actually_paid(self):
+        self.invite_and_pay("f3")
+        Referral.objects.create(
+            inviter=self.inviter, invitee=User.objects.create_user("f4"), code="XXXX",
+        )
+        summary = referral_summary()
+        self.assertEqual(summary["invited"], 2)
+        self.assertEqual(summary["qualified"], 1)
+        self.assertEqual(summary["conversion_percent"], 50.0)
+
+    def test_the_per_inviter_table_nets_clawbacks_against_rewards(self):
+        self.invite_and_pay("f5")
+        self.invite_and_pay("f6")
+        claw_back(Referral.objects.filter(status=Referral.Status.QUALIFIED).first())
+        row = next(row for row in referral_rows() if row["user_id"] == self.inviter.pk)
+        self.assertEqual(row["invited"], 2)
+        self.assertEqual(row["rewarded_satang"], 3000, "two paid, one reversed")
+
+    def test_expiring_soon_skips_anyone_who_already_renewed(self):
+        """Otherwise a paying customer lands on a chase list the week after they paid."""
+        user = User.objects.create_user("renewed", email="r@example.com")
+        subscription = activate(create_order(user, self.plan))
+        Subscription.objects.filter(pk=subscription.pk).update(
+            current_period_end=timezone.now() + timedelta(days=2)
+        )
+        self.assertEqual(len(expiring_soon()), 1)
+        activate(create_order(user, self.plan))
+        self.assertEqual(expiring_soon(), [])
+
+    def test_retention_counts_a_renewal_as_retained(self):
+        user = User.objects.create_user("loyal")
+        activate(create_order(user, self.plan))
+        self.assertEqual(retention_rows()[0]["renewed"], 0)
+        activate(create_order(user, self.plan))
+        row = retention_rows()[0]
+        self.assertEqual(row["started"], 1)
+        self.assertEqual(row["renewed"], 1)
+        self.assertEqual(row["renewal_percent"], 100.0)
+        self.assertEqual(row["churn_percent"], 0.0)
+
+
+class AdminActionTest(TestCase):
+    """The two buttons that move money, and who may press them."""
+
+    def setUp(self):
+        self.inviter = User.objects.create_user("host2")
+        invitee = User.objects.create_user("guest4")
+        self.referral = Referral.objects.create(
+            inviter=self.inviter, invitee=invitee, code="XXXX", status=Referral.Status.HELD,
+        )
+        self.superuser = User.objects.create_user("root", password="x", is_staff=True, is_superuser=True)
+        self.staff = User.objects.create_user("helper", password="x", is_staff=True)
+        self.client.force_login(self.superuser)
+
+    def act(self, action):
+        return self.client.post(
+            "/admin/doodee/referral/",
+            {"action": action, "_selected_action": [str(self.referral.pk)]},
+            follow=True,
+        )
+
+    def test_approving_a_held_referral_pays_it(self):
+        self.act("approve_held")
+        self.referral.refresh_from_db()
+        self.assertEqual(self.referral.status, Referral.Status.QUALIFIED)
+        self.assertEqual(referral.credit_balance(self.inviter), 3000)
+
+    def test_approval_records_who_approved_it(self):
+        self.act("approve_held")
+        self.assertIn("root", CreditLedger.objects.get(user=self.inviter).note)
+
+    def test_rejecting_pays_nothing(self):
+        self.act("reject")
+        self.referral.refresh_from_db()
+        self.assertEqual(self.referral.status, Referral.Status.REJECTED)
+        self.assertEqual(referral.credit_balance(self.inviter), 0)
+
+    def test_staff_who_are_not_superusers_cannot_pay_out(self):
+        """Reading the screen and moving money are different permissions, as with mark_paid."""
+        self.client.force_login(self.staff)
+        self.client.post(
+            "/admin/doodee/referral/",
+            {"action": "approve_held", "_selected_action": [str(self.referral.pk)]},
+        )
+        self.referral.refresh_from_db()
+        self.assertNotEqual(self.referral.status, Referral.Status.QUALIFIED)
+        self.assertEqual(referral.credit_balance(self.inviter), 0)
+
+    def test_the_credit_ledger_cannot_be_edited_or_deleted_from_the_admin(self):
+        from django.contrib import admin as django_admin
+
+        ledger_admin = django_admin.site._registry[CreditLedger]
+        request = MagicMock()
+        request.user = self.superuser
+        self.assertFalse(ledger_admin.has_change_permission(request))
+        self.assertFalse(ledger_admin.has_delete_permission(request))
+        self.assertTrue(ledger_admin.has_add_permission(request), "a correcting row is the fix")
+
+    def test_coupon_usage_exports_as_csv(self):
+        """work.md §1.2 asks for this, and only accounts were exportable before."""
+        user = User.objects.create_user("buyer")
+        Coupon.objects.create(code="EXPORTME", discount_value=10)
+        activate(create_order(user, Plan.objects.get(code="plus"), "EXPORTME"))
+        response = self.client.post(
+            "/admin/doodee/couponredemption/",
+            {"action": "export_csv",
+             "_selected_action": [str(CouponRedemption.objects.get().pk)]},
+        )
+        self.assertEqual(response["Content-Type"], "text/csv")
+        body = response.content.decode("utf-8-sig")
+        self.assertIn("EXPORTME", body)
+        self.assertIn("buyer", body)
+
+
+class AttributionCleaningTest(SimpleTestCase):
+    """The sanitiser in front of both tables. Everything here arrives from a browser."""
+
+    def test_case_is_folded_so_one_channel_is_one_row(self):
+        """"TikTok" and "tiktok" from two ad placements would otherwise need adding up by eye."""
+        self.assertEqual(clean_tag("TikTok"), "tiktok")
+        self.assertEqual(clean_tag("  Facebook  "), "facebook")
+
+    def test_an_empty_tag_becomes_direct_rather_than_a_blank_row(self):
+        self.assertEqual(clean_tag(""), "direct")
+        self.assertEqual(clean_tag(None), "direct")
+
+    def test_markup_and_padding_cannot_survive_into_the_admin_page(self):
+        self.assertEqual(clean_tag("<script>alert(1)</script>"), "scriptalert1script")
+        self.assertEqual(len(clean_tag("x" * 500)), 32)
+
+    def test_an_unknown_landing_path_is_collapsed_rather_than_stored(self):
+        """This is what stops the page-path log DailyActive refuses to keep from growing back."""
+        self.assertEqual(clean_path("/"), "/")
+        self.assertEqual(clean_path("/login"), "/login")
+        self.assertEqual(clean_path("/users/42/scans/abc"), "other")
+        self.assertEqual(clean_path("/?utm_source=tiktok"), "/")
+
+
+class VisitEndpointTest(TestCase):
+    ARRIVAL = {
+        "utm_source": "TikTok", "utm_medium": "bio", "utm_campaign": "aug-promo",
+        "landing_path": "/", "device": "mobile",
+    }
+
+    def setUp(self):
+        cache.clear()
+
+    def post(self, payload=None, **extra):
+        # `is None`, not `or`: an empty body is a case worth posting, and `or` would quietly
+        # substitute the full one and make the test assert nothing.
+        body = self.ARRIVAL if payload is None else payload
+        return self.client.post(
+            "/api/v1/visit/", data=json.dumps(body),
+            content_type="application/json", **extra,
+        )
+
+    def test_the_visit_endpoint_works_with_no_authorization_header_at_all(self):
+        """The whole feature: this counts people who do not have an account."""
+        self.assertEqual(self.post().status_code, 204)
+        row = Visit.objects.get()
+        self.assertEqual((row.source, row.campaign, row.device, row.hits), ("tiktok", "aug-promo", "mobile", 1))
+
+    def test_the_visit_endpoint_never_creates_a_user(self):
+        """With an auth class attached, an anonymous Firebase token lands in
+        FirebaseAuthentication's create_user branch — and those accounts pass real_users(), so
+        the visitor counter would silently inflate the signup figure it exists to measure.
+        """
+        before = User.objects.count()
+        self.assertEqual(self.post(HTTP_AUTHORIZATION="Bearer not-a-real-token").status_code, 204)
+        self.assertEqual(User.objects.count(), before)
+        self.assertEqual(Visit.objects.count(), 1)
+
+    def test_a_second_visit_the_same_day_increments_rather_than_duplicating(self):
+        self.post()
+        self.post()
+        self.assertEqual(Visit.objects.count(), 1)
+        self.assertEqual(Visit.objects.get().hits, 2)
+
+    def test_a_different_campaign_is_a_different_bucket(self):
+        self.post()
+        self.post({**self.ARRIVAL, "utm_campaign": "sep-promo"})
+        self.assertEqual(Visit.objects.count(), 2)
+
+    def test_garbage_is_stored_as_direct_instead_of_rejected(self):
+        """A malformed beacon should cost a label, not a 400 the browser cannot act on."""
+        self.assertEqual(self.post({}).status_code, 204)
+        row = Visit.objects.get()
+        self.assertEqual((row.source, row.campaign, row.landing_path, row.device),
+                         ("direct", "direct", "/", "desktop"))
+
+    def test_one_address_cannot_hammer_the_table(self):
+        from .views import VISIT_RATE_PER_MINUTE
+
+        for _ in range(VISIT_RATE_PER_MINUTE + 5):
+            self.post(REMOTE_ADDR="203.0.113.9")
+        self.assertEqual(Visit.objects.get().hits, VISIT_RATE_PER_MINUTE)
+
+    def test_a_cache_outage_lets_the_counting_continue(self):
+        """Rate limiting is a nicety. Losing every visit because Redis blinked is not."""
+        with patch("doodee.views.cache.add", side_effect=RuntimeError("redis down")):
+            self.assertEqual(self.post().status_code, 204)
+        self.assertEqual(Visit.objects.get().hits, 1)
+
+    def test_a_database_failure_does_not_surface_to_the_browser(self):
+        with patch("doodee.models.Visit.objects.get_or_create", side_effect=RuntimeError("db gone")):
+            self.assertEqual(self.post().status_code, 204)
+
+
+class AttributionEndpointTest(TestCase):
+    def setUp(self):
+        cache.clear()
+        self.user = User.objects.create_user("arrival", email="arrival@example.com")
+        FirebaseIdentity.objects.create(user=self.user, firebase_uid="uid-arrival")
+        self.client = APIClient()
+        self.client.force_authenticate(self.user)
+
+    def post(self, **overrides):
+        payload = {"utm_source": "tiktok", "utm_medium": "bio", "utm_campaign": "aug-promo",
+                   "landing_path": "/", **overrides}
+        return self.client.post("/api/v1/attribution/", payload, format="json")
+
+    def test_it_records_the_source_of_the_account(self):
+        self.assertEqual(self.post().status_code, 204)
+        self.assertEqual(UserAttribution.objects.get(user=self.user).campaign, "aug-promo")
+
+    def test_first_touch_wins_and_a_later_click_cannot_overwrite_it(self):
+        """Otherwise whichever ad someone clicked most recently takes credit for a decision they
+        had already made before they clicked it.
+        """
+        self.post()
+        self.post(utm_source="facebook", utm_campaign="sep-promo")
+        self.assertEqual(UserAttribution.objects.count(), 1)
+        self.assertEqual(UserAttribution.objects.get().source, "tiktok")
+
+    def test_it_needs_an_account(self):
+        """403, not 401: no auth class sends a WWW-Authenticate header, so DRF reports forbidden.
+
+        Unlike POST /visit/ next door, which must work with no account at all.
+        """
+        self.assertEqual(APIClient().post("/api/v1/attribution/", {}, format="json").status_code, 403)
+        self.assertFalse(UserAttribution.objects.exists())
+
+
+class MarketingAnalyticsTest(TestCase):
+    def setUp(self):
+        cache.clear()
+        self.user = User.objects.create_user("shopper", email="shopper@example.com")
+        FirebaseIdentity.objects.create(user=self.user, firebase_uid="uid-shopper")
+        UserAttribution.objects.create(
+            user=self.user, source="tiktok", medium="bio", campaign="aug-promo",
+        )
+        self.plus = Plan.objects.get(code="plus")
+        self.plus_year = Plan.objects.get(code="plus_year")
+        self.pro = Plan.objects.get(code="pro")
+
+    @staticmethod
+    def arrive(hits=1, **fields):
+        record_visit({"utm_source": "tiktok", "utm_campaign": "aug-promo", **fields})
+        if hits > 1:
+            Visit.objects.update(hits=hits)
+
+    def test_hits_are_counted_but_no_identifier_is_stored(self):
+        self.arrive()
+        self.assertEqual(visit_totals()["today"], 1)
+        # If a column ever appears that could single someone out, this is the test that should
+        # have to be changed on purpose.
+        self.assertEqual(
+            {field.name for field in Visit._meta.get_fields()},
+            {"id", "date", "source", "medium", "campaign", "landing_path", "device", "hits"},
+        )
+
+    def test_the_device_split_adds_up_to_the_window_total(self):
+        self.arrive(device="mobile")
+        record_visit({"utm_source": "tiktok", "device": "desktop"})
+        totals = visit_totals()
+        self.assertEqual(totals["mobile"] + totals["desktop"], totals["window"])
+
+    def test_untagged_traffic_is_not_counted_as_a_campaign(self):
+        record_visit({})
+        self.assertEqual(visit_totals()["campaign_tagged"], 0)
+
+    def test_the_funnel_is_windowed_so_visitors_and_signups_cover_the_same_period(self):
+        """A visitor count that starts the day tracking began, divided into an all-time user
+        count, is wrong by the age of the site.
+        """
+        old = User.objects.create_user("veteran", email="vet@example.com")
+        FirebaseIdentity.objects.create(user=old, firebase_uid="uid-vet")
+        User.objects.filter(pk=old.pk).update(date_joined=timezone.now() - timedelta(days=200))
+        self.arrive()
+        steps = {row["step"]: row["count"] for row in acquisition_funnel(days=30)}
+        self.assertEqual(steps["ผู้เข้าชม"], 1)
+        self.assertEqual(steps["สมัครสมาชิก"], 1, "the 200-day-old account is outside the window")
+
+    def test_paying_without_scanning_is_reported_rather_than_hidden(self):
+        """Nothing requires a scan before buying a plan, so จ่ายเงิน can exceed สแกนสำเร็จ.
+
+        Asserting the rows only ever descend would have been asserting something false about the
+        product, and the honest fix is for the page to stop calling this a strict funnel.
+        """
+        self.arrive(hits=10)
+        activate(create_order(self.user, self.plus))
+        steps = {row["step"]: row["count"] for row in acquisition_funnel()}
+        self.assertEqual(steps["สแกนสำเร็จ"], 0)
+        self.assertEqual(steps["จ่ายเงิน"], 1)
+        self.assertGreaterEqual(steps["ผู้เข้าชม"], steps["สมัครสมาชิก"])
+        for step in ("สแกนสำเร็จ", "จ่ายเงิน"):
+            self.assertGreaterEqual(steps["สมัครสมาชิก"], steps[step], f"{step} cannot exceed signups")
+
+    def test_a_source_row_carries_the_money_its_visitors_brought_in(self):
+        self.arrive(hits=4)
+        activate(create_order(self.user, self.plus))
+        row = next(r for r in attribution_rows("source") if r["key"] == "tiktok")
+        self.assertEqual((row["hits"], row["signups"], row["paid"]), (4, 1, 1))
+        self.assertEqual(row["revenue_satang"], self.plus.price_satang)
+
+    def test_revenue_is_not_multiplied_by_the_number_of_scans_a_payer_has(self):
+        """Annotating orders and scans on one queryset joins both and inflates the Sum."""
+        activate(create_order(self.user, self.plus))
+        for _ in range(3):
+            create_demo_scan(self.user)
+        Scan.objects.update(is_demo=False, status=Scan.Status.COMPLETED)
+        row = next(r for r in attribution_rows("source") if r["key"] == "tiktok")
+        self.assertEqual(row["revenue_satang"], self.plus.price_satang)
+        self.assertEqual(row["scanned"], 1, "one person, however many scans")
+
+    def test_the_campaign_table_and_the_source_table_agree_on_the_total(self):
+        self.arrive(hits=3)
+        activate(create_order(self.user, self.plus))
+        by_source = sum(row["revenue_satang"] for row in attribution_rows("source"))
+        by_campaign = sum(row["revenue_satang"] for row in attribution_rows("campaign"))
+        self.assertEqual(by_source, by_campaign)
+
+    def test_subscribers_are_split_by_term(self):
+        activate(create_order(self.user, self.plus_year))
+        mix = {row["label"]: row["subscribers"] for row in interval_mix()}
+        self.assertEqual(mix["รายปี"], 1)
+        self.assertEqual(mix["รายเดือน"], 0)
+
+    def test_a_first_purchase_is_not_a_renewal(self):
+        activate(create_order(self.user, self.plus))
+        rows = {row["kind"]: row for row in order_kind_rows()}
+        self.assertEqual(rows["first"]["total"], 1)
+        self.assertEqual(rows["renewal"]["total"], 0)
+        self.assertEqual(rows["first"]["month"], 1)
+
+    def test_paying_for_the_same_plan_twice_is_a_renewal(self):
+        activate(create_order(self.user, self.plus))
+        activate(create_order(self.user, self.plus))
+        rows = {row["kind"]: row for row in order_kind_rows()}
+        self.assertEqual(rows["first"]["total"], 1)
+        self.assertEqual(rows["renewal"]["total"], 1)
+        self.assertEqual(rows["change"]["total"], 0)
+
+    def test_an_upgrade_is_not_counted_as_a_renewal(self):
+        """activate() expires the old row only when the plan matches exactly, so counting
+        subscriptions per user would read plus -> pro as somebody renewing.
+        """
+        activate(create_order(self.user, self.plus))
+        activate(create_order(self.user, self.pro))
+        rows = {row["kind"]: row for row in order_kind_rows()}
+        self.assertEqual(rows["first"]["total"], 1)
+        self.assertEqual(rows["change"]["total"], 1)
+        self.assertEqual(rows["renewal"]["total"], 0)
+
+    def test_moving_from_monthly_to_yearly_is_a_plan_change_not_a_renewal(self):
+        activate(create_order(self.user, self.plus))
+        activate(create_order(self.user, self.plus_year))
+        rows = {row["kind"]: row for row in order_kind_rows()}
+        self.assertEqual(rows["renewal"]["total"], 0)
+        self.assertEqual(rows["change"]["year"], 1)
+
+    def test_a_renewal_older_than_the_window_is_still_classified_from_the_full_history(self):
+        """Filtering before classifying would make the first order inside a 7-day window look
+        like a first purchase for a customer of two years.
+        """
+        activate(create_order(self.user, self.plus))
+        Order.objects.update(paid_at=timezone.now() - timedelta(days=200))
+        activate(create_order(self.user, self.plus))
+        rows = {row["kind"]: row for row in order_kind_rows(days=7)}
+        self.assertEqual(rows["first"]["total"], 0, "the first purchase is outside the window")
+        self.assertEqual(rows["renewal"]["total"], 1)
+
+    def test_a_renewal_paid_entirely_with_credit_counts_as_a_renewal_with_no_revenue(self):
+        """Entitlement was granted, so it renewed. No money arrived, so revenue is zero — which
+        is the whole reason the counts and the money sit in separate columns.
+        """
+        activate(create_order(self.user, self.plus))
+        CreditLedger.objects.create(
+            user=self.user, amount_satang=self.plus.price_satang,
+            kind=CreditLedger.Kind.ADMIN_ADJUST,
+        )
+        create_order(self.user, self.plus, use_credit=True)
+        rows = {row["kind"]: row for row in order_kind_rows()}
+        self.assertEqual(rows["renewal"]["total"], 1)
+        self.assertEqual(rows["renewal"]["revenue_satang"], 0)
+
+    def test_capture_methods_are_reported_and_demo_scans_are_not(self):
+        create_demo_scan(self.user)
+        Scan.objects.create(
+            user=self.user, age_band=Scan.AgeBand.ADULT, status=Scan.Status.COMPLETED,
+            capture_method=Scan.CaptureMethod.WEB_CAMERA, scan_mode=Scan.ScanMode.STANDARD,
+            expires_at=timezone.now() + timedelta(days=30),
+        )
+        rows = capture_method_rows()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual((rows[0]["method"], rows[0]["scans"]), ("กล้องบนเว็บ", 1))
+
+    def test_a_scan_from_a_client_that_sends_nothing_reads_as_unknown(self):
+        Scan.objects.create(
+            user=self.user, age_band=Scan.AgeBand.ADULT, status=Scan.Status.COMPLETED,
+            expires_at=timezone.now() + timedelta(days=30),
+        )
+        self.assertEqual(capture_method_rows()[0]["method"], "ไม่ระบุ")
+
+    def test_a_silly_window_falls_back_to_the_default_rather_than_scanning_everything(self):
+        self.assertEqual(marketing_report(days=99999)["window_days"], 30)
+
+    def test_it_renders_on_an_empty_database(self):
+        Visit.objects.all().delete()
+        UserAttribution.objects.all().delete()
+        User.objects.all().delete()
+        data = marketing_report()
+        self.assertEqual(data["visits"]["window"], 0)
+        self.assertIsNone(data["visit_tracking_started"])
+        self.assertEqual([row["count"] for row in data["funnel"]], [0, 0, 0, 0])
+
+    def test_months_with_no_arrivals_are_zero_rather_than_missing(self):
+        """Skipping them would close the gap and imply months of data that are not there."""
+        self.arrive()
+        rows = visit_rows(months=6)
+        self.assertEqual(len(rows), 6)
+        self.assertEqual(rows[0]["hits"], 1)
+
+    def test_the_chart_marks_months_before_tracking_began_as_untracked(self):
+        self.arrive()
+        chart = bar_chart(visit_rows(months=6), "hits", timezone.localdate())
+        self.assertTrue(chart["bars"][0]["untracked"], "the oldest month predates the counter")
+        self.assertFalse(chart["bars"][-1]["untracked"])
+
+    def test_the_chart_survives_a_month_of_all_zeros(self):
+        chart = bar_chart(visit_rows(months=6), "hits")
+        self.assertTrue(chart["empty"])
+
+
+class MarketingPageTest(TestCase):
+    def test_it_refuses_anyone_who_is_not_staff(self):
+        response = self.client.get("/admin/marketing/")
+        self.assertEqual(response.status_code, 302)
+        self.assertIn("/admin/login/", response["Location"])
+
+    def test_the_marketing_route_is_not_swallowed_by_the_admin_app_index(self):
+        """`admin/<app_label>/` would otherwise treat "marketing" as an app and 404."""
+        from django.urls import reverse
+
+        self.assertEqual(reverse("admin:doodee_marketing"), "/admin/marketing/")
+
+    def test_staff_can_read_every_section(self):
+        staff = User.objects.create_user("mkt", password="x", is_staff=True, is_superuser=True)
+        self.client.force_login(staff)
+        response = self.client.get("/admin/marketing/")
+        self.assertEqual(response.status_code, 200)
+        for heading in (
+            "ผู้เข้าชมเว็บ", "เส้นทางจากคนเข้าเว็บถึงคนจ่ายเงิน", "มาจากช่องทางไหน",
+            "แยกตามแคมเปญ", "สมาชิกที่จ่ายอยู่ แยกรายเดือน–รายปี", "การซื้อและการต่ออายุ",
+            "ผู้ใช้ถ่ายภาพด้วยอะไร",
+        ):
+            self.assertContains(response, heading)
+
+    def test_it_says_the_visitor_count_is_browsers_and_not_people(self):
+        """An operator who does not know this will read the page wrongly, and confidently."""
+        staff = User.objects.create_user("mkt2", password="x", is_staff=True, is_superuser=True)
+        self.client.force_login(staff)
+        response = self.client.get("/admin/marketing/")
+        self.assertContains(response, "ไม่ใช่จำนวนคน")
+        self.assertContains(response, "ค่าประมาณ")
+
+    def test_the_window_switcher_changes_the_window(self):
+        staff = User.objects.create_user("mkt3", password="x", is_staff=True, is_superuser=True)
+        self.client.force_login(staff)
+        self.assertEqual(self.client.get("/admin/marketing/?days=7").context["report"]["window_days"], 7)
+        self.assertEqual(self.client.get("/admin/marketing/?days=nope").context["report"]["window_days"], 30)
+        self.assertEqual(self.client.get("/admin/marketing/?days=100000").context["report"]["window_days"], 30)
+
+    def test_the_index_links_to_it(self):
+        staff = User.objects.create_user("mkt4", password="x", is_staff=True, is_superuser=True)
+        self.client.force_login(staff)
+        self.assertContains(self.client.get("/admin/"), "/admin/marketing/")
+
+
+class ProductionConfigGuardTests(SimpleTestCase):
+    """`require_production_services` is the thing that stops a deployment booting on SQLite.
+
+    Both failures it guards are silent — the API comes up, serves traffic, and only the bill or an
+    incident says otherwise weeks later. So the guard's own behaviour is pinned here, including
+    the two cases where it must stay out of the way: DEBUG, and the Dockerfile's collectstatic.
+    """
+
+    def _call(self, *, debug, sqlite, locmem):
+        from config.settings import require_production_services
+
+        with patch.multiple(
+            "config.settings",
+            DEBUG=debug,
+            USING_SQLITE_FALLBACK=sqlite,
+            USING_LOCMEM_CACHE=locmem,
+        ):
+            require_production_services()
+
+    def test_a_missing_database_url_refuses_to_serve(self):
+        with self.assertRaises(DjangoImproperlyConfigured) as caught:
+            self._call(debug=False, sqlite=True, locmem=False)
+        self.assertIn("DATABASE_URL", str(caught.exception))
+
+    def test_a_missing_redis_cache_url_refuses_to_serve(self):
+        # The more dangerous of the two: nothing about LocMemCache looks broken, it just makes
+        # every rate limit per-process and stops cache.add() excluding anything.
+        with self.assertRaises(DjangoImproperlyConfigured) as caught:
+            self._call(debug=False, sqlite=False, locmem=True)
+        self.assertIn("REDIS_CACHE_URL", str(caught.exception))
+
+    def test_both_failures_are_reported_together(self):
+        # One boot, one message. Fixing them one deploy at a time is how a rollout takes an hour.
+        with self.assertRaises(DjangoImproperlyConfigured) as caught:
+            self._call(debug=False, sqlite=True, locmem=True)
+        message = str(caught.exception)
+        self.assertIn("DATABASE_URL", message)
+        self.assertIn("REDIS_CACHE_URL", message)
+
+    def test_debug_is_allowed_every_fallback(self):
+        # A laptop with no Postgres and no Redis must still run manage.py and runserver.
+        self._call(debug=True, sqlite=True, locmem=True)
+
+    def test_a_real_configuration_passes(self):
+        self._call(debug=False, sqlite=False, locmem=False)
+
+    def test_the_management_command_exits_non_zero_so_it_can_gate_celery(self):
+        # compose.prod.yaml chains this in front of the worker and beat commands, because Celery
+        # swallows exceptions raised from its own worker_init signal — a worker with no database
+        # otherwise logs the failure and reports `ready`.
+        with patch.multiple("config.settings", DEBUG=False, USING_SQLITE_FALLBACK=True, USING_LOCMEM_CACHE=False):
+            with self.assertRaises(CommandError):
+                call_command("check_production_config")
+
+    def test_the_management_command_succeeds_on_a_real_configuration(self):
+        with patch.multiple("config.settings", DEBUG=False, USING_SQLITE_FALLBACK=False, USING_LOCMEM_CACHE=False):
+            call_command("check_production_config")
+
+
+class ChatRequestTimeoutTest(SimpleTestCase):
+    """Both provider paths must give up well before gunicorn kills the worker.
+
+    Not a style preference. gunicorn runs with --timeout 60 (backend/Dockerfile); the Anthropic
+    SDK's default is 600 s and this module's urllib path used to pass 120. Either way the worker
+    dies first, so views.ChatViewSet.create never reaches `_refund_chat_turn` and the user pays a
+    turn for nothing. If someone raises these past 60, that bug comes back silently.
+    """
+
+    GUNICORN_TIMEOUT_SECONDS = 60
+
+    def test_the_timeout_leaves_room_for_a_retry_inside_gunicorns(self):
+        worst_case = chat_module.REQUEST_TIMEOUT_SECONDS * (chat_module.MAX_RETRIES + 1)
+        self.assertLess(
+            worst_case,
+            self.GUNICORN_TIMEOUT_SECONDS,
+            "timeout x attempts must finish before gunicorn SIGKILLs the worker",
+        )
+
+    def test_the_anthropic_client_is_built_with_the_timeout_and_retry_policy(self):
+        chat_module._client.cache_clear()
+        self.addCleanup(chat_module._client.cache_clear)
+        built = MagicMock()
+        with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-key"}), \
+             patch("anthropic.Anthropic", built):
+            chat_module._client()
+        self.assertEqual(built.call_args.kwargs["timeout"], chat_module.REQUEST_TIMEOUT_SECONDS)
+        self.assertEqual(built.call_args.kwargs["max_retries"], chat_module.MAX_RETRIES)
+
+    def test_the_openai_compatible_path_uses_the_same_timeout(self):
+        body = {"choices": [{"message": {"content": "ok"}}], "usage": {}}
+        stream = MagicMock()
+        stream.read.return_value = json.dumps(body).encode()
+        stream.__enter__ = lambda self_: self_
+        stream.__exit__ = lambda *_: False
+        with patch("doodee.chat.urlopen", return_value=stream) as opened:
+            openai_reply("s", [], "m", 100, "https://x/v1")
+        self.assertEqual(opened.call_args.kwargs["timeout"], chat_module.REQUEST_TIMEOUT_SECONDS)
+
+
+class RequestCacheTest(SimpleTestCase):
+    """The scope must not outlive its request. Threads are reused under gthread."""
+
+    def tearDown(self):
+        request_cache.end()
+
+    def test_without_a_scope_every_call_goes_through(self):
+        # A management command or a shell has no scope. Falling back to "no caching" is the only
+        # safe direction: a stale read here would be a stale rate-limit ceiling.
+        request_cache.end()
+        calls = []
+        for _ in range(3):
+            request_cache.get_or_set("k", lambda: calls.append(1))
+        self.assertEqual(len(calls), 3)
+
+    def test_inside_a_scope_the_value_is_produced_once(self):
+        request_cache.begin()
+        calls = []
+
+        def produce():
+            calls.append(1)
+            return "value"
+
+        self.assertEqual(request_cache.get_or_set("k", produce), "value")
+        self.assertEqual(request_cache.get_or_set("k", produce), "value")
+        self.assertEqual(len(calls), 1)
+
+    def test_a_falsy_value_is_still_cached(self):
+        # `if not scope.get(key)` would recompute None, 0 and "" forever.
+        request_cache.begin()
+        calls = []
+        for _ in range(3):
+            request_cache.get_or_set("k", lambda: calls.append(1))
+        self.assertEqual(len(calls), 1)
+
+    def test_ending_a_scope_forgets_everything(self):
+        request_cache.begin()
+        request_cache.get_or_set("k", lambda: "first")
+        request_cache.end()
+        request_cache.begin()
+        self.assertEqual(request_cache.get_or_set("k", lambda: "second"), "second")
+
+    def test_clear_makes_a_write_visible_to_a_later_read_in_the_same_request(self):
+        request_cache.begin()
+        request_cache.get_or_set("k", lambda: "before")
+        request_cache.clear("k")
+        self.assertEqual(request_cache.get_or_set("k", lambda: "after"), "after")
+
+    def test_clear_without_a_scope_does_not_raise(self):
+        request_cache.end()
+        request_cache.clear("k")
+
+    def test_the_middleware_closes_the_scope_even_when_the_view_raises(self):
+        # The important one. A populated scope left on a thread is handed to the next, unrelated
+        # request, which is how one user's settings would answer another user's call.
+        def boom(_request):
+            self.assertIsNotNone(request_cache._scope(), "scope should be open inside the view")
+            raise RuntimeError("view exploded")
+
+        middleware = request_cache.RequestCacheMiddleware(boom)
+        with self.assertRaises(RuntimeError):
+            middleware(object())
+        self.assertIsNone(request_cache._scope())
+
+    def test_scopes_do_not_leak_between_threads(self):
+        import threading
+
+        request_cache.begin()
+        request_cache.get_or_set("k", lambda: "main-thread")
+        seen = []
+
+        def other():
+            seen.append(request_cache.get_or_set("k", lambda: "other-thread"))
+
+        thread = threading.Thread(target=other)
+        thread.start()
+        thread.join()
+        self.assertEqual(seen, ["other-thread"], "each thread has its own scope")
+
+
+class SingletonSettingQueryCountTest(TestCase):
+    """`SiteSetting.current()` and `ChatSetting.current()` are get_or_create — one round trip
+    each, and a single request reads them from several unrelated places."""
+
+    def test_repeated_reads_in_one_request_scope_cost_one_query_each(self):
+        SiteSetting.current()
+        ChatSetting.current()
+        request_cache.begin()
+        self.addCleanup(request_cache.end)
+        with self.assertNumQueries(2):
+            for _ in range(5):
+                SiteSetting.current()
+                ChatSetting.current()
+
+    def test_without_a_scope_each_read_still_queries(self):
+        SiteSetting.current()
+        request_cache.end()
+        with self.assertNumQueries(3):
+            for _ in range(3):
+                SiteSetting.current()
+
+    def test_saving_is_visible_to_a_later_read_in_the_same_request(self):
+        # The hazard of memoising at all: an edit that the rest of the request cannot see.
+        request_cache.begin()
+        self.addCleanup(request_cache.end)
+        config = SiteSetting.current()
+        original = config.chat_hourly_ceiling
+        config.chat_hourly_ceiling = original + 7
+        config.save()
+        self.assertEqual(SiteSetting.current().chat_hourly_ceiling, original + 7)

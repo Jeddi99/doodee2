@@ -1,4 +1,0 @@
-interface:
-  display_name: "Development Planner"
-  short_description: "แปลงความต้องการเป็นแผนเทคนิคพร้อมลงมือ"
-  default_prompt: "Use $plan to turn this request into a Thai implementation-ready technical plan."

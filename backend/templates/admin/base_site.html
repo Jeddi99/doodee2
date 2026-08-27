@@ -1,0 +1,15 @@
+{% extends "admin/base_site.html" %}
+{% comment %}
+  Puts รายงาน in the header user-tools, so the reports page is reachable from every admin screen
+  rather than only from a card on the index. Before this it was the one page an operator had to
+  type a URL to reach, or navigate home first to find.
+
+  Extending the same template name works because Django's loader resolves {% extends %} by
+  continuing past the current file — the same trick admin/index.html already uses here.
+{% endcomment %}
+
+{% block userlinks %}
+  <a href="{% url 'admin:doodee_marketing' %}">การตลาด</a> /
+  <a href="{% url 'admin:doodee_reports' %}">รายงาน</a> /
+  {{ block.super }}
+{% endblock %}

@@ -13,7 +13,7 @@ queries over a few tens of thousands of rows, and a nightly rollup would be one 
 can silently stop running and quietly serve stale numbers.
 """
 
-from datetime import timedelta
+from datetime import datetime, time, timedelta
 
 from django.contrib.auth.models import User
 from django.db.models import Count, F, Q, Sum
@@ -22,7 +22,8 @@ from django.utils import timezone
 
 from .admin import real_users
 from .models import (
-    ChatMessage, Coupon, DailyActive, Order, Plan, Scan, Subscription,
+    ChatMessage, Coupon, CreditLedger, DailyActive, Order, Plan, Referral, Scan, Subscription,
+    UserAttribution, Visit, WithdrawalRequest,
 )
 
 
@@ -321,6 +322,184 @@ def heaviest_chat_users(limit=10):
     ]
 
 
+# ---------------------------------------------------------------- ชวนเพื่อน
+
+
+def referral_summary():
+    """Whether the invite programme is working, and what it currently owes.
+
+    Credit issued but not yet spent is a **liability**, and since withdrawals were added it is a
+    cash one: the holder can spend it on a subscription, in which case it is revenue counted
+    twice, or ask for it in baht, in which case it leaves the bank account. Either way it belongs
+    beside revenue rather than buried under coupons.
+    """
+    referrals = Referral.objects.all()
+    invited = referrals.count()
+    qualified = referrals.filter(status=Referral.Status.QUALIFIED).count()
+    issued = CreditLedger.objects.filter(amount_satang__gt=0).aggregate(
+        total=Sum("amount_satang"),
+    )["total"] or 0
+    spent = CreditLedger.objects.filter(amount_satang__lt=0).aggregate(
+        total=Sum("amount_satang"),
+    )["total"] or 0
+    withdrawals = WithdrawalRequest.objects.all()
+
+    def _sum(queryset):
+        return queryset.aggregate(total=Sum("amount_satang"))["total"] or 0
+
+    return {
+        "invited": invited,
+        "qualified": qualified,
+        # How many invited accounts went on to pay. The number that says whether inviting brings
+        # customers or merely brings signups.
+        "conversion_percent": round(qualified * 100 / invited, 1) if invited else 0.0,
+        "held": referrals.filter(status=Referral.Status.HELD).count(),
+        "rejected": referrals.filter(
+            status__in=(Referral.Status.REJECTED, Referral.Status.CLAWED_BACK),
+        ).count(),
+        "credit_issued_satang": issued,
+        "credit_redeemed_satang": -spent,
+        "credit_outstanding_satang": issued + spent,
+        # Real money already out of the bank account, and real money queued to leave it. The
+        # pending figure is the one to watch: it is people waiting, not a statistic.
+        "withdrawn_satang": _sum(withdrawals.filter(status=WithdrawalRequest.Status.PAID)),
+        "withdrawal_pending_satang": _sum(
+            withdrawals.filter(status__in=WithdrawalRequest.OPEN_STATUSES)
+        ),
+        "withdrawal_pending_count": withdrawals.filter(
+            status__in=WithdrawalRequest.OPEN_STATUSES,
+        ).count(),
+    }
+
+
+def payout_rows(year=None, now=None):
+    """Total paid out per person this calendar year.
+
+    Paying individuals can create reporting obligations, and this is the figure an accountant
+    asks for first. It counts only `paid` rows — an approved-but-unsent request is not income to
+    anybody yet.
+    """
+    now = now or timezone.now()
+    year = year or now.year
+    rows = (
+        WithdrawalRequest.objects.filter(status=WithdrawalRequest.Status.PAID, paid_at__year=year)
+        .values("user__id", "user__email")
+        .annotate(payouts=Count("pk"), total=Sum("amount_satang"))
+        .order_by(F("total").desc())
+    )
+    return [
+        {
+            "user_id": row["user__id"],
+            "email": row["user__email"] or "—",
+            "payouts": row["payouts"],
+            "total_satang": row["total"],
+            "year": year,
+        }
+        for row in rows
+    ]
+
+
+def referral_rows(limit=20):
+    """Per inviter, busiest first. Also the place a farm becomes visible."""
+    rows = (
+        Referral.objects.values("inviter__id", "inviter__email")
+        .annotate(
+            invited=Count("pk", distinct=True),
+            qualified=Count("pk", filter=Q(status=Referral.Status.QUALIFIED), distinct=True),
+            held=Count("pk", filter=Q(status=Referral.Status.HELD), distinct=True),
+        )
+        .order_by(F("invited").desc())[:limit]
+    )
+    rewards = dict(
+        CreditLedger.objects.filter(
+            kind__in=(CreditLedger.Kind.REFERRAL_REWARD, CreditLedger.Kind.CLAWBACK),
+        )
+        .values_list("user_id")
+        .annotate(total=Sum("amount_satang"))
+    )
+    return [
+        {
+            "user_id": row["inviter__id"],
+            "email": row["inviter__email"] or "—",
+            "invited": row["invited"],
+            "qualified": row["qualified"],
+            "held": row["held"],
+            "rewarded_satang": rewards.get(row["inviter__id"], 0),
+        }
+        for row in rows
+    ]
+
+
+# ---------------------------------------------------------------- retention
+
+
+def expiring_soon(days=7, now=None):
+    """Who lapses this week. The one table on the reports page that is a to-do list.
+
+    Excludes anyone who has already renewed — they have a later period on another row, and
+    putting them on a chase list is how a paying customer gets an email telling them they are
+    about to lose access they just paid for.
+    """
+    now = now or timezone.now()
+    rows = []
+    for subscription in Subscription.objects.filter(
+        current_period_end__gt=now, current_period_end__lte=now + timedelta(days=days),
+    ).exclude(status=Subscription.Status.CANCELLED).select_related("user", "plan"):
+        renewed = Subscription.objects.filter(
+            user=subscription.user, plan__grants_group=subscription.plan.grants_group,
+            current_period_end__gt=subscription.current_period_end,
+        ).exclude(status=Subscription.Status.CANCELLED).exists()
+        if renewed:
+            continue
+        rows.append({
+            "user_id": subscription.user_id,
+            "email": subscription.user.email or "—",
+            "plan": subscription.plan.name_th,
+            "ends_at": subscription.current_period_end,
+            "days_left": (subscription.current_period_end - now).days,
+        })
+    return sorted(rows, key=lambda row: row["ends_at"])
+
+
+def retention_rows(months=6, now=None):
+    """Renewal and churn by the month a subscription started.
+
+    A cohort counts as retained when that user has *any* subscription running past the end of
+    the one they started with — which is what renewing looks like here, since `activate()`
+    writes a new row rather than extending the old one.
+    """
+    now = now or timezone.now()
+    start = (now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+             - timedelta(days=31 * (months - 1))).replace(day=1)
+
+    cohorts = {}
+    for subscription in Subscription.objects.filter(
+        created_at__gte=start,
+    ).select_related("plan").order_by("created_at"):
+        month = subscription.created_at.date().replace(day=1)
+        bucket = cohorts.setdefault(month, {"month": month, "started": 0, "renewed": 0})
+        # First subscription of that user in that month only, or a person who renewed twice
+        # would read as two separate customers.
+        if Subscription.objects.filter(
+            user_id=subscription.user_id, created_at__lt=subscription.created_at,
+        ).exists():
+            continue
+        bucket["started"] += 1
+        if Subscription.objects.filter(
+            user_id=subscription.user_id,
+            current_period_end__gt=subscription.current_period_end,
+        ).exclude(pk=subscription.pk).exists():
+            bucket["renewed"] += 1
+
+    rows = sorted(cohorts.values(), key=lambda row: row["month"], reverse=True)
+    for row in rows:
+        row["renewal_percent"] = (
+            round(row["renewed"] * 100 / row["started"], 1) if row["started"] else 0.0
+        )
+        row["churn_percent"] = round(100 - row["renewal_percent"], 1) if row["started"] else 0.0
+    return rows
+
+
 def report(now=None):
     now = now or timezone.now()
     return {
@@ -333,4 +512,317 @@ def report(now=None):
         "heaviest": heaviest_chat_users(),
         "discount_given_satang": _paid_orders().aggregate(total=Sum("discount_satang"))["total"] or 0,
         "tracking_started": DailyActive.objects.order_by("date").values_list("date", flat=True).first(),
+        "referral": referral_summary(),
+        "referral_rows": referral_rows(),
+        "payouts": payout_rows(now=now),
+        "retention": retention_rows(now=now),
+        "expiring": expiring_soon(now=now),
+    }
+
+
+# ---------------------------------------------------------------- การตลาด
+
+
+# Offered on the page as buttons rather than a free number in the URL: `days` reaches this
+# module from a query string, and an unbounded integer there is an unbounded scan anyone can ask
+# for.
+WINDOWS = (7, 30, 90)
+DEFAULT_WINDOW = 30
+
+INTERVAL_LABELS = {
+    Plan.Interval.MONTH: "รายเดือน",
+    Plan.Interval.YEAR: "รายปี",
+    Plan.Interval.ONCE: "จ่ายครั้งเดียว",
+}
+ORDER_KINDS = (
+    ("first", "ซื้อครั้งแรก"),
+    ("renewal", "ต่ออายุ"),
+    ("change", "เปลี่ยนแผน"),
+)
+
+
+def _window(days=DEFAULT_WINDOW, now=None):
+    """The window every marketing figure shares: (days, first date, first moment).
+
+    One helper because the whole point is that the visitor count and the signup count cover the
+    same stretch of time. Visits are dated and users are timestamped, so the two bounds are
+    derived from each other rather than computed twice and left to drift by a few hours.
+    """
+    now = now or timezone.now()
+    days = days if days in WINDOWS else DEFAULT_WINDOW
+    # Inclusive of today: a 7-day window is today and the six days before it, which is what a
+    # person reading "7 วัน" expects.
+    since_date = timezone.localdate() - timedelta(days=days - 1)
+    since = datetime.combine(since_date, time.min)
+    if timezone.is_aware(now):
+        since = timezone.make_aware(since, timezone.get_current_timezone())
+    return days, since_date, since
+
+
+def visit_totals(days=DEFAULT_WINDOW, now=None):
+    """Arrivals today, over the last week, and over the window, plus the device split.
+
+    "Arrivals" is hits, and hits are browsers — the client posts at most once per browser per
+    day. One person on a phone and a laptop is two.
+    """
+    days, since_date, _ = _window(days, now)
+    today = timezone.localdate()
+
+    def hits(queryset):
+        return queryset.aggregate(total=Sum("hits"))["total"] or 0
+
+    window = Visit.objects.filter(date__gte=since_date)
+    return {
+        "today": hits(Visit.objects.filter(date=today)),
+        "week": hits(Visit.objects.filter(date__gte=today - timedelta(days=6))),
+        "window": hits(window),
+        "mobile": hits(window.filter(device="mobile")),
+        "desktop": hits(window.filter(device="desktop")),
+        "campaign_tagged": hits(window.exclude(campaign="direct")),
+    }
+
+
+def visit_rows(months=6, now=None):
+    """One row per calendar month, newest first: `month` and `hits`.
+
+    Months with no rows are filled with zero rather than skipped, so the chart's bars stay
+    evenly spaced in time instead of closing the gap and implying continuity that is not there.
+    """
+    now = now or timezone.now()
+    this_month = now.date().replace(day=1)
+    wanted = []
+    cursor = this_month
+    for _ in range(months):
+        wanted.append(cursor)
+        cursor = (cursor - timedelta(days=1)).replace(day=1)
+
+    totals = {
+        row["month"]: row["hits"] or 0
+        for row in Visit.objects.filter(date__gte=wanted[-1])
+        .annotate(month=TruncMonth("date")).values("month").annotate(hits=Sum("hits"))
+    }
+    return [{"month": month, "hits": totals.get(month, 0)} for month in wanted]
+
+
+def attribution_rows(field, days=DEFAULT_WINDOW, now=None):
+    """Per traffic source, or per campaign: arrivals, signups, scans, payers and revenue.
+
+    One function for both tables, called with `field="source"` and `field="campaign"`. The two
+    are the same question asked of a different column, and two copies would drift until the
+    campaign table and the source table disagreed about how much money came in.
+
+    Cohort figures, not activity figures: the accounts counted are those that *signed up* in the
+    window, and what they went on to do is counted whenever they did it. A campaign that ran last
+    week has not had time to produce a renewal, and windowing the outcomes too would report that
+    as a failure rather than as a wait.
+
+    The arrivals column is the one thing that cannot be tied to an account — nothing links a
+    `Visit` row to a person, deliberately — so `signup_percent` divides people by browsers and is
+    an estimate. The page says so.
+    """
+    days, since_date, since = _window(days, now)
+    real = real_users(User.objects.all())
+
+    hits = {
+        row[field]: row["hits"] or 0
+        for row in Visit.objects.filter(date__gte=since_date)
+        .values(field).annotate(hits=Sum("hits"))
+    }
+
+    cohort = UserAttribution.objects.filter(user__in=real, user__date_joined__gte=since)
+    signups = {row[field]: row["n"] for row in cohort.values(field).annotate(n=Count("pk"))}
+    scanned = {
+        row[field]: row["n"]
+        for row in cohort.filter(
+            user__scans__status=Scan.Status.COMPLETED, user__scans__is_demo=False,
+        ).values(field).annotate(n=Count("pk", distinct=True))
+    }
+    # Payers and revenue come from one query over orders rather than a second annotation on the
+    # cohort: two joins on the same queryset multiply rows, and the Sum would be quietly wrong
+    # by however many scans each payer happens to have.
+    money = {
+        row[f"user__attribution__{field}"]: row
+        for row in Order.objects.filter(
+            status=Order.Status.PAID,
+            user__in=real,
+            user__date_joined__gte=since,
+            user__attribution__isnull=False,
+        ).values(f"user__attribution__{field}").annotate(
+            payers=Count("user_id", distinct=True), revenue=Sum("total_satang"),
+        )
+    }
+
+    rows = []
+    for key in sorted(set(hits) | set(signups)):
+        key_hits = hits.get(key, 0)
+        key_signups = signups.get(key, 0)
+        paid = money.get(key, {})
+        rows.append({
+            "key": key,
+            "hits": key_hits,
+            "signups": key_signups,
+            "scanned": scanned.get(key, 0),
+            "paid": paid.get("payers", 0) or 0,
+            "revenue_satang": paid.get("revenue", 0) or 0,
+            "signup_percent": round(key_signups * 100 / key_hits, 1) if key_hits else 0.0,
+            "paid_percent": (
+                round((paid.get("payers", 0) or 0) * 100 / key_signups, 1) if key_signups else 0.0
+            ),
+        })
+    return sorted(rows, key=lambda row: (-row["hits"], -row["signups"], row["key"]))
+
+
+def acquisition_funnel(days=DEFAULT_WINDOW, now=None):
+    """Visitors down to payers, over one shared window.
+
+    Every step is a subset of สมัครสมาชิก, but the last two are not nested in each other: nothing
+    requires a scan before buying a plan, so จ่ายเงิน can exceed สแกนสำเร็จ. Read as four
+    measurements of one cohort, not as a funnel that must only ever narrow.
+
+    `funnel()` starts at signup because that is the first step it can honestly count. This one
+    starts a step earlier, which is only possible now that arrivals are recorded — and only
+    honest if every step covers the same period, since a visitor count that began the day
+    tracking was switched on, divided into an all-time user count, produces a conversion rate
+    wrong by the age of the site.
+
+    Monthly-versus-yearly and renewals are not steps here. One is a partition of the paid step
+    and the other does not narrow it further; both are tables of their own on the page.
+    """
+    days, since_date, since = _window(days, now)
+    visitors = Visit.objects.filter(date__gte=since_date).aggregate(total=Sum("hits"))["total"] or 0
+    cohort = real_users(User.objects.all()).filter(date_joined__gte=since)
+    registered = cohort.count()
+    scanned = cohort.filter(
+        scans__status=Scan.Status.COMPLETED, scans__is_demo=False,
+    ).distinct().count()
+    paid = cohort.filter(orders__status=Order.Status.PAID).distinct().count()
+
+    def percent(value):
+        return round(value * 100 / visitors, 1) if visitors else 0.0
+
+    return [
+        {"step": "ผู้เข้าชม", "count": visitors, "percent": 100.0 if visitors else 0.0},
+        {"step": "สมัครสมาชิก", "count": registered, "percent": percent(registered)},
+        {"step": "สแกนสำเร็จ", "count": scanned, "percent": percent(scanned)},
+        {"step": "จ่ายเงิน", "count": paid, "percent": percent(paid)},
+    ]
+
+
+def interval_mix(now=None):
+    """Paying subscribers folded to รายเดือน / รายปี.
+
+    Built on `plan_rows()`, which already counts active subscribers per plan and carries the
+    interval, so there is nothing here to disagree with the plans table on the reports page.
+    """
+    totals = {}
+    for row in plan_rows(now):
+        totals[row["interval"]] = totals.get(row["interval"], 0) + row["subscribers"]
+    rows = [
+        {"interval": interval, "label": label, "subscribers": totals.get(interval, 0)}
+        for interval, label in INTERVAL_LABELS.items()
+        # A one-off plan is not a term, and the row only earns its space if anyone holds one.
+        if interval != Plan.Interval.ONCE or totals.get(interval, 0)
+    ]
+    return rows
+
+
+def order_kind_rows(days=None, now=None):
+    """Every paid order sorted into first purchase, renewal or plan change, split by term.
+
+    Renewal cannot be read off a row count. `billing.activate()` expires the previous
+    subscription only when the plan matches exactly, so `plus` → `pro` (an upgrade) and `plus` →
+    `plus_year` (a change of term) both leave two live-looking rows without a renewal having
+    happened. Ordinality of paid orders alone fails the other way round: an upgrade is a second
+    paid order that renews nothing. So the test is the plan *code*: a paid order renews when that
+    user has paid for that same plan before.
+
+    Classified over the user's whole history and only then filtered to the window — otherwise the
+    first order inside a 7-day window would look like a first purchase for a customer of two
+    years.
+
+    An order paid entirely with credit or a full-value coupon is PAID with a real subscription
+    behind it, so it counts as a renewal; its revenue is ฿0, which is why the counts and the
+    money are shown side by side.
+    """
+    _, _, since = _window(days, now) if days else (None, None, None)
+    real = real_users(User.objects.all())
+    rows = {
+        kind: {"kind": kind, "label": label, "month": 0, "year": 0, "once": 0,
+               "total": 0, "revenue_satang": 0}
+        for kind, label in ORDER_KINDS
+    }
+
+    seen = {}
+    for user_id, paid_at, code, interval, total in Order.objects.filter(
+        status=Order.Status.PAID, user__in=real,
+    ).values_list(
+        "user_id", "paid_at", "plan__code", "plan__interval", "total_satang",
+    # created_at breaks the tie because a manual order is stamped paid when an operator confirms
+    # it, which can land out of order against the order it renews.
+    ).order_by("paid_at", "created_at"):
+        codes = seen.setdefault(user_id, set())
+        if not codes:
+            kind = "first"
+        elif code in codes:
+            kind = "renewal"
+        else:
+            kind = "change"
+        codes.add(code)
+
+        if since and (paid_at is None or paid_at < since):
+            continue
+        row = rows[kind]
+        row[interval if interval in INTERVAL_LABELS else Plan.Interval.MONTH] += 1
+        row["total"] += 1
+        row["revenue_satang"] += total or 0
+
+    return list(rows.values())
+
+
+def capture_method_rows():
+    """How people photographed their face, crossed with which angles they were asked for.
+
+    Two questions that only answer the marketing one together: the device says where the user
+    was, and the scan mode says how much work the app asked of them there. Demo scans are
+    excluded like everywhere else — nobody photographed anything.
+
+    Everything recorded before the field existed reads as ไม่ระบุ, as does every scan from a
+    client that has not shipped the change yet. That is the honest answer, not a gap to backfill.
+    """
+    methods = dict(Scan.CaptureMethod.choices)
+    modes = dict(Scan.ScanMode.choices)
+    rows = [
+        {
+            "method": methods.get(row["capture_method"], "ไม่ระบุ"),
+            "mode": modes.get(row["scan_mode"], row["scan_mode"]),
+            "scans": row["n"],
+        }
+        for row in Scan.objects.filter(
+            is_demo=False, user__in=real_users(User.objects.all()),
+        ).values("capture_method", "scan_mode").annotate(n=Count("pk"))
+    ]
+    return sorted(rows, key=lambda row: (-row["scans"], row["method"], row["mode"]))
+
+
+def marketing_report(days=DEFAULT_WINDOW, now=None):
+    """Everything on /admin/marketing/, in one pass."""
+    days, since_date, since = _window(days, now)
+    return {
+        "generated_at": now or timezone.now(),
+        "window_days": days,
+        "windows": WINDOWS,
+        "window_start": since_date,
+        "visits": visit_totals(days, now),
+        "visit_months": visit_rows(now=now),
+        "funnel": acquisition_funnel(days, now),
+        "sources": attribution_rows("source", days, now),
+        "campaigns": attribution_rows("campaign", days, now),
+        "intervals": interval_mix(now),
+        "order_kinds": order_kind_rows(days, now),
+        "capture_methods": capture_method_rows(),
+        # None until the first arrival is recorded. The template needs it to say "no data here"
+        # about a stretch of the window that predates the counter, rather than draw a zero.
+        "visit_tracking_started": (
+            Visit.objects.order_by("date").values_list("date", flat=True).first()
+        ),
     }

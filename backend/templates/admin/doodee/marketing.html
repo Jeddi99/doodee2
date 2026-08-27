@@ -1,0 +1,260 @@
+{% extends "admin/base_site.html" %}
+{% load doodee_money %}
+{% comment %}
+  Where users come from, and what they turn into. Same conventions as reports.html — plain
+  tables, the rp- class names, geometry precomputed in charts.py — because this is the same page
+  in every respect except the question it answers.
+
+  Every heading here is followed by a note saying what the number is NOT. That is not padding:
+  the visitor count is browsers rather than people, the conversion rates divide people by
+  browsers, and a renewal paid with credit earns ฿0. An operator who does not know those three
+  things will read this page wrongly, and read it confidently.
+{% endcomment %}
+
+{% block breadcrumbs %}
+  <div class="breadcrumbs"><a href="{% url 'admin:index' %}">หน้าแรก</a> &rsaquo; การตลาด</div>
+{% endblock %}
+
+{% block content %}
+<style>
+  .rp-section { margin: 0 0 2rem; }
+  .rp-section h2 { font-size: 1rem; margin: 0 0 .6rem; }
+  .rp-note { color: var(--body-quiet-color); font-size: .8rem; margin: .2rem 0 .8rem; }
+  .rp-table { width: 100%; border-collapse: collapse; font-size: .82rem; }
+  .rp-table th, .rp-table td { padding: .45rem .6rem; border-bottom: 1px solid var(--hairline-color); text-align: right; }
+  .rp-table th:first-child, .rp-table td:first-child { text-align: left; }
+  .rp-table thead th { color: var(--body-quiet-color); font-weight: 600; white-space: nowrap; }
+  .rp-bar { background: var(--darkened-bg); border-radius: 3px; height: .55rem; display: block; }
+  .rp-bar > i { background: var(--primary); border-radius: 3px; display: block; height: 100%; }
+  .rp-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr)); gap: 1rem; }
+  .rp-cards div { background: var(--darkened-bg); border: 1px solid var(--hairline-color); border-radius: 4px; padding: 1rem; }
+  .rp-cards strong { display: block; font-size: 1.5rem; line-height: 1.2; }
+  .rp-cards small { color: var(--body-quiet-color); }
+  /* The window switcher. Links, not a form: the page is a GET and should stay bookmarkable. */
+  .rp-windows { display: flex; flex-wrap: wrap; gap: .5rem; align-items: center; font-size: .82rem; margin: 0 0 1.2rem; }
+  .rp-windows a { border: 1px solid var(--hairline-color); border-radius: 3px; padding: .25rem .7rem; text-decoration: none; }
+  .rp-windows a.is-on { background: var(--primary); border-color: var(--primary); color: var(--button-fg); }
+  /* Chart. Colours from admin CSS variables so both themes work without a second rule. */
+  .rp-chart { width: 100%; max-width: 880px; height: auto; display: block; overflow: visible; }
+  .rp-chart .rp-axis { stroke: var(--hairline-color); stroke-width: 1; }
+  .rp-chart .rp-grid { stroke: var(--hairline-color); stroke-width: 1; opacity: .45; }
+  .rp-chart .rp-tick { fill: var(--body-quiet-color); font-size: 9px; }
+  .rp-chart .rp-month { fill: var(--body-quiet-color); font-size: 8.5px; text-anchor: middle; }
+  .rp-chart .rp-col { fill: var(--primary); }
+  /* Hollow, not short: a month before the counter existed is unknown, not zero. */
+  .rp-chart .rp-col.is-untracked { fill: none; stroke: var(--body-quiet-color); stroke-width: 1; stroke-dasharray: 2 2; }
+</style>
+
+<div class="rp-windows">
+  <span>ช่วงเวลา:</span>
+  {% for days in report.windows %}
+    <a href="?days={{ days }}" class="{% if days == report.window_days %}is-on{% endif %}">{{ days }} วัน</a>
+  {% endfor %}
+  <span>ตั้งแต่ {{ report.window_start }}</span>
+</div>
+
+<div class="rp-section">
+  <h2>ผู้เข้าชมเว็บ</h2>
+  <p class="rp-note">
+    นับ <strong>1 ครั้งต่อเบราว์เซอร์ต่อวัน ไม่ใช่จำนวนคน</strong> — คนเดียวที่เปิดทั้งมือถือและคอมนับสองครั้ง ·
+    นับเฉพาะเบราว์เซอร์ที่รัน JavaScript ไม่รวมบอทที่ไม่รันสคริปต์ จึงเป็น<strong>ค่าประมาณ</strong> ·
+    ไม่มีการเก็บ IP, user agent หรือหน้าที่ผู้ใช้เดินต่อ — ตารางนี้ไม่มีตัวระบุตัวบุคคลใดๆ เลย
+  </p>
+  <div class="rp-cards">
+    <div><span>วันนี้</span><strong>{{ report.visits.today }}</strong></div>
+    <div><span>7 วันล่าสุด</span><strong>{{ report.visits.week }}</strong></div>
+    <div><span>ในช่วงที่เลือก</span><strong>{{ report.visits.window }}</strong><small>{{ report.window_days }} วัน</small></div>
+    <div><span>มือถือ</span><strong>{{ report.visits.mobile }}</strong><small>คอมพิวเตอร์ {{ report.visits.desktop }}</small></div>
+    <div><span>มาจากแคมเปญ</span><strong>{{ report.visits.campaign_tagged }}</strong><small>มีแท็ก utm_campaign ในลิงก์</small></div>
+  </div>
+  {% if not report.visit_tracking_started %}
+    <p class="rp-note">
+      ยังไม่มีข้อมูลผู้เข้าชมเลย — เริ่มนับตั้งแต่ deploy ครั้งนี้เป็นต้นไป ย้อนหลังไม่ได้
+      ลิงก์แคมเปญให้ใส่แท็กแบบนี้: <code>?utm_source=tiktok&amp;utm_medium=bio&amp;utm_campaign=aug-promo</code>
+    </p>
+  {% endif %}
+</div>
+
+<div class="rp-section">
+  <h2>เส้นทางจากคนเข้าเว็บถึงคนจ่ายเงิน</h2>
+  <p class="rp-note">
+    ทุกขั้นคิดจากช่วงเวลาเดียวกัน ({{ report.window_days }} วัน) — ถ้าเอาผู้เข้าชมช่วงนี้ไปหารกับยอดผู้ใช้ตลอดกาล
+    สัดส่วนจะผิดเท่าอายุเว็บ · นับตาม<strong>รุ่นผู้ใช้</strong>: คนที่สมัครในช่วงนี้ แล้วดูว่าทำอะไรต่อ ไม่จำกัดว่าต้องทำในช่วงเดียวกัน
+    เพราะแคมเปญที่เพิ่งยิงเมื่อวานยังไม่มีเวลาให้ใครจ่ายเงิน · ขั้นแรกเป็นจำนวนเบราว์เซอร์ ขั้นที่เหลือเป็นจำนวนคน
+    <strong>สัดส่วนจึงเป็นค่าประมาณ</strong> ไม่มีอะไรผูกแถวผู้เข้าชมกับบัญชีได้ และนั่นเป็นความตั้งใจ
+  </p>
+  <p class="rp-note">
+    ทุกขั้นเป็นส่วนย่อยของ “สมัครสมาชิก” แต่สองขั้นล่าง<strong>ไม่ได้ซ้อนกัน</strong> — ระบบไม่ได้บังคับให้สแกนก่อนซื้อแผน
+    ดังนั้น “จ่ายเงิน” มากกว่า “สแกนสำเร็จ” ได้ ไม่ใช่ความผิดพลาดของตัวเลข
+  </p>
+  <table class="rp-table">
+    <thead><tr><th>ขั้นตอน</th><th>จำนวน</th><th>สัดส่วน</th><th style="width:40%"></th></tr></thead>
+    <tbody>
+      {% for step in report.funnel %}
+        <tr>
+          <td>{{ step.step }}</td>
+          <td>{{ step.count }}</td>
+          <td>{{ step.percent }}%</td>
+          <td><span class="rp-bar"><i style="width:{{ step.percent }}%"></i></span></td>
+        </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<div class="rp-section">
+  <h2>มาจากช่องทางไหน</h2>
+  <p class="rp-note">
+    จากแท็ก <code>utm_source</code> ในลิงก์ · <code>direct</code> คือคนที่เข้ามาโดยไม่มีแท็ก
+    (พิมพ์เอง, bookmark, หรือลิงก์ที่ลืมติดแท็ก) — ไม่ได้แปลว่าไม่มีที่มา
+  </p>
+  <table class="rp-table">
+    <thead>
+      <tr><th>แหล่งที่มา</th><th>ผู้เข้าชม</th><th>สมัคร</th><th>สแกนสำเร็จ</th><th>จ่ายเงิน</th><th>รายได้</th><th>สมัคร/เข้าชม</th><th>จ่าย/สมัคร</th></tr>
+    </thead>
+    <tbody>
+      {% for row in report.sources %}
+        <tr>
+          <td>{{ row.key }}</td>
+          <td>{{ row.hits }}</td>
+          <td>{{ row.signups }}</td>
+          <td>{{ row.scanned }}</td>
+          <td>{{ row.paid }}</td>
+          <td>฿{{ row.revenue_satang|satang }}</td>
+          <td>{{ row.signup_percent }}%</td>
+          <td>{{ row.paid_percent }}%</td>
+        </tr>
+      {% empty %}
+        <tr><td colspan="8">ยังไม่มีข้อมูลในช่วงนี้</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<div class="rp-section">
+  <h2>แยกตามแคมเปญ</h2>
+  <p class="rp-note">
+    จากแท็ก <code>utm_campaign</code> · คอลัมน์เดียวกับตารางบน คนละมุมมอง — แคมเปญเดียวที่ยิงหลายช่องทาง
+    จะรวมอยู่แถวเดียวที่นี่ แต่แยกอยู่หลายแถวข้างบน
+  </p>
+  <table class="rp-table">
+    <thead>
+      <tr><th>แคมเปญ</th><th>ผู้เข้าชม</th><th>สมัคร</th><th>สแกนสำเร็จ</th><th>จ่ายเงิน</th><th>รายได้</th><th>สมัคร/เข้าชม</th><th>จ่าย/สมัคร</th></tr>
+    </thead>
+    <tbody>
+      {% for row in report.campaigns %}
+        <tr>
+          <td>{{ row.key }}</td>
+          <td>{{ row.hits }}</td>
+          <td>{{ row.signups }}</td>
+          <td>{{ row.scanned }}</td>
+          <td>{{ row.paid }}</td>
+          <td>฿{{ row.revenue_satang|satang }}</td>
+          <td>{{ row.signup_percent }}%</td>
+          <td>{{ row.paid_percent }}%</td>
+        </tr>
+      {% empty %}
+        <tr><td colspan="8">ยังไม่มีข้อมูลในช่วงนี้</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<div class="rp-section">
+  <h2>สมาชิกที่จ่ายอยู่ แยกรายเดือน–รายปี</h2>
+  <p class="rp-note">
+    นับ ณ ตอนนี้ ไม่ผูกกับช่วงเวลาที่เลือก — คือจำนวนสิทธิ์ที่ยังไม่หมดอายุวันนี้ ·
+    คนที่ถือสองแผนพร้อมกัน (เช่น รายเดือนอันเก่ายังไม่หมด แล้วซื้อรายปีเพิ่ม) จะถูกนับใน<strong>ทั้งสองแถว</strong>
+    ผลรวมจึงมากกว่าจำนวนคนได้
+  </p>
+  <table class="rp-table">
+    <thead><tr><th>รอบการจ่าย</th><th>สมาชิก</th></tr></thead>
+    <tbody>
+      {% for row in report.intervals %}
+        <tr><td>{{ row.label }}</td><td>{{ row.subscribers }}</td></tr>
+      {% empty %}
+        <tr><td colspan="2">ยังไม่มีสมาชิกที่จ่ายเงิน</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<div class="rp-section">
+  <h2>การซื้อและการต่ออายุ</h2>
+  <p class="rp-note">
+    ในช่วง {{ report.window_days }} วัน · <strong>ต่ออายุ</strong> = จ่ายค่าแผนเดิมที่เคยจ่ายมาแล้ว ·
+    <strong>เปลี่ยนแผน</strong> = จ่ายแผนใหม่ที่ยังไม่เคยจ่าย (อัปเกรด หรือย้ายจากรายเดือนเป็นรายปี) —
+    แยกกันเพราะการอัปเกรดไม่ใช่การต่ออายุ แต่ระบบเก็บทั้งสองอย่างเป็นสิทธิ์ใหม่เหมือนกัน
+  </p>
+  <p class="rp-note">
+    ต่ออายุที่ใช้เครดิตหรือคูปองเต็มจำนวน<strong>นับเป็นการต่ออายุ แต่รายได้เป็น ฿0</strong> —
+    สิทธิ์ถูกให้ไปจริง เงินไม่ได้เข้า นี่คือเหตุผลที่ต้องมีทั้งคอลัมน์จำนวนและคอลัมน์รายได้ ·
+    อัตราต่ออายุแยกตามรุ่นเดือนอยู่ในหน้า <a href="{% url 'admin:doodee_reports' %}">รายงาน</a>
+  </p>
+  <table class="rp-table">
+    <thead><tr><th>ประเภท</th><th>รายเดือน</th><th>รายปี</th><th>จ่ายครั้งเดียว</th><th>รวม</th><th>รายได้</th></tr></thead>
+    <tbody>
+      {% for row in report.order_kinds %}
+        <tr>
+          <td>{{ row.label }}</td>
+          <td>{{ row.month }}</td>
+          <td>{{ row.year }}</td>
+          <td>{{ row.once }}</td>
+          <td>{{ row.total }}</td>
+          <td>฿{{ row.revenue_satang|satang }}</td>
+        </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<div class="rp-section">
+  <h2>ผู้ใช้ถ่ายภาพด้วยอะไร</h2>
+  <p class="rp-note">
+    ตลอดเวลา ไม่ผูกกับช่วงที่เลือก · ไม่รวมสแกนตัวอย่าง เพราะไม่มีใครถ่ายอะไร ·
+    <strong>ไม่ระบุ</strong> คือสแกนที่บันทึกไว้ก่อนจะมีการเก็บข้อมูลนี้ หรือมาจากแอปที่ยังไม่ได้อัปเดต
+    ไม่ใช่วิธีถ่ายแบบที่สาม
+  </p>
+  <table class="rp-table">
+    <thead><tr><th>วิธีถ่ายภาพ</th><th>โหมดการสแกน</th><th>จำนวนสแกน</th></tr></thead>
+    <tbody>
+      {% for row in report.capture_methods %}
+        <tr><td>{{ row.method }}</td><td>{{ row.mode }}</td><td>{{ row.scans }}</td></tr>
+      {% empty %}
+        <tr><td colspan="3">ยังไม่มีการสแกนจริง</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+{% if chart %}
+<div class="rp-section">
+  <h2>ผู้เข้าชมรายเดือน</h2>
+  <svg class="rp-chart" viewBox="0 0 {{ chart.width }} {{ chart.height }}" role="img"
+       aria-label="กราฟแท่งแสดงจำนวนครั้งที่เปิดเว็บในแต่ละเดือน ย้อนหลัง 6 เดือน">
+    {% for tick in chart.ticks %}
+      <line class="rp-grid" x1="{{ chart.plot_left }}" y1="{{ tick.y }}" x2="{{ chart.plot_right }}" y2="{{ tick.y }}" />
+      <text class="rp-tick" x="{{ chart.plot_left }}" y="{{ tick.y }}" dx="-6" dy="3" text-anchor="end">{{ tick.value }}</text>
+    {% endfor %}
+    {% for bar in chart.bars %}
+      <rect class="rp-col{% if bar.untracked %} is-untracked{% endif %}"
+            x="{{ bar.x }}" y="{% if bar.untracked %}{{ chart.baseline_y|add:"-6" }}{% else %}{{ bar.y }}{% endif %}"
+            width="{{ bar.width }}" height="{% if bar.untracked %}6{% else %}{{ bar.height }}{% endif %}" rx="2">
+        <title>{{ bar.label }} — {% if bar.untracked %}ยังไม่ได้เริ่มบันทึก{% else %}{{ bar.value }} ครั้ง{% endif %}</title>
+      </rect>
+      <text class="rp-month" x="{{ bar.label_x }}" y="{{ chart.baseline_y|add:"14" }}">{{ bar.label }}</text>
+    {% endfor %}
+    <line class="rp-axis" x1="{{ chart.plot_left }}" y1="{{ chart.baseline_y }}" x2="{{ chart.plot_right }}" y2="{{ chart.baseline_y }}" />
+  </svg>
+  <p class="rp-note">
+    {% if report.visit_tracking_started %}
+      แท่งประจุดคือเดือนก่อนเริ่มบันทึกผู้เข้าชม ({{ report.visit_tracking_started }}) — ไม่ใช่ศูนย์ครั้ง แต่คือไม่มีข้อมูล
+    {% else %}
+      ยังไม่มีข้อมูลผู้เข้าชมเลย แท่งทั้งหมดจึงเป็นช่วงที่ยังไม่ได้บันทึก
+    {% endif %}
+  </p>
+</div>
+{% endif %}
+
+<p class="rp-note">คำนวณสดตอนเปิดหน้า — {{ report.generated_at }}</p>
+{% endblock %}

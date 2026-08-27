@@ -1,6 +1,10 @@
 services:
   postgres:
     image: postgres:16-alpine
+    # Stated rather than inherited. gthread means the api container can hold one connection per
+    # thread (CONN_MAX_AGE keeps them open), so the ceiling here is now coupled to
+    # --workers x --threads. 100 leaves room for 24 api + 2 worker + beat + a psql session.
+    command: postgres -c max_connections=100
     environment:
       POSTGRES_DB: doodee
       POSTGRES_USER: postgres
@@ -50,7 +54,11 @@ services:
       redis: {condition: service_healthy}
     # --reload because ./backend is bind-mounted: without it the process keeps the code it booted
     # with, and an edit on disk silently does nothing until someone remembers to restart.
-    command: sh -c "python manage.py migrate && gunicorn config.wsgi:application --bind 0.0.0.0:8000 --workers 2 --timeout 120 --reload"
+    #
+    # gthread here as well as in the Dockerfile, even though dev never needs 24 slots: a
+    # threading bug that only appears under gthread must show up on a laptop, not in production.
+    # compose.prod.yaml drops --reload and the bind mount.
+    command: sh -c "python manage.py migrate && gunicorn config.wsgi:application --bind 0.0.0.0:8000 -k gthread --workers 2 --threads 8 --timeout 120 --reload"
   worker:
     build:
       context: .
@@ -67,6 +75,26 @@ services:
       postgres: {condition: service_healthy}
       redis: {condition: service_healthy}
     command: celery -A config worker --loglevel=info --concurrency=2
+  # ตัวตั้งเวลา — ตอนนี้มีงานเดียวคือแจ้งเตือนต่ออายุสมาชิกทุกเช้า
+  # แยกจาก worker เพราะถ้ารันสองตัวขึ้นไป beat จะยิงงานซ้ำ ส่วน worker ขยายกี่ตัวก็ได้
+  # ถ้า beat ล่ม จะเสียแค่ “การแจ้งเตือน” ไม่กระทบสิทธิ์ของผู้ใช้ เพราะ sync_entitlement
+  # ตัดสิทธิ์ตอนผู้ใช้เปิดแอปอยู่แล้ว ไม่ได้พึ่ง cron
+  beat:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/doodee
+      REDIS_URL: redis://redis:6379/0
+    volumes:
+      - ./backend:/app/backend
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+    command: celery -A config beat --loglevel=info
 
 volumes:
   doodee_postgres:

@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { pollUntilSettled } from '@doodee/shared';
 import { ActivityIndicator, Button, Image, PanResponder, Pressable, ScrollView, StyleSheet, Switch, Text, View } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { api, auth } from '../lib/backend';
@@ -48,11 +49,10 @@ export default function SimulationScreen() {
   const save = async () => {
     setBusy(true); setError('');
     try {
-      let result: any = await api.createSimulation(scan_id, region, presetId);
-      while (!['completed','failed'].includes(result.status)) {
-        await new Promise((resolve) => setTimeout(resolve, 1500));
-        result = await api.getSimulation(result.id);
-      }
+      const created: any = await api.createSimulation(scan_id, region, presetId);
+      // Same shared schedule as the scan poll, and the same ceiling: a job that never settles
+      // now raises PollTimeout into the catch below instead of spinning until force-quit.
+      const result: any = await pollUntilSettled(created, () => api.getSimulation(created.id));
       if (result.status === 'failed') throw new Error(result.error_message);
       setSaved(result);
     } catch (cause: any) { setError(cause.message); }

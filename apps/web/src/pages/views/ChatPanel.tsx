@@ -1,9 +1,11 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
 import {
   ArrowLeft,
   ArrowRight,
+  Check,
+  ChevronDown,
   MessageCircle,
   Plus,
   ScanFace,
@@ -12,7 +14,8 @@ import {
 } from "lucide-react";
 import { GlassCard } from "../DashboardPage";
 import {
-  askChatTopic, deleteChat, getChat, getChatFacts, getChats, getScan, getScans, getSession, sendChat,
+  askChatTopic, deleteChat, getChat, getChatFacts, getChatRoles, getChats, getScan, getScans,
+  getSession, sendChat,
 } from "../../lib/api";
 import { errorMessage } from "../../lib/apiError";
 import { useLocale } from "../../useLocale";
@@ -49,7 +52,9 @@ const COPY = {
     disclaimer: "DOODEE Chat ตอบผิดได้ การตัดสินใจทางการแพทย์ต้องปรึกษาแพทย์",
     // Said before the box, not buried in a policy page: typing a question is the one action
     // in DOODEE that sends anything outside this system.
-    privacy: "คำถามที่พิมพ์เองจะถูกส่งไปยัง Anthropic พร้อมค่าที่วัดได้ 12 ค่า ภาพใบหน้าไม่ถูกส่งออกไป คำถามสำเร็จรูปด้านบนตอบจากในระบบ ไม่ส่งข้อมูลออก",
+    privacy: (provider: string) => provider
+      ? `คำถามที่พิมพ์เองจะถูกส่งไปยัง ${provider} พร้อมค่าที่วัดได้ 12 ค่า ภาพใบหน้าไม่ถูกส่งออกไป คำถามสำเร็จรูปด้านบนตอบจากในระบบ ไม่ส่งข้อมูลออก`
+      : "คำถามที่พิมพ์เองประมวลผลบนเครื่องที่รันระบบนี้ ไม่ได้ส่งออกไปที่ไหน ภาพใบหน้าก็ไม่ถูกส่งเช่นกัน",
     turnsLeft: (n: number) => `เหลือ ${n} ครั้งเดือนนี้`,
     quotaTitle: "ใช้ครบโควตาเดือนนี้แล้ว",
     quotaBodyFree: "แผนฟรีคุยได้ 5 ครั้งต่อเดือน โควตาจะรีเซ็ตต้นเดือนหน้า",
@@ -61,6 +66,9 @@ const COPY = {
     freeChip: "ตอบจากตัวเลข ไม่กินโควตา",
     retry: "ลองใหม่",
     deleteChat: "ลบแชทนี้",
+    roleLabel: "น้ำเสียง",
+    roleHint: "เลือกก่อนเริ่มคุย เปลี่ยนกลางห้องไม่ได้ — เปิดแชทใหม่ถ้าอยากเปลี่ยน",
+    roleLocked: "น้ำเสียงของห้องนี้",
   },
   en: {
     brand: "DOODEE Chat",
@@ -79,7 +87,9 @@ const COPY = {
     send: "Send",
     thinking: "Thinking…",
     disclaimer: "DOODEE Chat can make mistakes. Medical decisions require a qualified professional.",
-    privacy: "A question you type is sent to Anthropic along with your 12 measurements. Your photos are never sent. The suggested questions above are answered inside DOODEE and send nothing.",
+    privacy: (provider: string) => provider
+      ? `A question you type is sent to ${provider} along with your 12 measurements. Your photos are never sent. The suggested questions above are answered inside DOODEE and send nothing.`
+      : "A question you type is processed on the machine running this system and is not sent anywhere. Your photos are not sent either.",
     turnsLeft: (n: number) => `${n} left this month`,
     quotaTitle: "You've used this month's turns",
     quotaBodyFree: "The free plan includes 5 turns a month. It resets at the start of next month.",
@@ -91,10 +101,14 @@ const COPY = {
     freeChip: "Answered from your numbers. Does not use a turn.",
     retry: "Try again",
     deleteChat: "Delete this chat",
+    roleLabel: "Voice",
+    roleHint: "Pick before you start. It is fixed for the rest of the chat — open a new chat to change it.",
+    roleLocked: "Voice for this chat",
   },
 };
 
 type ChatMessage = { id: number; role: "user" | "assistant"; content: string; created_at: string };
+type RoleOption = { key: string; label: string; description: string; is_default: boolean };
 
 export default function ChatPanel() {
   const navigate = useNavigate();
@@ -108,6 +122,11 @@ export default function ChatPanel() {
   // Shown immediately so the question does not vanish while the request is in flight; the
   // stored copy from the server replaces it once the turn lands.
   const [pending, setPending] = useState<string | null>(null);
+  // Only meaningful before the first turn: after that the server keeps the thread on the
+  // voice it was opened with, and this falls back to showing that voice as a label.
+  const [role, setRole] = useState<string | null>(null);
+  const [roleMenuOpen, setRoleMenuOpen] = useState(false);
+  const rolePickerRef = useRef<HTMLDivElement | null>(null);
 
   const session = useQuery({ queryKey: ["session"], queryFn: getSession });
   const scans = useQuery({ queryKey: ["scans"], queryFn: getScans });
@@ -120,6 +139,9 @@ export default function ChatPanel() {
     enabled: Boolean(conversationId),
   });
 
+  // Wording and order are the admin's, so the list is fetched rather than hardcoded here.
+  const roles = useQuery({ queryKey: ["chat-roles", locale], queryFn: () => getChatRoles(locale) });
+
   // The questions this scan can answer without a model. Free, instant, and available even when
   // chat_enabled is false — which is most of the reason they exist.
   const facts = useQuery({
@@ -127,6 +149,21 @@ export default function ChatPanel() {
     queryFn: () => getChatFacts(locale),
     enabled: Boolean(scanId),
   });
+
+  // A menu that only closes on its own button is a menu users get stuck in.
+  useEffect(() => {
+    if (!roleMenuOpen) return undefined;
+    const onPointerDown = (event: MouseEvent) => {
+      if (!rolePickerRef.current?.contains(event.target as Node)) setRoleMenuOpen(false);
+    };
+    const onKeyDown = (event: KeyboardEvent) => { if (event.key === "Escape") setRoleMenuOpen(false); };
+    document.addEventListener("mousedown", onPointerDown);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("mousedown", onPointerDown);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [roleMenuOpen]);
 
   const applyTurn = (data: { conversation_id: string }) => {
     setPending(null);
@@ -145,7 +182,7 @@ export default function ChatPanel() {
   });
 
   const send = useMutation({
-    mutationFn: (message: string) => sendChat({ message, conversationId, scanId }),
+    mutationFn: (message: string) => sendChat({ message, conversationId, scanId, role: role ?? undefined }),
     onSuccess: applyTurn,
     onError: () => setPending(null),
   });
@@ -163,6 +200,11 @@ export default function ChatPanel() {
   const chatOff = session.isSuccess && session.data?.chat_enabled === false;
   const outOfTurns = remaining === 0;
   const messages: ChatMessage[] = conversation.data?.messages ?? [];
+  const roleOptions: RoleOption[] = roles.data?.roles ?? [];
+  const defaultRole = roleOptions.find((item) => item.is_default)?.key ?? roleOptions[0]?.key ?? null;
+  // An open thread reports its own voice; a new one reflects the pick, or the house default.
+  const activeRoleKey = conversationId ? conversation.data?.role ?? null : role ?? defaultRole;
+  const activeRole = roleOptions.find((item) => item.key === activeRoleKey) ?? null;
 
   const recent = useMemo(() => {
     const items = conversations.data ?? [];
@@ -196,7 +238,7 @@ export default function ChatPanel() {
             <ScanFace />
             <strong>{copy.brand}</strong>
           </div>
-          <button type="button" onClick={() => { setConversationId(null); setPending(null); }}>
+          <button type="button" onClick={() => { setConversationId(null); setPending(null); setRole(null); setRoleMenuOpen(false); }}>
             <Plus /> {copy.newChat}
           </button>
         </header>
@@ -250,6 +292,52 @@ export default function ChatPanel() {
 
       <GlassCard className="gpt-chat">
         <header>
+          {/* Model-picker pattern: the current voice sits in the top-left and opens a menu.
+              Once a thread has started the server keeps it on the voice it opened with, so the
+              control becomes a plain label rather than a button that would lie about switching. */}
+          {activeRole ? (
+            <div className="gpt-rolepicker" ref={rolePickerRef}>
+              {conversationId ? (
+                <span className="gpt-rolepicker__locked" title={copy.roleLocked}>{activeRole.label}</span>
+              ) : (
+                <>
+                  <button
+                    type="button"
+                    className="gpt-rolepicker__button"
+                    onClick={() => setRoleMenuOpen(!roleMenuOpen)}
+                    disabled={busy}
+                    aria-haspopup="listbox"
+                    aria-expanded={roleMenuOpen}
+                    aria-label={copy.roleLabel}
+                  >
+                    {activeRole.label}
+                    <ChevronDown size={15} />
+                  </button>
+                  {roleMenuOpen && (
+                    <ul className="gpt-rolepicker__menu" role="listbox" aria-label={copy.roleLabel}>
+                      {roleOptions.map((item) => (
+                        <li key={item.key}>
+                          <button
+                            type="button"
+                            role="option"
+                            aria-selected={item.key === activeRole.key}
+                            onClick={() => { setRole(item.key); setRoleMenuOpen(false); }}
+                          >
+                            <span>
+                              <strong>{item.label}</strong>
+                              <small>{item.description}</small>
+                            </span>
+                            {item.key === activeRole.key ? <Check size={15} /> : null}
+                          </button>
+                        </li>
+                      ))}
+                      <li className="gpt-rolepicker__hint">{copy.roleHint}</li>
+                    </ul>
+                  )}
+                </>
+              )}
+            </div>
+          ) : null}
           <span className="gpt-mode" aria-live="polite">
             {remaining === null ? "" : copy.turnsLeft(remaining)}
           </span>
@@ -307,6 +395,7 @@ export default function ChatPanel() {
               <span className="eyebrow">{copy.brand}</span>
               <h1>{copy.heading}</h1>
               <p>{copy.subheading}</p>
+
               <div className="gpt-suggestions">
                 {(facts.data?.topics ?? []).map((item: { topic: string; question: string }) => (
                   <button
@@ -388,7 +477,7 @@ export default function ChatPanel() {
         <small className="gpt-disclaimer">{copy.disclaimer}</small>
         {/* Only shown where free text is actually reachable: with chat off or the quota gone
             the composer is not rendered, and nothing can leave. */}
-        {!chatOff && !outOfTurns && <small className="gpt-disclaimer">{copy.privacy}</small>}
+        {!chatOff && !outOfTurns && <small className="gpt-disclaimer">{copy.privacy(session.data?.chat_provider ?? "")}</small>}
       </GlassCard>
     </div>
   );

@@ -1,0 +1,103 @@
+# Production overlay. Always used together with compose.yaml, never on its own:
+#
+#   docker compose -f compose.yaml -f compose.prod.yaml up -d --build
+#
+# compose.yaml is a development file — it bind-mounts ./backend, runs gunicorn with --reload,
+# publishes Postgres-adjacent ports and hardcodes postgres/postgres. Everything here exists to
+# undo one of those, so that the thing that ships is not the thing that was convenient to type.
+services:
+  postgres:
+    # No default. compose.yaml's postgres/postgres is fine on a laptop and is not a password.
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    command: postgres -c max_connections=100
+    restart: unless-stopped
+
+  redis:
+    # Redis is the Celery broker on db 0, not only the cache. Under the default eviction policy a
+    # memory ceiling silently drops keys, and a dropped key here is a queued scan that no worker
+    # will ever run and no user will ever be told about. noeviction fails the enqueue loudly
+    # instead — views.py already turns that into a 503 rather than a lost job.
+    command: >-
+      redis-server --maxmemory 256mb --maxmemory-policy noeviction
+      --save 60 1000 --appendonly no
+    volumes:
+      - doodee_redis:/data
+    restart: unless-stopped
+
+  # Migrations run once, in their own container, before the api starts — not as a prefix on the
+  # api command. compose.yaml can get away with `migrate && gunicorn` because dev runs one
+  # container; here every api restart would re-run migrate, and two restarting at once would race.
+  migrate:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      DATABASE_URL: postgresql://postgres:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/doodee
+      REDIS_URL: redis://redis:6379/0
+    volumes: !override []
+    depends_on:
+      postgres: {condition: service_healthy}
+    command: python manage.py migrate --noinput
+    restart: "no"
+
+  api:
+    # null so the image's own CMD wins: gthread, 3 workers x 8 threads, no --reload. compose.yaml
+    # sets a development command; this hands the decision back to the Dockerfile.
+    command: null
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+      migrate: {condition: service_completed_successfully}
+    # !override, not a plain list: compose *merges* volumes and ports across files rather than
+    # replacing them, so without the tag compose.yaml's ./backend bind mount and its
+    # 0.0.0.0:8001 publish both survive into production. `docker compose config` shows it.
+    volumes: !override
+      # Only the Firebase key. The ./backend bind mount is dev-only — in production the code must
+      # be the code that was built and collectstatic'd into the image, not whatever is on the host.
+      - type: bind
+        source: ./firebase-service-account.json
+        target: /run/secrets/firebase-service-account.json
+        read_only: true
+        bind:
+          create_host_path: false
+    environment:
+      DATABASE_URL: postgresql://postgres:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/doodee
+    # Bound to loopback: a reverse proxy terminates TLS and forwards here. Published on 0.0.0.0
+    # this would be a plaintext Django open to the internet.
+    ports: !override ["127.0.0.1:8001:8000"]
+    restart: unless-stopped
+
+  worker:
+    volumes: !override []
+    environment:
+      DATABASE_URL: postgresql://postgres:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/doodee
+    # --max-tasks-per-child because mediapipe and opencv are not leak-free over thousands of
+    # frames, and a prefork child is cheap to replace. --prefetch-multiplier 1 because these
+    # tasks run for seconds: prefetching parks work on a busy child while another sits idle.
+    # check_production_config first: a worker with no DATABASE_URL reports `ready` and then fails
+    # every task, because Celery swallows exceptions raised from its own worker_init signal. The
+    # api needs no such prefix — config/wsgi.py refuses at import and gunicorn cannot boot.
+    command: >-
+      sh -c "python manage.py check_production_config &&
+      exec celery -A config worker --loglevel=info --concurrency=2
+      --max-tasks-per-child=50 --prefetch-multiplier=1"
+    restart: unless-stopped
+
+  beat:
+    volumes: !override []
+    environment:
+      DATABASE_URL: postgresql://postgres:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/doodee
+    command: >-
+      sh -c "python manage.py check_production_config &&
+      exec celery -A config beat --loglevel=info"
+    # Never scale this service. Two beat processes fire every scheduled job twice, and nothing
+    # here can prevent that — `docker compose up --scale beat=2` would do it. One container is
+    # the default; the rule is for whoever operates it, not something compose enforces.
+    restart: unless-stopped
+
+volumes:
+  doodee_redis:

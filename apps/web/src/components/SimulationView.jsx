@@ -3,6 +3,7 @@ import { useMutation, useQuery } from '@tanstack/react-query';
 import { Activity, ArrowLeft, Check, Lock, Maximize2, MoveHorizontal, Save, ScanFace, ShieldCheck, Ticket, Unlock, X, ZoomIn } from 'lucide-react';
 import { focusTransform, NO_ZOOM, SIMULATION_CONSENT_VERSION } from '@doodee/shared';
 import { createSimulation, getProcedures, getScan, getScans, getSession, getSimulation, previewSimulation } from '../lib/api';
+import { statusPollInterval } from '../lib/pollInterval.js';
 import { daysRemaining } from '../lib/promoCode';
 import { describeSimulationError } from '../lib/simulationError';
 import { emptyQueue, request as queueRequest, settle } from '../lib/previewQueue';
@@ -276,7 +277,9 @@ export default function SimulationView({ lang = 'th', onNavigate }) {
   });
   const saved = useQuery({
     queryKey: ['simulation', simulationId], queryFn: () => getSimulation(simulationId), enabled: Boolean(simulationId),
-    refetchInterval: (query) => ['completed', 'failed'].includes(query.state.data?.status) ? false : 1500,
+    // Same backoff as the scan poll. This view is always on screen while a save runs, so it
+    // polls unconditionally — the ramp is what keeps a queued job from flooding the API.
+    refetchInterval: statusPollInterval,
   });
   const finalResult = saved.data?.status === 'completed' ? saved.data : null;
   const beforeUrl = finalResult?.before_url || preview?.before_url || (activeView === 'front' ? scan.data?.front_url : null);

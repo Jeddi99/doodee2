@@ -195,6 +195,9 @@ export default function ScanPage() {
         answers?.referencePopulation || "TH",
         answers?.consentVersion || ANALYSIS_CONSENT_VERSION,
         SCAN_MODE,
+        // Every photo here comes off the live <video> element; there is no file picker in this
+        // app. Sent explicitly so the report does not have to assume it.
+        "web_camera",
       );
       navigate(`/analysis?scan_id=${encodeURIComponent(queued.id)}`);
     } catch (error) {

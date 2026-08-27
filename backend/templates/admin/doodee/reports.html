@@ -1,7 +1,9 @@
 {% extends "admin/base_site.html" %}
 {% load doodee_money %}
-{# The numbers that do not fit on the index. Plain tables on purpose: a chart library in the
-   admin is a dependency to maintain, and twelve rows read faster as twelve rows. #}
+{% comment %}
+  The numbers that do not fit on the index. Plain tables on purpose: a chart library in the
+  admin is a dependency to maintain, and twelve rows read faster as twelve rows.
+{% endcomment %}
 
 {% block breadcrumbs %}
   <div class="breadcrumbs"><a href="{% url 'admin:index' %}">หน้าแรก</a> &rsaquo; รายงาน</div>
@@ -206,6 +208,112 @@
         </tr>
       {% empty %}
         <tr><td colspan="5">ยังไม่มีคูปอง</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<div class="rp-section">
+  <h2>ชวนเพื่อน</h2>
+  {% comment %}
+    เครดิตที่แจกไปแล้วแต่ยังไม่ถูกใช้คือ "หนี้" ไม่ใช่ค่าใช้จ่ายที่จบแล้ว
+    รายได้ที่จะถูกจ่ายด้วยเครดิตก้อนนี้ในอนาคต คือรายได้ที่นับไปแล้วรอบหนึ่ง
+  {% endcomment %}
+  <p class="rp-note">
+    ชวนไปแล้ว {{ report.referral.invited }} คน · เพื่อนที่จ่ายเงินจริง {{ report.referral.qualified }} คน
+    ({{ report.referral.conversion_percent }}%) · พักไว้ตรวจสอบ {{ report.referral.held }} ·
+    ไม่อนุมัติ/เรียกคืน {{ report.referral.rejected }}
+  </p>
+  <p class="rp-note">
+    เครดิตที่แจกไป ฿{{ report.referral.credit_issued_satang|satang }} ·
+    ใช้ไปแล้ว ฿{{ report.referral.credit_redeemed_satang|satang }} ·
+    <strong>ค้างอยู่ในระบบ ฿{{ report.referral.credit_outstanding_satang|satang }}</strong>
+    — ก้อนนี้คือภาระผูกพัน ไม่ใช่ค่าใช้จ่ายที่จบแล้ว
+    เพราะผู้ใช้เอาไปหักค่าสมาชิก หรือ<strong>ขอถอนเป็นเงินสด</strong>ก็ได้
+  </p>
+  <p class="rp-note">
+    โอนออกไปแล้วจริง ฿{{ report.referral.withdrawn_satang|satang }} ·
+    รอโอน ฿{{ report.referral.withdrawal_pending_satang|satang }}
+    ({{ report.referral.withdrawal_pending_count }} รายการ)
+    {% if report.referral.withdrawal_pending_count %}
+      — <a href="{% url 'admin:doodee_withdrawalrequest_changelist' %}?status__exact=pending">ไปที่คิวรอโอน</a>
+    {% endif %}
+  </p>
+  <table class="rp-table">
+    <thead><tr><th>ผู้ชวน</th><th>ชวนไป</th><th>จ่ายเงินแล้ว</th><th>พักไว้</th><th>รางวัลสุทธิ</th></tr></thead>
+    <tbody>
+      {% for row in report.referral_rows %}
+        <tr>
+          <td>{{ row.email }}</td>
+          <td>{{ row.invited }}</td>
+          <td>{{ row.qualified }}</td>
+          <td>{% if row.held %}<strong>{{ row.held }}</strong>{% else %}—{% endif %}</td>
+          <td>฿{{ row.rewarded_satang|satang }}</td>
+        </tr>
+      {% empty %}
+        <tr><td colspan="5">ยังไม่มีใครชวนเพื่อน</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<div class="rp-section">
+  {# ยอดจ่ายรายคนต่อปี — ตัวเลขที่นักบัญชีถามถึงก่อนเสมอเวลาจ่ายเงินให้บุคคลธรรมดา #}
+  <h2>เงินที่โอนให้ผู้ใช้ (ปีนี้)</h2>
+  <p class="rp-note">นับเฉพาะรายการที่โอนแล้วจริง · การจ่ายเงินให้บุคคลธรรมดาอาจมีเรื่องภาษีหัก ณ ที่จ่ายที่ต้องปรึกษาผู้ทำบัญชี</p>
+  <table class="rp-table">
+    <thead><tr><th>ผู้ใช้</th><th>จำนวนครั้ง</th><th>ยอดรวมทั้งปี</th></tr></thead>
+    <tbody>
+      {% for row in report.payouts %}
+        <tr>
+          <td>{{ row.email }}</td>
+          <td>{{ row.payouts }}</td>
+          <td>฿{{ row.total_satang|satang }}</td>
+        </tr>
+      {% empty %}
+        <tr><td colspan="3">ยังไม่มีการโอนเงินให้ผู้ใช้</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<div class="rp-section">
+  <h2>ต่ออายุและการเลิกใช้</h2>
+  <p class="rp-note">นับตามเดือนที่สมัครครั้งแรก · “ต่ออายุ” = มีสิทธิ์ที่ยาวกว่ารอบแรกของตัวเอง</p>
+  <table class="rp-table">
+    <thead><tr><th>เดือนที่สมัคร</th><th>สมัครใหม่</th><th>ต่ออายุ</th><th>อัตราต่ออายุ</th><th>เลิกใช้</th></tr></thead>
+    <tbody>
+      {% for row in report.retention %}
+        <tr>
+          <td>{{ row.month }}</td>
+          <td>{{ row.started }}</td>
+          <td>{{ row.renewed }}</td>
+          <td>{{ row.renewal_percent }}%</td>
+          <td>{{ row.churn_percent }}%</td>
+        </tr>
+      {% empty %}
+        <tr><td colspan="5">ยังไม่มีข้อมูล</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<div class="rp-section">
+  {# ตารางเดียวในหน้านี้ที่เป็น "สิ่งที่ต้องทำ" ไม่ใช่ "สิ่งที่เกิดขึ้นแล้ว" #}
+  <h2>หมดอายุใน 7 วัน</h2>
+  <p class="rp-note">ระบบส่งอีเมลแจ้งเตือนให้อัตโนมัติแล้ว (7 / 3 / 1 / วันหมดอายุ / วันสุดท้ายของช่วงผ่อนผัน) — รายชื่อนี้ไว้ตามเป็นรายคน</p>
+  <table class="rp-table">
+    <thead><tr><th>ผู้ใช้</th><th>แผน</th><th>หมดอายุ</th><th>เหลือ</th></tr></thead>
+    <tbody>
+      {% for row in report.expiring %}
+        <tr>
+          <td>{{ row.email }}</td>
+          <td>{{ row.plan }}</td>
+          <td>{{ row.ends_at }}</td>
+          <td>{{ row.days_left }} วัน</td>
+        </tr>
+      {% empty %}
+        <tr><td colspan="4">ไม่มีใครหมดอายุในสัปดาห์นี้</td></tr>
       {% endfor %}
     </tbody>
   </table>

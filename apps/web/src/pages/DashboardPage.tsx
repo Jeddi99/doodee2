@@ -14,6 +14,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { createDemoScan, getScan, getScans, getSession } from "../lib/api";
 import { errorMessage } from "../lib/apiError";
 import { dashboardGate } from "../lib/dashboardGate";
+import { statusPollInterval } from "../lib/pollInterval.js";
 import type { RatioRow } from "../lib/dashboardData";
 import {
   catalogAvailability,
@@ -50,6 +51,7 @@ import {
   X,
 } from "lucide-react";
 import Brand from "../Brand";
+import NotificationBell from "../components/NotificationBell";
 import {
   analysisCatalog,
   methodLabels,
@@ -69,7 +71,9 @@ type AppView =
   | "history"
   | "pricing"
   | "settings"
-  | "scorecard";
+  | "scorecard"
+  | "referral"
+  | "profile";
 type PillarId = "harmony" | "angularity" | "dimorphism" | "features";
 type FaceAngle = "front" | "side";
 type AnalysisMode = "results" | "library";
@@ -78,15 +82,6 @@ type AnalysisMode = "results" | "library";
    hardcoded verdicts; the real status names how far a measurement sits from the reference. */
 type RatioMetric = RatioRow;
 
-type PlanAction = {
-  title: string;
-  category: "Foundational" | "Non-Invasive" | "Minimally Invasive" | "Surgical";
-  detail: string;
-  impact: string;
-  cost: string;
-  time: string;
-  locked?: boolean;
-};
 
 const views: { id: AppView; label: string }[] = [
   { id: "overview", label: "Overview" },
@@ -108,6 +103,8 @@ export const VIEW_ROUTES: Record<AppView, string> = {
   pricing: "/pricing",
   settings: "/settings",
   scorecard: "/score-card",
+  referral: "/referral",
+  profile: "/profile",
 };
 
 /** The views that render the scan photograph itself, and so cannot draw without one. */
@@ -116,7 +113,9 @@ const IMAGE_BACKED_VIEWS = new Set<AppView>(["overview", "analysis", "plan", "si
 /** doodee-only destinations. They sit in their own sidebar section rather than crowding the
  *  five-item topbar nav qijek designed. */
 const accountViews: { id: AppView; label: string }[] = [
+  { id: "profile", label: "Profile" },
   { id: "scorecard", label: "Score card" },
+  { id: "referral", label: "Invite" },
   { id: "tryon", label: "Try-on" },
   { id: "history", label: "History" },
   { id: "pricing", label: "Plans" },
@@ -196,9 +195,20 @@ function ScanPhoto({ alt, className }: { alt: string; className?: string }) {
 }
 
 /** Inverse of PILLAR_CATEGORIES in lib/dashboardData, for grouping rows under a pillar tab. */
-/** Matches _user_plan() in backend/doodee/views.py. */
+/**
+ * Labels for the plan codes that have no sellable `Plan` row behind them, or that need wording of
+ * their own. Everything else takes its name from the server (`session.plan_name_th/_en`), which is
+ * the row an admin actually edits.
+ *
+ * This map used to be the *only* source, and it silently predated the ฟรี/พลัส/โปร tiers — so every
+ * Plus and Pro subscriber saw "…" in the sidebar where their plan name belongs. A hardcoded client
+ * copy of a server-owned list falls behind the day somebody adds a tier, which is why the fallback
+ * now runs the other way round.
+ */
 const PLAN_LABELS: Record<string, string> = {
   free: "Free plan",
+  // Granted by a redeemed code. `current_plan()` lends it Pro's *allowances*, so the server-side
+  // name would read "โปร" — true of what they can do, false about what they hold.
   vip: "VIP",
   member: "Member",
   clinic: "Clinic partner",
@@ -218,84 +228,6 @@ const pillarOf = (category: string) => CATEGORY_PILLAR[category];
  * lib/dashboardData.ts. Anything the backend cannot score is reported locked, not invented. */
 
 
-const planActions: PlanAction[] = [
-  {
-    title: "Hairstyle and brow structure",
-    category: "Foundational",
-    detail:
-      "Use more height at the crown and cleaner brow edges to reinforce facial shape.",
-    impact: "+0.18",
-    cost: "$0–$80",
-    time: "Start today",
-  },
-  {
-    title: "Skin texture routine",
-    category: "Foundational",
-    detail:
-      "Build a simple routine around sunscreen, retinoid tolerance and barrier support.",
-    impact: "+0.14",
-    cost: "$20–$90",
-    time: "6–12 weeks",
-  },
-  {
-    title: "Neck and posture training",
-    category: "Foundational",
-    detail:
-      "Use chin tucks and progressive neck work to improve the lower-face silhouette.",
-    impact: "+0.11",
-    cost: "$0–$30",
-    time: "8–16 weeks",
-  },
-  {
-    title: "Masseter assessment",
-    category: "Non-Invasive",
-    detail:
-      "Discuss whether muscle activity contributes to lower-face width or asymmetry.",
-    impact: "+0.09",
-    cost: "$250–$700",
-    time: "2–6 weeks",
-    locked: true,
-  },
-  {
-    title: "Chin profile consultation",
-    category: "Minimally Invasive",
-    detail:
-      "Review projection goals with a qualified professional using the side profile.",
-    impact: "+0.17",
-    cost: "$500–$1,500",
-    time: "1–2 weeks",
-    locked: true,
-  },
-  {
-    title: "Under-eye support review",
-    category: "Non-Invasive",
-    detail: "Discuss skin quality, volume and structural support separately.",
-    impact: "+0.08",
-    cost: "$350–$1,200",
-    time: "1–3 weeks",
-    locked: true,
-  },
-  {
-    title: "Rhinoplasty direction",
-    category: "Surgical",
-    detail:
-      "Explore a conservative bridge and tip direction without changing facial identity.",
-    impact: "+0.13",
-    cost: "$5,000–$15,000",
-    time: "2–4 weeks",
-    locked: true,
-  },
-  {
-    title: "Jaw contour review",
-    category: "Surgical",
-    detail:
-      "Use the 3D consultation view to compare structural and soft-tissue options.",
-    impact: "+0.12",
-    cost: "$6,000–$18,000",
-    time: "3–6 weeks",
-    locked: true,
-  },
-];
 
 export function GlassCard({
   className = "",
@@ -1227,140 +1159,12 @@ function Analysis({
   );
 }
 
-function Plan({
-  onUnlock,
-}: {
-  onUnlock: () => void;
-}) {
-  const [mode, setMode] = useState("Timeline");
-  const [open, setOpen] = useState(0);
-  return (
-    <div className="app-view plan-view plan-view--deep">
-      <div className="app-page-title">
-        <span className="eyebrow">Your plan</span>
-        <h1>Know what to do next.</h1>
-        <p>Ordered by impact, effort, cost and commitment.</p>
-      </div>
-      <GlassCard className="potential-card potential-card--deep">
-        <div>
-          <span className="eyebrow">Current</span>
-          <strong>
-            7.4 <small>today</small>
-          </strong>
-        </div>
-        <ArrowRight />
-        <div>
-          <span className="eyebrow">Your target</span>
-          <strong>
-            8.2 <small>with your plan</small>
-          </strong>
-        </div>
-        <div className="potential-profile">
-          <ScanPhoto alt="Front profile" />
-          <ScanPhoto className="is-side" alt="Side profile" />
-        </div>
-        <div className="potential-meta">
-          <span>
-            <b>{planActions.length}</b> actions
-          </span>
-          <span>
-            <b>$0–$1.5k</b> starting range
-          </span>
-          <span>
-            <b>94%</b> coverage
-          </span>
-        </div>
-        <div className="potential-track">
-          <span />
-        </div>
-      </GlassCard>
-      <div className="plan-mode">
-        <div>
-          {["Population", "Timeline", "Impact"].map((item) => (
-            <button
-              className={mode === item ? "is-active" : ""}
-              type="button"
-              onClick={() => setMode(item)}
-              key={item}
-            >
-              {item}
-            </button>
-          ))}
-        </div>
-        <span>
-          {mode === "Timeline"
-            ? "Manage and track your improvement journey"
-            : mode === "Impact"
-              ? "Highest expected impact first"
-              : "Compared with your reference group"}
-        </span>
-      </div>
-      <GlassCard className="plan-timeline">
-        <header>
-          <div>
-            <span className="eyebrow">Your timeline</span>
-            <h2>Top actions in your plan</h2>
-          </div>
-          <button type="button" onClick={onUnlock}>
-            <LockKeyhole /> Unlock analysis
-          </button>
-        </header>
-        <div className="plan-action-list">
-          {planActions.map((action, index) => (
-            <article
-              className={`${open === index ? "is-open" : ""} ${action.locked ? "is-locked" : ""}`}
-              key={action.title}
-            >
-              <button
-                className="plan-action-main"
-                type="button"
-                onClick={() =>
-                  action.locked
-                    ? onUnlock()
-                    : setOpen(open === index ? -1 : index)
-                }
-              >
-                <span className="plan-action-number">{index + 1}</span>
-                <div>
-                  <strong>{action.title}</strong>
-                  <span
-                    className={`plan-category plan-category--${action.category.toLowerCase().replace(/\s/g, "-")}`}
-                  >
-                    {action.category}
-                  </span>
-                  <p>{action.detail}</p>
-                </div>
-                <b>{action.locked ? <LockKeyhole /> : action.impact}</b>
-                <ChevronDown />
-              </button>
-              <div className="plan-action-detail">
-                <span>
-                  <small>Expected impact</small>
-                  <b>{action.impact} pts</b>
-                </span>
-                <span>
-                  <small>Estimated range</small>
-                  <b>{action.cost}</b>
-                </span>
-                <span>
-                  <small>Time or recovery</small>
-                  <b>{action.time}</b>
-                </span>
-                <button type="button">
-                  Open details <ArrowRight />
-                </button>
-              </div>
-            </article>
-          ))}
-        </div>
-      </GlassCard>
-      <p className="education-note">
-        <CircleHelp /> Educational guidance only. Discuss medical options with a
-        qualified professional.
-      </p>
-    </div>
-  );
-}
+/* qijek's `Plan` view lived here: a hardcoded action list with a "Current 7.4 -> target 8.2"
+ * header and an "Expected impact +0.4 pts" on every row. Those numbers existed nowhere in the
+ * system, and chat.py's safety rules forbid the product from stating how much any action would
+ * change a score — a predicted gain from a cosmetic procedure is exactly the claim it promises
+ * not to make. Replaced by views/DevelopmentPlanPanel.tsx, which is built from the user's own
+ * measurements by the API. */
 
 /* qijek's Simulate was a six-item picker with a fake "preview is ready" toast. doodee already
  * has a working stacked simulation against POST /simulations/preview/ with per-region locking
@@ -1374,6 +1178,11 @@ const HistoryPanel = lazy(() => import("./views/HistoryPanel"));
 const PricingPanel = lazy(() => import("./views/PricingPanel"));
 const SettingsPanel = lazy(() => import("./views/SettingsPanel"));
 const ScoreCardPanel = lazy(() => import("./views/ScoreCardPanel"));
+const ReferralPanel = lazy(() => import("./views/ReferralPanel"));
+const ProfilePanel = lazy(() => import("./views/ProfilePanel"));
+// Replaces the hardcoded `Plan` mock below, which promised a target score and a per-action
+// point gain. No such figure exists in this system, and chat.py's rules forbid stating one.
+const DevelopmentPlanPanel = lazy(() => import("./views/DevelopmentPlanPanel"));
 /* Chat talks to /api/v1/chat/ and runs its own queries, so it is a lazy view like the rest
  * rather than a component threaded through DashboardPage state. */
 const ChatPanel = lazy(() => import("./views/ChatPanel"));
@@ -1387,14 +1196,21 @@ export default function DashboardPage({ view }: { view: AppView }) {
   const requestedScanId = new URLSearchParams(window.location.search).get("scan_id");
   const scanList = useQuery({ queryKey: ["scans"], queryFn: getScans });
   const sessionQuery = useQuery({ queryKey: ["session"], queryFn: getSession });
+  // A special-cased label first, then the plan's own name from the server, then a placeholder
+  // while the session is still loading. Only the last of those should ever be seen.
+  const planLabel =
+    PLAN_LABELS[sessionQuery.data?.plan] ??
+    (locale === "en" ? sessionQuery.data?.plan_name_en : sessionQuery.data?.plan_name_th) ??
+    "…";
   const scanId = requestedScanId || scanList.data?.[0]?.id;
   const scanQuery = useQuery({
     queryKey: ["scan", scanId],
     queryFn: () => getScan(scanId),
     enabled: Boolean(scanId),
-    // Celery does the analysis, so keep polling until it settles.
-    refetchInterval: (query) =>
-      ["completed", "failed"].includes(query.state.data?.status) ? false : 1500,
+    // Celery does the analysis, so keep polling until it settles — but only on the views that
+    // render the waiting state. Every other panel reads this scan's finished data and would
+    // otherwise poll a progress bar nobody is looking at, on every route, forever.
+    refetchInterval: (query) => statusPollInterval(query, IMAGE_BACKED_VIEWS.has(view)),
   });
   const scan = scanQuery.data;
   // ScanSerializer.get_front_url only signs a URL once the scan completes, so this is null
@@ -1563,16 +1379,24 @@ export default function DashboardPage({ view }: { view: AppView }) {
             <X />
           </button>
         </div>
-        <div className="sidebar-profile">
+        {/* Was a plain <div>: an avatar, a name, a plan and a cog icon that looked like the way
+            into an account page and did nothing when pressed. It goes to the profile now. */}
+        <button
+          className="sidebar-profile"
+          type="button"
+          onClick={() => openView("profile")}
+          aria-label="My profile"
+        >
           <CircleUserRound />
           <span>
             <strong>My analysis</strong>
             {/* qijek hardcoded "Free plan" here; showing that to a paying member is a lie the
-                sidebar tells on every page. */}
-            <small>{PLAN_LABELS[sessionQuery.data?.plan] ?? "…"}</small>
+                sidebar tells on every page. The server's own name is preferred so a tier added
+                in the admin never shows up here as "…". */}
+            <small>{planLabel}</small>
           </span>
           <Settings2 />
-        </div>
+        </button>
         <button
           className="sidebar-upgrade"
           type="button"
@@ -1700,6 +1524,7 @@ export default function DashboardPage({ view }: { view: AppView }) {
             >
               <Settings2 />
             </button>
+            <NotificationBell />
             <button
               type="button"
               onClick={() => setToolPanel(toolPanel === "help" ? null : "help")}
@@ -1749,7 +1574,9 @@ export default function DashboardPage({ view }: { view: AppView }) {
             />
           )}
           {view === "plan" && (
-            <Plan onUnlock={() => setUnlockOpen(true)} />
+            <Suspense fallback={<div className="app-view" aria-busy="true" />}>
+              <DevelopmentPlanPanel />
+            </Suspense>
           )}
           {view === "simulate" && (
             <Suspense fallback={<div className="app-view" aria-busy="true" />}>
@@ -1763,6 +1590,8 @@ export default function DashboardPage({ view }: { view: AppView }) {
             {view === "pricing" && <PricingPanel />}
             {view === "settings" && <SettingsPanel />}
             {view === "scorecard" && <ScoreCardPanel />}
+            {view === "referral" && <ReferralPanel />}
+            {view === "profile" && <ProfilePanel />}
           </Suspense>
         </div>
       </div>

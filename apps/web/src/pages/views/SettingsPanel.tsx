@@ -1,11 +1,11 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Globe2, LogOut, Shield, Ticket, Trash2 } from "lucide-react";
+import { Globe2, LogOut, MailCheck, Shield, Ticket, Trash2 } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { GlassCard } from "../DashboardPage";
 import { deleteAccount, getSession, redeemCode } from "../../lib/api";
 import { errorMessage } from "../../lib/apiError";
-import { firebaseSignOut } from "../../lib/firebase";
+import { firebaseSignOut, resendEmailVerification } from "../../lib/firebase";
 import { canSubmitCode, daysRemaining, normalizeCode } from "../../lib/promoCode";
 import { useLocale } from "../../useLocale";
 
@@ -20,6 +20,7 @@ export default function SettingsPanel() {
   const [code, setCode] = useState("");
   const [error, setError] = useState("");
   const [confirmingDelete, setConfirmingDelete] = useState(false);
+  const [verifySent, setVerifySent] = useState("");
 
   const session = useQuery({ queryKey: ["session"], queryFn: getSession });
   const redeem = useMutation({
@@ -83,6 +84,39 @@ export default function SettingsPanel() {
             Adult source images are deleted within 30 days and minors’ within 24 hours. You can
             delete sooner from History at any time.
           </p>
+        </GlassCard>
+
+        {/* Nothing sent this before, so `email_verified` was false forever on every password
+            account — and the referral claim now refuses an unverified identity. A user who
+            missed the mail at signup needs a way to ask for it again, or the invite they were
+            sent is unusable and nothing on screen explains why. */}
+        <GlassCard className="settings-card">
+          <h2>
+            <MailCheck size={18} /> Verify your email
+          </h2>
+          <p>
+            A verified address is required to accept an invite from a friend. Signing in with
+            Google already counts as verified.
+          </p>
+          <button
+            className="settings-outline"
+            type="button"
+            onClick={async () => {
+              try {
+                const sent = await resendEmailVerification();
+                setVerifySent(sent ? "Verification email sent." : "Your email is already verified.");
+              } catch {
+                setVerifySent("Could not send it just now. Try again in a few minutes.");
+              }
+            }}
+          >
+            Send verification email
+          </button>
+          {verifySent && (
+            <p className="settings-status" role="status">
+              {verifySent}
+            </p>
+          )}
         </GlassCard>
 
         {session.data?.redeem_enabled && (

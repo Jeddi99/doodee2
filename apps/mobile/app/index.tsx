@@ -13,6 +13,7 @@ import { scheduleOnRN } from 'react-native-worklets';
 import {
   advanceCaptureTimer, evaluateCapture, SCAN_VIEWS, startCaptureTimer,
   type CaptureTimer, type FaceObservation, type QualityStatus, type ScanView,
+  pollUntilSettled,
 } from '@doodee/shared';
 import { api, auth } from '../lib/backend';
 import { colors } from '../theme';
@@ -236,14 +237,16 @@ export default function Home() {
     body.append('reference_age_band', ageRange);
     body.append('reference_profile', referenceProfile);
     body.append('analysis_consent_version', '2026.3');
+    // SCAN_VIEWS here is all seven angles, so the mode has to say so — left absent the server
+    // defaults to `full` and happened to agree, which is not the same as being told.
+    body.append('scan_mode', 'full');
+    body.append('capture_method', 'mobile_camera');
     try {
-      let scan = await api.uploadScan(body);
-      setStatus(scan);
-      while (!['completed', 'failed'].includes(scan.status)) {
-        await new Promise((resolve) => setTimeout(resolve, 1500));
-        scan = await api.getScan(scan.id);
-        setStatus(scan);
-      }
+      const created = await api.uploadScan(body);
+      setStatus(created);
+      // Backed-off and bounded. This was `while (!settled)` at a flat 1.5 s, which polled faster
+      // than the analysis could finish and never stopped at all if the worker died.
+      const scan = await pollUntilSettled(created, () => api.getScan(created.id), { onUpdate: setStatus });
       if (scan.status === 'failed') await handleFailedScan(scan);
     } catch (cause: any) {
       setError(cause.message);

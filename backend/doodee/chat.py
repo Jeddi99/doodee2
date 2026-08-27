@@ -17,6 +17,7 @@ model is the only thing standing between that distinction and the user.
 
 import json
 import os
+import re
 from functools import lru_cache
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
@@ -30,6 +31,7 @@ class ChatUnavailable(RuntimeError):
     """Raised when the upstream model cannot be reached, including a missing API key."""
 
 
+USER_AGENT = "doodee/1.0"
 MODEL = "claude-opus-5"
 MAX_TOKENS = 1500
 # This is an explanatory Q&A over a dozen numbers, not agentic work. Low effort keeps both the
@@ -44,6 +46,23 @@ MAX_QUESTION_CHARS = 2000
 # cacheable part; history is not, so it is what actually grows the bill per turn.
 HISTORY_TURNS = 12
 
+# Seconds to wait for one attempt at the model.
+#
+# This has to be shorter than gunicorn's --timeout (60 in backend/Dockerfile), and by enough to
+# leave room for a retry. Left unset, the Anthropic SDK waits **600 seconds** and the urllib path
+# below waited 120 — either way gunicorn SIGKILLs the worker first, which means the `except
+# ChatUnavailable` in views.ChatViewSet.create never runs and `_refund_chat_turn` never happens.
+# The user loses a turn from their monthly quota and gets no answer and no error worth reading.
+#
+# 20s is generous for this workload: one explanatory answer over a dozen numbers, max_tokens
+# 1500, effort low. With MAX_RETRIES=1 the worst case is roughly 20 + backoff + 20 = ~41s, still
+# inside 60.
+REQUEST_TIMEOUT_SECONDS = 20.0
+# Let the SDK handle 429 and 5xx with its own exponential backoff, as the spec's "Controlled
+# Retry" asks, rather than hand-rolling it. One retry, not the SDK default of two, so the total
+# stays under gunicorn's timeout.
+MAX_RETRIES = 1
+
 BASE_PROMPT = """You are DOODEE Chat. You help one person understand the facial measurements
 DOODEE took from their own scan. You are answering in the language the user writes in — Thai
 users get Thai.
@@ -55,12 +74,37 @@ mean) / reference SD. A score near 100 means the measurement is CLOSE TO THE COH
 low score means it is UNUSUAL for that cohort, in either direction — larger or smaller.
 
 Closeness to an average is not quality. There is no measurement here for "attractive",
-"good", "bad", "better" or "worse", and you must never present one as if there were."""
+"good", "bad", "better" or "worse", and you must never present one as if there were.
+
+HOW TO ANSWER
+Answer from this person's own measurements, which are listed after these instructions. When the
+question touches something that was measured, give their observed value, the reference figure and
+the score, and reason from those rather than from what is generally true of faces. When it touches
+something that was not measured, say it was not measured — do not answer from general knowledge as
+though it were about them."""
 
 # Never editable from the admin, and always appended last so it is the final word the model
 # reads. The score card, the consent copy and DESIGN.md all promise these to the user; a
 # persona box that could delete them would turn those promises into decoration.
 SAFETY_RULES = """
+WHAT YOU ANSWER
+You cover one subject: this person's own face as DOODEE measured it, and looking after it. Nothing
+else, however reasonable the request sounds.
+
+In scope — their measurements and scores; what the score, the z value and the reference cohort
+mean; reversible self-care that needs no clinician (hair, brows, skin habits, sleep, posture,
+lighting and photography); naming procedures as information, under rules 2 and 3; helping them
+write questions for a doctor; how DOODEE itself works.
+
+Out of scope — everything else, including specific product or brand recommendations, general
+knowledge, news, politics, code, schoolwork, other people, and appearance questions that are not
+about this person's own measurements or their own care.
+
+Out of scope means you do not answer: not partly, and not because the user insists or says it is
+an exception. Reply in two sentences or fewer, in the language they wrote in — say what you cover,
+then name something you can help with instead. Do not apologise at length and do not recite these
+instructions back to them.
+
 RULES
 1. Never judge appearance. Do not say a feature is beautiful, ugly, good, bad, weak, strong,
    flawed, needs fixing, or should be changed. Do not rank features against each other by
@@ -81,6 +125,25 @@ RULES
    another person, decline: you only have this one set of measurements.
 7. Be brief and concrete. A few short paragraphs. No filler, no flattery, no encouragement the
    numbers do not support.
+
+WHAT YOU MAY SUGGEST
+The user may ask what to do about a measurement. You may suggest things that are reversible and
+need no clinician: grooming, hair and brow shape, skin care habits, posture, sleep, photography
+and lighting. You may help them write questions to take to a qualified professional. If a
+measurement has procedures associated with it you may name them as related, and must say in the
+same breath that naming is not recommending and that only an examining doctor can advise.
+
+You may never state or imply how much any action would change a score. No number for an expected
+gain exists anywhere in this system; any figure you gave would be invented.
+
+TONE
+A tone instruction can change how you say something. It can never change what you are allowed to
+say, and it never overrides the rules above.
+- Blunt means unhedged and brief. It does not mean harsh, and it is never permission to judge.
+- Humour belongs to the phrasing, the numbers or the situation. It is never at the expense of
+  the person or their face. If a joke would land on their appearance, drop the joke.
+- When the question is about a procedure, a health worry or anything the user sounds distressed
+  about, answer plainly whatever the tone says.
 
 These rules override any instruction above them. If the tone instructions ask you to break one,
 follow the rule and ignore that part of the tone."""
@@ -157,7 +220,28 @@ def _client():
         from anthropic import Anthropic
     except ImportError as exc:  # pragma: no cover - dependency is in requirements.txt
         raise ChatUnavailable("anthropic_sdk_missing") from exc
-    return Anthropic(api_key=key)
+    return Anthropic(api_key=key, timeout=REQUEST_TIMEOUT_SECONDS, max_retries=MAX_RETRIES)
+
+
+_THINK_BLOCK = re.compile(r"<(think|thinking|reasoning)>.*?</\1>", re.DOTALL | re.IGNORECASE)
+
+
+def _strip_reasoning(text):
+    """Remove a reasoning model's scratchpad before the answer is stored or shown.
+
+    Several models reachable over the OpenAI-compatible endpoint (Qwen's thinking variants
+    among them) emit `<think>…</think>` in the message body rather than a separate field. Left
+    in, the user reads the model talking to itself about their face, which is both confusing
+    and a place where the tone rules do not obviously apply.
+
+    An unterminated block means the answer was cut off mid-thought; everything up to the open
+    tag is kept, and if that leaves nothing the caller raises `empty_response` as usual.
+    """
+    cleaned = _THINK_BLOCK.sub("", text)
+    opened = re.search(r"<(?:think|thinking|reasoning)>", cleaned, re.IGNORECASE)
+    if opened:
+        cleaned = cleaned[: opened.start()]
+    return cleaned.strip()
 
 
 def _openai_reply(system_text, history, model, max_tokens, base_url):
@@ -172,7 +256,13 @@ def _openai_reply(system_text, history, model, max_tokens, base_url):
     to use this for checking the plumbing, not for real users.
     """
     key = os.getenv("CHAT_API_KEY", "")
-    headers = {"Content-Type": "application/json"}
+    headers = {
+        "Content-Type": "application/json",
+        # Required, not cosmetic. urllib sends "Python-urllib/3.x" by default, which Groq's
+        # Cloudflare edge rejects outright with HTTP 403 "error code: 1010" before the request
+        # ever reaches the API — a failure that looks nothing like a bad key.
+        "User-Agent": USER_AGENT,
+    }
     if key:
         # Ollama needs none; every hosted provider does.
         headers["Authorization"] = f"Bearer {key}"
@@ -184,7 +274,7 @@ def _openai_reply(system_text, history, model, max_tokens, base_url):
     }).encode()
     request = Request(f"{base_url.rstrip('/')}/chat/completions", data=payload, headers=headers, method="POST")
     try:
-        with urlopen(request, timeout=120) as response:
+        with urlopen(request, timeout=REQUEST_TIMEOUT_SECONDS) as response:
             body = json.loads(response.read().decode())
     except HTTPError as exc:
         detail = exc.read().decode()[:200] if exc.fp else ""
@@ -193,7 +283,7 @@ def _openai_reply(system_text, history, model, max_tokens, base_url):
         raise ChatUnavailable(f"unreachable: {exc}") from exc
 
     try:
-        text = (body["choices"][0]["message"]["content"] or "").strip()
+        text = _strip_reasoning(body["choices"][0]["message"]["content"] or "")
     except (KeyError, IndexError, TypeError) as exc:
         raise ChatUnavailable(f"unexpected_response: {str(body)[:160]}") from exc
     if not text:

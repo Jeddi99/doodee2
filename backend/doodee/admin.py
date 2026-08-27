@@ -1,9 +1,11 @@
 import csv
+import os
 from datetime import timedelta
 
 from django import forms
 from django.contrib import admin, messages
-from django.contrib.admin.models import LogEntry
+from django.contrib.admin.models import CHANGE, LogEntry
+from django.contrib.contenttypes.models import ContentType
 from django.contrib.auth.admin import UserAdmin as DjangoUserAdmin
 from django.contrib.auth.forms import UserChangeForm as DjangoUserChangeForm
 from django.contrib.auth.models import Group, User
@@ -11,21 +13,82 @@ from django.core.exceptions import PermissionDenied
 from django.db import transaction
 from django.db.models import Case, CharField, Count, Exists, OuterRef, Q, Subquery, Sum, Value, When
 from django.http import HttpResponse
+from django.template.response import TemplateResponse
 from django.utils import timezone
 
 from .models import (
-    ChatConversation, ChatMessage, ChatSetting, ChatTopic, ChatUsage, ConsentEvent, Coupon,
-    CouponRedemption, DailyActive, FirebaseIdentity, Order, Plan, PromoCode, PromoRedemption,
-    Scan, Simulation, SimulationPreviewUsage, Subscription,
+    ChatConversation, ChatMessage, ChatRole, ChatSetting, ChatTopic, ChatUsage, ConsentEvent, Coupon,
+    CouponGrant, CouponRedemption, CreditLedger, DailyActive, FirebaseIdentity, Notification,
+    Order, PayoutAccount, Plan, PromoCode, PromoRedemption, PushToken, Referral, ReferralCode,
+    Scan, Simulation, SimulationPreviewUsage, SiteSetting, Subscription, UserAttribution, Visit,
+    WithdrawalRequest,
 )
-from .billing import activate
+from . import payout
+from .billing import activate, claw_back
 
 
-MEMBERSHIP_GROUPS = ("pro_member", "clinic_partner")
+# Every group that stands for paid access. `plus_member` joined when the ฟรี/พลัส/โปร tiers
+# replaced the single `member` plan; `revoke_membership` reads this list, and a group missing from
+# it is a group the revoke action silently leaves behind.
+MEMBERSHIP_GROUPS = ("plus_member", "pro_member", "clinic_partner")
 
 
 class ConfirmingModelAdmin(admin.ModelAdmin):
     change_form_template = "admin/doodee/confirm_change_form.html"
+
+
+class ExportCsvMixin:
+    """A "download as CSV" action for any changelist.
+
+    Pulled out of UserAdmin, which was the only model that had one — work.md asks for coupon
+    usage history to be exportable, and an export that only covers accounts cannot answer a
+    question about a discount campaign.
+
+    Columns come from `csv_fields`, or from `list_display` when that is not set, so a new column
+    on a changelist appears in its export without a second edit. Callables are rendered through
+    the admin's own display method, which is what makes `฿149.00` come out as `฿149.00` rather
+    than `14900`.
+    """
+
+    csv_fields = ()
+    csv_filename = "doodee-export.csv"
+
+    def _csv_value(self, obj, field):
+        display = getattr(self, field, None)
+        if callable(display):
+            return display(obj)
+        value = getattr(obj, field, "")
+        return "" if value is None else value
+
+    @admin.action(description="ดาวน์โหลดเป็นไฟล์ CSV")
+    def export_csv(self, request, queryset):
+        fields = self.csv_fields or tuple(self.list_display)
+        response = HttpResponse(content_type="text/csv")
+        response["Content-Disposition"] = f'attachment; filename="{self.csv_filename}"'
+        # Excel opens a UTF-8 file as mojibake without a BOM, and every label in this admin is
+        # Thai. The export exists to be opened, not to be technically correct.
+        response.write("﻿")
+        writer = csv.writer(response)
+        writer.writerow(fields)
+        for obj in queryset:
+            writer.writerow([self._csv_value(obj, field) for field in fields])
+        return response
+
+
+def person(user):
+    """How a person should read in a list: their email.
+
+    `User.__str__` is the username, and every account here is created by
+    `FirebaseAuthentication` as `firebase:<uid>` — so a plain `user` column renders a 36-character
+    opaque identifier. On the payout queue that is the column an operator reads before sending
+    somebody money, which makes it the wrong thing to be unreadable.
+
+    Falls back to the username, because an account genuinely can have no email (Firebase phone
+    sign-in), and an empty cell would be worse than the uid.
+    """
+    if not user:
+        return "—"
+    return user.email or user.get_username()
 
 
 def real_users(queryset):
@@ -445,6 +508,7 @@ class ChatSettingAdmin(ConfirmingModelAdmin):
     "what is the chat doing right now"."""
 
     fieldsets = (
+        ("สถานะตอนนี้", {"fields": ("status",)}),
         ("บุคลิกของ AI", {
             "fields": ("persona",),
             "description": (
@@ -463,16 +527,93 @@ class ChatSettingAdmin(ConfirmingModelAdmin):
                 "และโมเดลฟรีตัวเล็กทำตามกฎความปลอดภัยได้ไม่แน่นอนเท่า Claude — ไม่ควรเปิดให้ผู้ใช้จริง"
             ),
         }),
-        ("โควตา", {"fields": ("free_turns", "paid_turns")}),
+        # โควตาแชทย้ายไปอยู่ที่ “แผน” แล้ว (ช่อง “แชทได้ (ข้อความ/เดือน)” ของแต่ละแผน)
+        # เพราะแพคเกจมีสามระดับ แต่ที่นี่เก็บได้แค่สองตัวเลข
         ("ระบบ", {"fields": ("updated_at",)}),
     )
-    readonly_fields = ("updated_at",)
+    readonly_fields = ("status", "updated_at")
+
+    @admin.display(description="แชทพิมพ์เอง")
+    def status(self, obj):
+        """Why free-text chat is on or off, in words an operator can act on.
+
+        The verdict comes from `chat.chat_enabled()` rather than being re-derived here — two
+        copies of this condition would disagree the first time either changed, and the whole
+        point of this field is to be trusted. Only the explanation is written here.
+        """
+        from django.conf import settings as django_settings
+        from django.utils.html import format_html
+
+        from .chat import chat_enabled
+
+        anthropic_key = bool(os.getenv("ANTHROPIC_API_KEY"))
+        chat_key = bool(os.getenv("CHAT_API_KEY"))
+        openai = obj.provider == ChatSetting.Provider.OPENAI
+
+        if chat_enabled():
+            where = obj.base_url if openai else "Anthropic"
+            return format_html(
+                '<strong style="color:var(--object-tools-bg,#417690)">พร้อมใช้งาน</strong> · {} · {}',
+                where, obj.model,
+            )
+
+        if not django_settings.CHAT_ENABLED:
+            reason = "ปิดจากไฟล์ .env (CHAT_ENABLED=false) — ปุ่มคำถามสำเร็จรูปยังใช้ได้ตามปกติ"
+        elif openai:
+            reason = "เลือก OpenAI-compatible แล้วแต่ยังไม่ได้ใส่ “ที่อยู่ API” ด้านล่าง"
+        elif chat_key:
+            # The exact trap that cost a real afternoon: the key is there, on the other setting.
+            reason = ("เลือก Anthropic แต่ไม่มี ANTHROPIC_API_KEY ใน .env — "
+                      "คุณมี CHAT_API_KEY อยู่แล้ว ถ้าจะใช้ Groq หรือ OpenRouter "
+                      "ให้เปลี่ยน “ผู้ให้บริการ” ด้านล่างเป็น OpenAI-compatible แล้วใส่ที่อยู่ API")
+        else:
+            reason = "เลือก Anthropic แต่ไม่มี ANTHROPIC_API_KEY ใน .env (ใส่แล้วต้อง restart)"
+
+        return format_html(
+            '<strong style="color:var(--error-fg,#ba2121)">ปิดอยู่</strong> — {}<br>'
+            '<span style="color:var(--body-quiet-color)">ANTHROPIC_API_KEY: {} · CHAT_API_KEY: {}</span>',
+            reason, "มี" if anthropic_key else "ไม่มี", "มี" if chat_key else "ไม่มี",
+        )
 
     def has_add_permission(self, request):
         return ChatSetting.objects.count() == 0
 
     def has_delete_permission(self, request, obj=None):
         """Deleting it would silently reset the chat to the values compiled into the code."""
+        return False
+
+
+@admin.register(ChatRole)
+class ChatRoleAdmin(ConfirmingModelAdmin):
+    """Voices the user picks between. Wording only — never capability.
+
+    `key` is read-only and rows cannot be added or removed: each key is what gets stored on
+    every conversation that used it, so inventing or deleting one would leave existing threads
+    pointing at a voice that no longer exists.
+    """
+
+    list_display = ("label_th", "label_en", "key", "is_default", "is_active", "sort_order")
+    list_editable = ("is_default", "is_active", "sort_order")
+    list_filter = ("is_active",)
+    readonly_fields = ("key",)
+    fieldsets = (
+        ("ชื่อที่ผู้ใช้เห็น", {"fields": ("key", "label_th", "label_en", "description_th", "description_en")}),
+        ("น้ำเสียง", {
+            "fields": ("persona",),
+            "description": (
+                "<strong>เขียนได้แค่ว่าพูดยังไง ไม่ใช่พูดอะไรได้</strong> — ระบบต่อกฎท้ายทุกครั้งและลบไม่ได้: "
+                "ห้ามตัดสินว่าสวยหรือไม่สวย · ไม่ใช่คำวินิจฉัยทางการแพทย์ · ห้ามรับประกันผล · "
+                "<strong>มุกตลกต้องเล่นกับตัวเลขหรือสถานการณ์ ห้ามเล่นกับหน้าของผู้ใช้</strong> · "
+                "ห้ามอ้างตัวเลขว่าทำอะไรแล้วคะแนนจะขึ้นเท่าไร เพราะระบบไม่เคยคำนวณตัวเลขนั้น"
+            ),
+        }),
+        ("การแสดงผล", {"fields": ("is_default", "is_active", "sort_order")}),
+    )
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
         return False
 
 
@@ -504,10 +645,21 @@ def satang(value):
 
 @admin.register(Plan)
 class PlanAdmin(ConfirmingModelAdmin):
-    list_display = ("code", "name_en", "price", "interval", "grants_group", "self_serve", "is_active", "sort_order")
-    list_filter = ("interval", "is_active", "self_serve")
+    list_display = (
+        "code", "name_th", "price", "interval", "previews", "chat_turns", "analysis_depth",
+        "has_development_plan", "grants_group", "self_serve", "is_active", "sort_order",
+    )
+    list_filter = ("interval", "is_active", "self_serve", "analysis_depth", "has_development_plan")
     search_fields = ("code", "name_en", "name_th")
     list_editable = ("is_active", "sort_order")
+
+    @admin.display(ordering="simulation_previews_per_month", description="จำลอง/เดือน")
+    def previews(self, obj):
+        return "ไม่จำกัด" if obj.simulation_previews_per_month == Plan.UNLIMITED else obj.simulation_previews_per_month
+
+    @admin.display(ordering="chat_turns_per_month", description="แชท/เดือน")
+    def chat_turns(self, obj):
+        return "ไม่จำกัด" if obj.chat_turns_per_month == Plan.UNLIMITED else obj.chat_turns_per_month
 
     @admin.display(ordering="price_satang", description="ราคา")
     def price(self, obj):
@@ -523,18 +675,21 @@ class PlanAdmin(ConfirmingModelAdmin):
 
 
 @admin.register(Coupon)
-class CouponAdmin(ConfirmingModelAdmin):
-    list_display = ("code", "discount", "uses", "once_per_user", "valid_from", "valid_until", "is_active")
-    list_filter = ("discount_type", "is_active", "once_per_user")
+class CouponAdmin(ExportCsvMixin, ConfirmingModelAdmin):
+    list_display = ("code", "discount", "uses", "once_per_user", "requires_grant", "valid_from", "valid_until", "is_active")
+    list_filter = ("discount_type", "is_active", "once_per_user", "requires_grant")
     search_fields = ("code", "note")
     list_editable = ("is_active",)
     filter_horizontal = ("applies_to_plans",)
     readonly_fields = ("used_count", "created_at")
+    actions = ("export_csv",)
+    csv_filename = "doodee-coupons.csv"
 
     @admin.display(description="ส่วนลด")
     def discount(self, obj):
         if obj.discount_type == Coupon.DiscountType.PERCENT:
-            return f"{obj.discount_value}%"
+            capped = f" (ไม่เกิน {satang(obj.max_discount_satang)})" if obj.max_discount_satang else ""
+            return f"{obj.discount_value}%{capped}"
         return satang(obj.discount_value)
 
     @admin.display(description="ใช้ไป / จำกัด")
@@ -549,7 +704,7 @@ class CouponAdmin(ConfirmingModelAdmin):
 
 
 @admin.register(Order)
-class OrderAdmin(ConfirmingModelAdmin):
+class OrderAdmin(ExportCsvMixin, ConfirmingModelAdmin):
     """Where a bank transfer becomes entitlement, until a payment provider exists.
 
     `mark_paid` is the only way to grant a paid plan through money right now, and it runs the
@@ -557,15 +712,20 @@ class OrderAdmin(ConfirmingModelAdmin):
     the subscription period are identical either way, and both are idempotent.
     """
 
-    list_display = ("id", "user", "plan", "total", "discount", "coupon", "status", "provider", "created_at", "paid_at")
+    list_display = ("id", "user", "plan", "total", "discount", "credit_used", "coupon", "status", "provider", "created_at", "paid_at")
     list_filter = ("status", "provider", "plan")
     search_fields = ("id", "user__email", "provider_charge_id", "coupon__code")
     autocomplete_fields = ("user",)
     readonly_fields = (
-        "subtotal_satang", "discount_satang", "total_satang", "coupon", "provider_charge_id",
-        "created_at", "paid_at",
+        "subtotal_satang", "discount_satang", "credit_satang", "total_satang", "coupon",
+        "provider_charge_id", "created_at", "paid_at",
     )
-    actions = ("mark_paid", "mark_cancelled")
+    actions = ("mark_paid", "mark_cancelled", "export_csv")
+    csv_filename = "doodee-orders.csv"
+
+    @admin.display(ordering="credit_satang", description="ใช้เครดิต")
+    def credit_used(self, obj):
+        return satang(obj.credit_satang) if obj.credit_satang else "—"
 
     @admin.display(ordering="total_satang", description="ยอดที่ต้องจ่าย")
     def total(self, obj):
@@ -622,16 +782,514 @@ class SubscriptionAdmin(ConfirmingModelAdmin):
 
 
 @admin.register(CouponRedemption)
-class CouponRedemptionAdmin(ConfirmingModelAdmin):
-    list_display = ("user", "coupon", "order", "redeemed_at")
+class CouponRedemptionAdmin(ExportCsvMixin, ConfirmingModelAdmin):
+    """The usage history work.md §1.2 asks to be exportable: who, when, which order, how much."""
+
+    list_display = ("user", "coupon", "order", "discount_given", "redeemed_at")
     list_filter = ("coupon",)
     search_fields = ("user__email", "coupon__code")
     readonly_fields = tuple(field.name for field in CouponRedemption._meta.fields)
+    actions = ("export_csv",)
+    csv_filename = "doodee-coupon-usage.csv"
+
+    @admin.display(description="ส่วนลดที่ได้")
+    def discount_given(self, obj):
+        return satang(obj.order.discount_satang) if obj.order_id else "—"
 
     def has_add_permission(self, request):
         return False
 
     def has_change_permission(self, request, obj=None):
+        return False
+
+
+@admin.register(SiteSetting)
+class SiteSettingAdmin(ConfirmingModelAdmin):
+    """The numbers a business decision can change, on one page, without a deploy.
+
+    Everything here used to be a constant in `settings.py` (and one literal in `views.py`).
+    Plan prices and quotas are deliberately NOT here — those differ per tier and belong on แผน,
+    which is one row per tier rather than the single row this model holds.
+    """
+
+    fieldsets = (
+        ("ชวนเพื่อน", {
+            "fields": (
+                "referral_enabled", "reward_satang", "max_qualified_per_month",
+                "claim_window_hours", "require_verified_email",
+            ),
+            "description": (
+                "รางวัลจ่ายเมื่อเพื่อนที่ถูกชวน <strong>จ่ายเงินครั้งแรก</strong> ไม่ใช่ตอนสมัคร — "
+                "ถ้าจ่ายตอนสมัคร การสร้างอีเมลทิ้งๆ จะกลายเป็นอาชีพ · "
+                "<strong>ส่วนลดของเพื่อนที่ถูกชวนแก้ที่คูปอง</strong> "
+                '<a href="/admin/doodee/coupon/?q=FRIEND10">FRIEND10</a> '
+                "เพราะต้องเป็นคูปองจริงระบบส่วนลดถึงจะคิดให้ได้"
+            ),
+        }),
+        ("การถอนเงิน", {
+            "fields": ("withdrawal_enabled", "withdrawal_min_satang", "withdrawal_hold_days"),
+            "description": (
+                "เครดิตที่ค้างอยู่ในระบบคือ<strong>เงินที่ต้องจ่ายจริง</strong> ดูยอดรวมได้ที่ "
+                '<a href="/admin/reports/">หน้ารายงาน</a>'
+            ),
+        }),
+        ("สมาชิก", {"fields": ("subscription_grace_days",)}),
+        ("เพดานกันการใช้งานผิดปกติ", {
+            "fields": ("chat_hourly_ceiling", "preview_hourly_ceiling"),
+            "description": (
+                "ไม่ใช่โควตาของแผน — โควตาอยู่ที่ <a href=\"/admin/doodee/plan/\">แผน</a> · "
+                "ตัวเลขสองตัวนี้จำกัดว่าหนึ่งบัญชีใช้ได้เท่าไรใน<strong>หนึ่งชั่วโมง</strong> "
+                "มีไว้กันบัญชีถูกยึดแล้วยิงจนงบหมด ใช้กับทุกแผนรวมถึงแผนที่ขายว่าไม่จำกัด"
+            ),
+        }),
+        ("ระบบ", {"fields": ("updated_at",)}),
+    )
+    readonly_fields = ("updated_at",)
+
+    def has_add_permission(self, request):
+        """One row, always. `current()` creates it; "add another" would make a dead second row."""
+        return not SiteSetting.objects.exists()
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+    def changelist_view(self, request, extra_context=None):
+        """Straight into the one row — a list page for a single row is a wasted click."""
+        from django.shortcuts import redirect
+
+        return redirect("admin:doodee_sitesetting_change", SiteSetting.current().pk)
+
+
+@admin.register(Referral)
+class ReferralAdmin(ExportCsvMixin, ConfirmingModelAdmin):
+    """Who invited whom, and whether it was paid.
+
+    The two actions here are the whole human part of the referral system. Everything else
+    decides itself; a referral in "พักไว้ให้ตรวจสอบ" is waiting on somebody in this screen,
+    and money never moves without one of these buttons being pressed.
+    """
+
+    list_display = ("who_invited", "who_joined", "code", "status", "reward", "qualifying_order", "created_at", "qualified_at")
+    list_filter = ("status",)
+    search_fields = ("code", "inviter__email", "invitee__email")
+    autocomplete_fields = ("inviter", "invitee")
+    readonly_fields = (
+        "inviter", "invitee", "code", "qualifying_order", "signup_ip_hash", "created_at",
+        "qualified_at",
+    )
+    actions = ("approve_held", "reject", "claw_back_reward", "export_csv")
+    csv_filename = "doodee-referrals.csv"
+
+    @admin.display(ordering="inviter__email", description="ผู้ชวน")
+    def who_invited(self, obj):
+        return person(obj.inviter)
+
+    @admin.display(ordering="invitee__email", description="เพื่อนที่ถูกชวน")
+    def who_joined(self, obj):
+        return person(obj.invitee)
+
+    @admin.display(description="รางวัลที่จ่าย")
+    def reward(self, obj):
+        paid = sum(entry.amount_satang for entry in obj.credit_entries.all())
+        return satang(paid) if paid else "—"
+
+    def has_add_permission(self, request):
+        """A referral is a record of something that happened, not something to type in."""
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+    @admin.action(description="อนุมัติรายการที่พักไว้ และจ่ายรางวัล")
+    def approve_held(self, request, queryset):
+        if not request.user.is_superuser:
+            # This moves money. Staff who can read the screen should not also be able to pay
+            # from it, for the same reason `mark_paid` is superuser-only.
+            raise PermissionDenied
+        reward = SiteSetting.current().reward_satang
+        paid = 0
+        for referral in queryset.filter(status=Referral.Status.HELD):
+            with transaction.atomic():
+                referral.status = Referral.Status.QUALIFIED
+                referral.qualified_at = timezone.now()
+                referral.signup_ip_hash = ""
+                referral.save(update_fields=("status", "qualified_at", "signup_ip_hash"))
+                CreditLedger.objects.create(
+                    user=referral.inviter,
+                    amount_satang=reward,
+                    kind=CreditLedger.Kind.REFERRAL_REWARD,
+                    referral=referral,
+                    note=f"อนุมัติโดย {request.user.get_username()}",
+                )
+            paid += 1
+        self.message_user(request, f"อนุมัติและจ่ายรางวัล {paid} รายการ", messages.SUCCESS)
+
+    @admin.action(description="ไม่อนุมัติ (ไม่จ่ายรางวัล)")
+    def reject(self, request, queryset):
+        updated = queryset.exclude(status=Referral.Status.QUALIFIED).update(
+            status=Referral.Status.REJECTED
+        )
+        # Qualified rows are excluded rather than refused: the reward has already been paid, so
+        # the operation that undoes it is a clawback, which writes the reversing ledger row.
+        self.message_user(
+            request, f"ไม่อนุมัติ {updated} รายการ · รายการที่จ่ายรางวัลไปแล้วให้ใช้ “เรียกคืนรางวัล”", messages.SUCCESS,
+        )
+
+    @admin.action(description="เรียกคืนรางวัลที่จ่ายไปแล้ว")
+    def claw_back_reward(self, request, queryset):
+        if not request.user.is_superuser:
+            raise PermissionDenied
+        reversed_count = 0
+        for referral in queryset.filter(status=Referral.Status.QUALIFIED):
+            if claw_back(referral, note=f"เรียกคืนโดย {request.user.get_username()}"):
+                reversed_count += 1
+        self.message_user(
+            request,
+            f"เรียกคืน {reversed_count} รายการ · รายการเดิมยังอยู่ในบัญชีเครดิต ระบบบันทึกเป็นแถวติดลบใหม่",
+            messages.SUCCESS,
+        )
+
+
+def _audit(request, obj, message):
+    """Write a LogEntry for something that is not a model edit.
+
+    Reading a customer's bank number changes nothing and so leaves no trace of its own. Django
+    has kept an audit table since the first migrate and `LogEntryAdmin` already exposes it
+    read-only, so recording the read there puts it in the one place an operator already looks.
+    """
+    LogEntry.objects.log_action(
+        user_id=request.user.pk,
+        content_type_id=ContentType.objects.get_for_model(obj).pk,
+        object_id=obj.pk,
+        object_repr=str(obj),
+        action_flag=CHANGE,
+        change_message=message,
+    )
+
+
+@admin.register(PayoutAccount)
+class PayoutAccountAdmin(admin.ModelAdmin):
+    """The only table in the product holding customer bank details.
+
+    Superuser-only, masked by default, and reading a full number is an explicit action that
+    writes an audit row naming who read it. Four digits are enough for support to confirm they
+    are looking at the right account; the rest is nobody's business until a transfer is due.
+    """
+
+    list_display = ("who", "method", "bank", "account_name", "masked", "updated_at")
+    list_filter = ("method", "bank")
+    search_fields = ("user__email", "account_name", "number_last4")
+    autocomplete_fields = ("user",)
+    readonly_fields = ("user", "method", "bank", "account_name", "masked", "created_at", "updated_at")
+    exclude = ("number_encrypted", "number_last4")
+    actions = ("reveal_account_number",)
+
+    @admin.display(ordering="user__email", description="ผู้ใช้")
+    def who(self, obj):
+        return person(obj.user)
+
+    @admin.display(description="เลขบัญชี")
+    def masked(self, obj):
+        return obj.masked
+
+    def has_module_permission(self, request):
+        return request.user.is_superuser
+
+    def has_view_permission(self, request, obj=None):
+        return request.user.is_superuser
+
+    def has_add_permission(self, request):
+        """The user enters their own. One typed here would be somebody guessing at it."""
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+    @admin.action(description="ดูเลขบัญชีเต็ม (ระบบบันทึกว่าใครกดดู)")
+    def reveal_account_number(self, request, queryset):
+        if not request.user.is_superuser:
+            raise PermissionDenied
+        for account in queryset:
+            try:
+                number = payout.decrypt_number(account)
+            except payout.PayoutError:
+                self.message_user(
+                    request, "ยังไม่ได้ตั้งคีย์ถอดรหัส (PAYOUT_ENCRYPTION_KEY)", messages.ERROR,
+                )
+                return
+            except Exception:
+                # A row encrypted with a key that has since been rotated. Say so rather than
+                # showing a stack trace to somebody who is trying to pay a customer.
+                self.message_user(
+                    request, f"ถอดรหัสบัญชีของ {account.user} ไม่ได้ — คีย์อาจถูกเปลี่ยน", messages.ERROR,
+                )
+                continue
+            _audit(request, account, f"ดูเลขบัญชีเต็มของ {person(account.user)}")
+            self.message_user(
+                request,
+                f"{person(account.user)} · {account.get_method_display()} {account.bank} · "
+                f"{number} · {account.account_name}",
+                messages.WARNING,
+            )
+
+
+@admin.register(WithdrawalRequest)
+class WithdrawalRequestAdmin(ExportCsvMixin, ConfirmingModelAdmin):
+    """The payout queue: people waiting for their money.
+
+    The credit already left their balance when they asked (see `payout.request_withdrawal`), so
+    every row here is either going to be paid or refunded — there is no third outcome, and one
+    left sitting is somebody's money in limbo.
+
+    All three actions are superuser-only, for the same reason `mark_paid` on orders is: reading
+    the queue and sending money are different permissions.
+    """
+
+    list_display = (
+        "id", "who", "amount", "status", "to_account", "reference", "created_at", "paid_at",
+    )
+    list_filter = ("status",)
+    search_fields = ("user__email", "reference", "id")
+    autocomplete_fields = ("user",)
+    readonly_fields = (
+        "user", "amount_satang", "destination_detail", "created_at", "paid_at", "reviewed_by",
+        "reviewed_at",
+    )
+    exclude = ("destination",)
+    actions = ("approve_selected", "mark_paid_selected", "reject_selected", "export_csv")
+    csv_filename = "doodee-withdrawals.csv"
+
+    @admin.display(ordering="user__email", description="ผู้ถอน")
+    def who(self, obj):
+        return person(obj.user)
+
+    @admin.display(ordering="amount_satang", description="จำนวน")
+    def amount(self, obj):
+        return satang(obj.amount_satang)
+
+    # NOT named `destination`: `list_display` resolves a model field before a method of the same
+    # name, so the JSONField won and the changelist rendered the whole snapshot — ciphertext
+    # included — instead of `••••0000`. The CSV export reads `list_display` too, so it went in
+    # there as well.
+    @admin.display(description="ปลายทาง")
+    def to_account(self, obj):
+        return obj.masked_destination
+
+    @admin.display(description="ปลายทาง (ตอนที่ขอถอน)")
+    def destination_detail(self, obj):
+        data = obj.destination or {}
+        return (
+            f"{data.get('bank_label') or 'พร้อมเพย์'} · ••••{data.get('number_last4', '')} · "
+            f"{data.get('account_name', '')}"
+        )
+
+    def has_add_permission(self, request):
+        """Requests come from users. One created here would deduct nothing and pay somebody."""
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+    def _require_superuser(self, request):
+        if not request.user.is_superuser:
+            raise PermissionDenied
+
+    @admin.action(description="อนุมัติ (ยังไม่ได้โอน)")
+    def approve_selected(self, request, queryset):
+        self._require_superuser(request)
+        done = 0
+        for withdrawal in queryset:
+            try:
+                payout.approve(withdrawal, by=request.user)
+            except payout.PayoutError:
+                continue
+            done += 1
+        self.message_user(
+            request, f"อนุมัติ {done} รายการ · โอนเงินแล้วอย่าลืมกลับมากด “บันทึกว่าโอนแล้ว”",
+            messages.SUCCESS,
+        )
+
+    @admin.action(description="บันทึกว่าโอนแล้ว")
+    def mark_paid_selected(self, request, queryset):
+        """Opens a page with one reference box per payout, then records them.
+
+        A plain bulk action cannot ask a question, and the first version of this made the operator
+        open each row, type the slip number, save through a confirm dialog, come back to the list
+        and only then run the action — six steps for one transfer. Django's intermediate-action
+        page collapses that to one.
+
+        One box per row rather than one for the batch: each transfer has its own slip, and a
+        single shared reference would file the same number against every payout, which is exactly
+        the record that fails when somebody disputes one of them.
+        """
+        self._require_superuser(request)
+
+        if "apply" in request.POST:
+            paid, skipped, refused = 0, 0, 0
+            for withdrawal in queryset:
+                reference = (request.POST.get(f"reference_{withdrawal.pk}") or "").strip()
+                if not reference:
+                    # Left blank on purpose — paying four of five in a sitting is normal, and the
+                    # fifth stays in the queue rather than blocking the four.
+                    skipped += 1
+                    continue
+                try:
+                    payout.mark_paid(withdrawal, by=request.user, reference=reference)
+                except payout.PayoutError:
+                    refused += 1
+                    continue
+                paid += 1
+            if paid:
+                self.message_user(request, f"บันทึกว่าโอนแล้ว {paid} รายการ", messages.SUCCESS)
+            if skipped:
+                self.message_user(
+                    request, f"ข้าม {skipped} รายการที่ยังไม่ได้กรอกเลขอ้างอิง — ยังอยู่ในคิว",
+                    messages.WARNING,
+                )
+            if refused:
+                self.message_user(
+                    request, f"{refused} รายการบันทึกไม่ได้ เพราะปิดไปแล้ว (โอนแล้ว/ไม่อนุมัติ/ยกเลิก)",
+                    messages.WARNING,
+                )
+            return None
+
+        return TemplateResponse(request, "admin/doodee/mark_paid.html", {
+            **self.admin_site.each_context(request),
+            "title": "บันทึกว่าโอนแล้ว",
+            "queryset": queryset,
+            # Pre-resolved so the template never has to reach through a relation for the email.
+            "rows": [{"withdrawal": w, "who": person(w.user)} for w in queryset],
+            "total": sum(w.amount_satang for w in queryset),
+            "action_checkbox_name": admin.helpers.ACTION_CHECKBOX_NAME,
+            "opts": self.model._meta,
+        })
+
+    @admin.action(description="ไม่อนุมัติ และคืนเครดิตให้ผู้ใช้")
+    def reject_selected(self, request, queryset):
+        self._require_superuser(request)
+        done = 0
+        for withdrawal in queryset:
+            try:
+                payout.reject(
+                    withdrawal, by=request.user,
+                    note=withdrawal.note or f"ไม่อนุมัติโดย {request.user.get_username()}",
+                )
+            except payout.PayoutError:
+                continue
+            done += 1
+        self.message_user(request, f"ไม่อนุมัติ {done} รายการ · คืนเครดิตให้ผู้ใช้แล้ว", messages.SUCCESS)
+
+
+@admin.register(CreditLedger)
+class CreditLedgerAdmin(admin.ModelAdmin):
+    """The credit ledger. Append-only, and enforced as such here.
+
+    Neither editable nor deletable: the balance is the sum of these rows, so an edited row is a
+    balance nobody can reconstruct and a deleted one is a payout with no history. A mistake is
+    corrected by adding the opposite row, which is what "แอดมินปรับยอด" is for.
+    """
+
+    list_display = ("created_at", "who", "amount", "kind", "referral", "order", "note")
+    list_filter = ("kind",)
+    search_fields = ("user__email", "note")
+    autocomplete_fields = ("user",)
+    readonly_fields = ("referral", "order", "created_at")
+
+    @admin.display(ordering="user__email", description="ผู้ใช้")
+    def who(self, obj):
+        return person(obj.user)
+
+    @admin.display(ordering="amount_satang", description="จำนวน")
+    def amount(self, obj):
+        return f"{'+' if obj.amount_satang >= 0 else '−'}{satang(abs(obj.amount_satang))}"
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+    def has_add_permission(self, request):
+        # Adding IS allowed, and is the only way to correct a balance — but only for someone who
+        # could grant paid entitlement anyway.
+        return request.user.is_superuser
+
+    def save_model(self, request, obj, form, change):
+        if not obj.kind:
+            obj.kind = CreditLedger.Kind.ADMIN_ADJUST
+        obj.note = obj.note or f"ปรับโดย {request.user.get_username()}"
+        super().save_model(request, obj, form, change)
+
+
+@admin.register(CouponGrant)
+class CouponGrantAdmin(ConfirmingModelAdmin):
+    """Sending a coupon straight into one account — work.md §2.2's "แจกคูปองเข้าบัญชีผู้ใช้".
+
+    Adding a row here is the whole feature: pick a person and a `requires_grant` coupon, and
+    only they can use it. Removing the row takes the offer back, provided it has not been spent.
+    """
+
+    list_display = ("who", "coupon", "source", "used_order", "expires_at", "created_at")
+    list_filter = ("coupon",)
+    search_fields = ("user__email", "coupon__code")
+    autocomplete_fields = ("user",)
+    readonly_fields = ("referral", "used_order", "created_at")
+
+    @admin.display(ordering="user__email", description="ผู้ใช้")
+    def who(self, obj):
+        return person(obj.user)
+
+    @admin.display(description="ที่มา")
+    def source(self, obj):
+        return "ระบบชวนเพื่อน" if obj.referral_id else "แอดมินมอบให้"
+
+    def has_delete_permission(self, request, obj=None):
+        # A spent grant is part of the record behind a paid order.
+        return obj is None or obj.used_order_id is None
+
+
+@admin.register(ReferralCode)
+class ReferralCodeAdmin(ConfirmingModelAdmin):
+    list_display = ("code", "user", "invited", "created_at")
+    search_fields = ("code", "user__email")
+    autocomplete_fields = ("user",)
+    readonly_fields = ("code", "created_at")
+
+    def get_queryset(self, request):
+        return super().get_queryset(request).annotate(_invited=Count("user__referrals_made"))
+
+    @admin.display(ordering="_invited", description="ชวนไปแล้ว")
+    def invited(self, obj):
+        return obj._invited
+
+    def has_add_permission(self, request):
+        """Codes are minted on first read. One typed here could collide or duplicate a user's."""
+        return False
+
+
+@admin.register(Notification)
+class NotificationAdmin(admin.ModelAdmin):
+    """Read-only: this is the record of what a user was told, and editing it rewrites history."""
+
+    list_display = ("created_at", "user", "kind", "title", "read_at", "emailed_at", "pushed_at")
+    list_filter = ("kind",)
+    search_fields = ("user__email", "title", "dedupe_key")
+    date_hierarchy = "created_at"
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+
+@admin.register(PushToken)
+class PushTokenAdmin(admin.ModelAdmin):
+    list_display = ("user", "platform", "created_at", "last_seen_at")
+    list_filter = ("platform",)
+    search_fields = ("user__email",)
+
+    def has_add_permission(self, request):
         return False
 
 
@@ -643,6 +1301,46 @@ class DailyActiveAdmin(admin.ModelAdmin):
     list_filter = ("date",)
     search_fields = ("user__email",)
     date_hierarchy = "date"
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+
+@admin.register(Visit)
+class VisitAdmin(admin.ModelAdmin):
+    """Arrival counts per source per day. Read-only, for the same reason as DailyActive.
+
+    The summary worth reading is /admin/marketing/; this is here so a figure on that page can be
+    traced to the rows behind it. There is no search box because there is nothing to search for:
+    the table holds no identifier of any kind.
+    """
+
+    list_display = ("date", "source", "medium", "campaign", "landing_path", "device", "hits")
+    list_filter = ("source", "campaign", "device")
+    date_hierarchy = "date"
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+
+@admin.register(UserAttribution)
+class UserAttributionAdmin(admin.ModelAdmin):
+    """Which link brought each account here. Read-only — first touch is a fact, not a setting."""
+
+    list_display = ("who", "source", "medium", "campaign", "landing_path", "created_at")
+    list_filter = ("source", "campaign")
+    search_fields = ("user__email", "source", "campaign")
+    date_hierarchy = "created_at"
+
+    @admin.display(ordering="user__email", description="ผู้ใช้")
+    def who(self, obj):
+        return person(obj.user)
 
     def has_add_permission(self, request):
         return False

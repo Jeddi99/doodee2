@@ -18,3 +18,7 @@ apps/web/dist/
 # collectstatic output — rebuilt in the image, never committed.
 backend/staticfiles/
 staticfiles/
+
+# celery beat's own state, written into ./backend because compose bind-mounts it. Appears the
+# first time `docker compose up` runs the beat container, and is not ours to commit.
+backend/celerybeat-schedule

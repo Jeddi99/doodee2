@@ -13,12 +13,14 @@ of rows) costs a few milliseconds.
 from datetime import timedelta
 
 from django.contrib.admin import AdminSite
-from django.db.models import Count, Q
+from django.db.models import Count, Q, Sum
 from django.shortcuts import render
 from django.urls import path
 from django.utils import timezone
 
-from .models import PromoRedemption, Scan, Simulation
+from .models import (
+    PromoRedemption, Referral, Scan, Simulation, Subscription, WithdrawalRequest,
+)
 
 
 class DoodeeAdminSite(AdminSite):
@@ -40,6 +42,8 @@ class DoodeeAdminSite(AdminSite):
         # "reports" as an installed app label and 404.
         return [
             path("reports/", self.admin_view(self.reports_view), name="doodee_reports"),
+            # Same reason: "marketing" is not an app label either.
+            path("marketing/", self.admin_view(self.marketing_view), name="doodee_marketing"),
             *super().get_urls(),
         ]
 
@@ -56,6 +60,33 @@ class DoodeeAdminSite(AdminSite):
             # Built from the same rows the table below the chart prints, so the picture and the
             # numbers can never disagree.
             "chart": monthly_chart(data["months"], data["tracking_started"]),
+        })
+
+    def marketing_view(self, request):
+        """Where users come from, and what they are worth once they arrive.
+
+        Its own page rather than five more sections on the reports one: this is the question a
+        person asks while spending money on ads, and the answer should not be at the bottom of
+        a page about chat costs and withdrawal queues.
+        """
+        from .analytics import DEFAULT_WINDOW, WINDOWS, marketing_report
+        from .charts import bar_chart
+
+        try:
+            days = int(request.GET.get("days", DEFAULT_WINDOW))
+        except (TypeError, ValueError):
+            days = DEFAULT_WINDOW
+        # Clamped rather than trusted: `days` arrives from a query string, and an arbitrary
+        # integer there is an arbitrary scan anyone can ask this page to run.
+        days = days if days in WINDOWS else DEFAULT_WINDOW
+
+        data = marketing_report(days)
+        return render(request, "admin/doodee/marketing.html", {
+            **self.each_context(request),
+            "title": "การตลาด",
+            "report": data,
+            # Same rows as the numbers beside it, so the picture cannot disagree with the table.
+            "chart": bar_chart(data["visit_months"], "hits", data["visit_tracking_started"]),
         })
 
     @staticmethod
@@ -81,11 +112,30 @@ class DoodeeAdminSite(AdminSite):
             week=Count("pk", filter=Q(redeemed_at__gte=last_7)),
             active=Count("pk", filter=Q(expires_at__gt=now)),
         )
+        referrals = Referral.objects.aggregate(
+            week=Count("pk", filter=Q(created_at__gte=last_7)),
+            qualified_week=Count("pk", filter=Q(qualified_at__gte=last_7)),
+            # The actionable one: a referral in this state is waiting on a person, and money
+            # does not move until somebody looks at it.
+            held=Count("pk", filter=Q(status=Referral.Status.HELD)),
+        )
+        # People waiting for their money. The one figure on this page where a delay is somebody
+        # refreshing their bank app, so it is counted and totalled rather than merely listed.
+        withdrawals = WithdrawalRequest.objects.filter(
+            status__in=WithdrawalRequest.OPEN_STATUSES,
+        ).aggregate(count=Count("pk"), total=Sum("amount_satang"))
+        withdrawals["total"] = withdrawals["total"] or 0
+        expiring = Subscription.objects.filter(
+            current_period_end__gt=now, current_period_end__lte=now + timedelta(days=7),
+        ).exclude(status=Subscription.Status.CANCELLED).count()
         return {
             "overview": {
                 "scans": scans,
                 "simulations": simulations,
                 "redemptions": redemptions,
+                "referrals": referrals,
+                "withdrawals": withdrawals,
+                "expiring_week": expiring,
                 # A queue that keeps growing is the first sign the Celery worker is wedged or
                 # that MediaPipe is saturating the box — see compose.yaml's --concurrency=2.
                 "queue_warning": scans["pending"] > 10,

@@ -54,6 +54,57 @@ def _axis(maximum, height):
     ]
 
 
+def bar_chart(rows, value_key, tracking_started=None, width=720, height=180):
+    """One series of bars over months. Same axis helpers, one scale instead of two.
+
+    Deliberately not a generalisation of `monthly_chart` below: that one is wired to two named
+    series on two independent scales, the reports page depends on every key it returns, and
+    bending it into a shape that also serves a single series would put a parameter in front of
+    every one of those callers to buy nothing.
+    """
+    series = list(reversed(rows or []))
+    if not series:
+        return None
+
+    plot_height = height - PAD_TOP - PAD_BOTTOM
+    plot_width = width - PAD_LEFT - PAD_RIGHT
+    slot = plot_width / len(series)
+    bar_width = slot * BAR_SHARE
+
+    maximum, ticks = _axis(max((row[value_key] for row in series), default=0), height)
+
+    bars = []
+    for index, row in enumerate(series):
+        centre = PAD_LEFT + slot * (index + 0.5)
+        bar_height = plot_height * row[value_key] / maximum
+        # Before the counter existed a month reads as zero but means "not recorded". Drawn
+        # hollow, for the same reason as in monthly_chart: a flat zero beside real data is a lie
+        # by omission.
+        untracked = bool(tracking_started and row["month"] < tracking_started.replace(day=1))
+        bars.append({
+            "x": round(centre - bar_width / 2, 2),
+            "y": round(PAD_TOP + plot_height - bar_height, 2),
+            "width": round(bar_width, 2),
+            "height": round(bar_height, 2),
+            "label": row["month"].strftime("%m/%y"),
+            "label_x": round(centre, 2),
+            "value": row[value_key],
+            "untracked": untracked,
+        })
+
+    return {
+        "width": width,
+        "height": height,
+        "baseline_y": PAD_TOP + plot_height,
+        "plot_left": PAD_LEFT,
+        "plot_right": width - PAD_RIGHT,
+        "bars": bars,
+        "ticks": ticks,
+        "maximum": maximum,
+        "empty": all(row[value_key] == 0 for row in series),
+    }
+
+
 def monthly_chart(rows, tracking_started=None, width=720, height=220):
     """Bars for `active`, a line for `cumulative_users`.
 

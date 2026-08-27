@@ -1,0 +1,83 @@
+{% extends "admin/base_site.html" %}
+{% load doodee_money %}
+{% comment %}
+  The step between "I made the transfers" and "the system knows I made them".
+
+  One reference box per withdrawal, not one for the batch: an operator pays several people in a
+  sitting and each transfer has its own slip number, so a single shared field would file the same
+  reference against every payout and make the record useless the first time one is queried.
+
+  A row left blank is skipped rather than rejected — paying four of five and recording four is a
+  normal afternoon, and refusing the whole batch over the fifth would send the operator back to
+  the queue to start again.
+{% endcomment %}
+
+{% block breadcrumbs %}
+  <div class="breadcrumbs">
+    <a href="{% url 'admin:index' %}">หน้าแรก</a>
+    &rsaquo; <a href="{% url 'admin:doodee_withdrawalrequest_changelist' %}">คำขอถอนเงิน</a>
+    &rsaquo; บันทึกว่าโอนแล้ว
+  </div>
+{% endblock %}
+
+{% block content %}
+<style>
+  .mp-note { color: var(--body-quiet-color); font-size: .85rem; margin: 0 0 1rem; max-width: 46rem; line-height: 1.7; }
+  .mp-table { width: 100%; border-collapse: collapse; margin-bottom: 1.5rem; }
+  .mp-table th, .mp-table td { padding: .6rem .7rem; border-bottom: 1px solid var(--hairline-color); text-align: left; vertical-align: top; }
+  .mp-table thead th { color: var(--body-quiet-color); font-size: .8rem; white-space: nowrap; }
+  .mp-table .mp-amount { font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .mp-table input[type="text"] { width: 100%; min-width: 12rem; }
+  .mp-dest { font-size: .85rem; }
+  .mp-dest small { display: block; color: var(--body-quiet-color); }
+  .mp-total { font-size: .95rem; margin: 0 0 1rem; }
+  .mp-actions { display: flex; gap: .8rem; align-items: center; }
+</style>
+
+<h1>บันทึกว่าโอนแล้ว</h1>
+
+<p class="mp-note">
+  กรอกเลขอ้างอิงหรือเลขที่สลิปของแต่ละรายการ แล้วกดยืนยัน —
+  <strong>เครดิตถูกหักไปตั้งแต่ตอนที่ผู้ใช้กดขอถอนแล้ว</strong> ขั้นตอนนี้คือการบันทึกว่าเงินออกจากบัญชีจริง
+  ไม่ได้หักซ้ำ · แถวไหนเว้นว่างไว้ระบบจะข้ามให้ ยังกลับมาบันทึกทีหลังได้
+</p>
+
+<p class="mp-total">รวม <strong>฿{{ total|satang }}</strong> จาก {{ queryset|length }} รายการ</p>
+
+<form method="post">
+  {% csrf_token %}
+  <table class="mp-table">
+    <thead>
+      <tr><th>ID</th><th>ผู้ถอน</th><th>จำนวน</th><th>ปลายทาง</th><th>เลขอ้างอิง / สลิป</th></tr>
+    </thead>
+    <tbody>
+      {% for row in rows %}
+        <tr>
+          <td>#{{ row.withdrawal.pk }}</td>
+          <td>{{ row.who }}</td>
+          <td class="mp-amount">฿{{ row.withdrawal.amount_satang|satang }}</td>
+          <td class="mp-dest">
+            {{ row.withdrawal.masked_destination }}
+            <small>{{ row.withdrawal.get_status_display }}</small>
+          </td>
+          <td>
+            <input type="text" name="reference_{{ row.withdrawal.pk }}"
+                   value="{{ row.withdrawal.reference }}" autocomplete="off"
+                   aria-label="เลขอ้างอิงของรายการ {{ row.withdrawal.pk }}">
+          </td>
+        </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  {% for obj in queryset %}
+    <input type="hidden" name="{{ action_checkbox_name }}" value="{{ obj.pk }}">
+  {% endfor %}
+  <input type="hidden" name="action" value="mark_paid_selected">
+
+  <div class="mp-actions">
+    <input type="submit" name="apply" value="ยืนยันว่าโอนแล้ว" class="default">
+    <a href="{% url 'admin:doodee_withdrawalrequest_changelist' %}">ยกเลิก</a>
+  </div>
+</form>
+{% endblock %}

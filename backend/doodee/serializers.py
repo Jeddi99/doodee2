@@ -115,7 +115,9 @@ class ChatConversationSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = ChatConversation
-        fields = ("id", "title", "scan_id", "message_count", "created_at", "updated_at")
+        # `role` is read-only like everything else here: it is chosen when the thread is opened
+        # and fixed after that, so the client shows it as a label rather than a control.
+        fields = ("id", "title", "scan_id", "role", "message_count", "created_at", "updated_at")
         read_only_fields = fields
 
 
@@ -142,11 +144,19 @@ class PlanSerializer(serializers.ModelSerializer):
 class OrderSerializer(serializers.ModelSerializer):
     plan = serializers.SlugRelatedField(slug_field="code", read_only=True)
     coupon = serializers.SlugRelatedField(slug_field="code", read_only=True)
+    # The name an operator and a customer both recognise. `plan` stays the code because that is
+    # what entitlement is keyed on and what any client comparing plans needs.
+    plan_name_th = serializers.CharField(source="plan.name_th", read_only=True)
+    plan_name_en = serializers.CharField(source="plan.name_en", read_only=True)
+    status_label = serializers.CharField(source="get_status_display", read_only=True)
 
     class Meta:
         model = Order
+        # `credit_satang` was on the model and never on the wire, so a receipt for an order paid
+        # partly with referral credit understated what the customer actually put in.
         fields = (
-            "id", "plan", "coupon", "subtotal_satang", "discount_satang", "total_satang",
-            "currency", "status", "provider", "created_at", "paid_at",
+            "id", "plan", "plan_name_th", "plan_name_en", "coupon",
+            "subtotal_satang", "discount_satang", "credit_satang", "total_satang",
+            "currency", "status", "status_label", "provider", "created_at", "paid_at",
         )
         read_only_fields = fields

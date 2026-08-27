@@ -1,7 +1,9 @@
 {% extends "admin/index.html" %}
-{# Operational overview above the stock model list. Values come from
-   DoodeeAdminSite._overview(); the card styling matches the plan summary on the user
-   changelist so the two pages read as one surface. #}
+{% comment %}
+  Operational overview above the stock model list. Values come from
+  DoodeeAdminSite._overview(); the card styling matches the plan summary on the user
+  changelist so the two pages read as one surface.
+{% endcomment %}
 {% load doodee_money %}
 {% block content %}
   <style>
@@ -19,6 +21,12 @@
     <div class="ops-card"><span>เข้าใช้ 7 วัน</span><strong>{{ headline.visitors.week }}</strong></div>
     <div class="ops-card"><span>เข้าใช้ 30 วัน</span><strong>{{ headline.visitors.month }}</strong></div>
     <a class="ops-card" href="{% url 'admin:auth_user_changelist' %}"><span>สมัครใหม่วันนี้</span><strong>{{ headline.signups.today }}</strong><small>เดือนนี้ {{ headline.signups.month }} · รวม {{ headline.signups.total }}</small></a>
+    {% comment %}
+      A link, not a fourth number. The cards above count logged-in users; the marketing page
+      counts arrivals, which is a different population measured a different way, and putting the
+      two side by side on one row is how someone ends up subtracting them.
+    {% endcomment %}
+    <a class="ops-card" href="{% url 'admin:doodee_marketing' %}"><span>การตลาด</span><strong>&rarr;</strong><small>แหล่งที่มา · แคมเปญ · ต่ออายุ</small></a>
   </div>
 
   <p class="ops-section-title">เงิน</p>
@@ -61,6 +69,23 @@
     <a class="ops-card{% if overview.simulations.failed_week %} is-alert{% endif %}" href="{% url 'admin:doodee_simulation_changelist' %}?status__exact=failed"><span>จำลองล้มเหลว (7 วัน)</span><strong>{{ overview.simulations.failed_week }}</strong></a>
     <a class="ops-card" href="{% url 'admin:doodee_promoredemption_changelist' %}"><span>ใช้โค้ด (7 วัน)</span><strong>{{ overview.redemptions.week }}</strong></a>
     <a class="ops-card" href="{% url 'admin:auth_user_changelist' %}?account=users&amp;plan=vip"><span>VIP ที่ยังไม่หมดอายุ</span><strong>{{ overview.redemptions.active }}</strong></a>
+  </div>
+
+  <p class="ops-section-title">ชวนเพื่อน และการต่ออายุ</p>
+  <div class="ops-overview">
+    <a class="ops-card" href="{% url 'admin:doodee_referral_changelist' %}"><span>ชวนเพื่อน (7 วัน)</span><strong>{{ overview.referrals.week }}</strong></a>
+    <a class="ops-card" href="{% url 'admin:doodee_referral_changelist' %}?status__exact=qualified"><span>เพื่อนจ่ายเงิน (7 วัน)</span><strong>{{ overview.referrals.qualified_week }}</strong></a>
+    {# is-alert เพราะรายการนี้ค้างรอ "คน" ไม่ใช่รอระบบ — เงินไม่ออกจนกว่าจะมีคนกด #}
+    <a class="ops-card{% if overview.referrals.held %} is-alert{% endif %}" href="{% url 'admin:doodee_referral_changelist' %}?status__exact=held">
+      <span>รอตรวจสอบ</span><strong>{{ overview.referrals.held }}</strong>
+      {% if overview.referrals.held %}<small>รอคนอนุมัติหรือปฏิเสธ</small>{% endif %}
+    </a>
+    <a class="ops-card" href="{% url 'admin:doodee_subscription_changelist' %}"><span>หมดอายุใน 7 วัน</span><strong>{{ overview.expiring_week }}</strong></a>
+    {# is-alert เพราะแต่ละรายการคือคนที่รอเงินอยู่ ไม่ใช่แค่ตัวเลข #}
+    <a class="ops-card{% if overview.withdrawals.count %} is-alert{% endif %}" href="{% url 'admin:doodee_withdrawalrequest_changelist' %}?status__exact=pending">
+      <span>รอโอนเงินคืน</span><strong>{{ overview.withdrawals.count }}</strong>
+      {% if overview.withdrawals.count %}<small>รวม ฿{{ overview.withdrawals.total|satang }} — รอคนโอน</small>{% endif %}
+    </a>
   </div>
 
   {{ block.super }}
