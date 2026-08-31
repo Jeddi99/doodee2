@@ -1,0 +1,56 @@
+/*
+ * Entry point for the ported UI's styling. Imported once from `main.jsx`,
+ * after `styles.css` so that where the two design systems genuinely collide the
+ * ported rules win inside `.dd-ui` — but they collide rarely by construction,
+ * because Preflight is scoped and `globals.css` gets its document-level rules
+ * rewritten at build time (see postcss-scope-dd.mjs).
+ *
+ * The three font families were loaded by `next/font/google` upstream, which
+ * self-hosted the woff2s and injected the `--font-*` variables that
+ * `tailwind.config.js` refers to. Vite has no equivalent, so they come from
+ * Google Fonts and the variables are declared by hand below.
+ *
+ * Weights are trimmed to what the ported tree actually uses: Instrument Serif
+ * only ever appears at 400 (upright and italic, for the display headings),
+ * Barlow at 400/500/600/700. Sarabun carries every Thai glyph in both stacks —
+ * Barlow and Instrument Serif ship Latin-only subsets, so without it Thai text
+ * falls back to the OS font and bilingual lines jump at the baseline.
+ */
+@import url("https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Barlow:wght@400;500;600;700&family=Sarabun:wght@400;500;600;700&display=swap");
+
+/* `preflight.generated.css` and `globals.css` are NOT `@import`ed here — they
+ * are imported directly from main.jsx. Vite inlines CSS `@import` before the
+ * PostCSS chain runs, which would hand globals.css to the scoping plugin under
+ * this file's path and make the plugin no-op. See main.jsx. */
+
+:root {
+  --font-instrument-serif: "Instrument Serif";
+  --font-barlow: "Barlow";
+  --font-sarabun: "Sarabun";
+}
+
+/*
+ * The ported tree's root. Every ported page is rendered inside an element
+ * carrying this class, which is what the scoped Preflight and the rewritten
+ * `body:has(.dd-ui)` rules key off.
+ *
+ * `isolation: isolate` gives the ported UI its own stacking context so its
+ * z-index scale (documented in globals.css: nav 30 … toast 60) cannot interleave
+ * with the pre-existing pages' own stacking.
+ */
+.dd-ui {
+  isolation: isolate;
+  min-height: 100dvh;
+  font-family: var(--font-barlow), var(--font-sarabun), system-ui, sans-serif;
+  color: var(--body-text);
+}
+
+/*
+ * Thai has no italic tradition; synthesising a slant from Sarabun produces
+ * visibly wrong glyphs. Upstream dropped it on `:lang(th) .font-serif.italic`
+ * and the same rule is needed here because the display headings are italic.
+ */
+.dd-ui :lang(th) .font-serif.italic,
+:lang(th) .dd-ui .font-serif.italic {
+  font-style: normal;
+}

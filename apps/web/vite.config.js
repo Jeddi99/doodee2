@@ -5,7 +5,7 @@ import react from '@vitejs/plugin-react'
 const src = (p) => fileURLToPath(new URL(p, import.meta.url))
 
 // https://vite.dev/config/
-export default defineConfig({
+export default defineConfig(({ mode }) => ({
   envDir: '../..',
   plugins: [react()],
   resolve: {
@@ -27,7 +27,25 @@ export default defineConfig({
       'next/navigation': src('./src/dd/shims/next-navigation.ts'),
       'next/dynamic': src('./src/dd/shims/next-dynamic.tsx'),
       'server-only': src('./src/dd/shims/server-only.ts'),
+
+      // Auth runs on Firebase here; only `import type` lines survived the port.
+      // See src/dd/shims/supabase-types.ts.
+      '@supabase/supabase-js': src('./src/dd/shims/supabase-types.ts'),
     },
+  },
+  define: {
+    // The ported tree checks `process.env.NODE_ENV` in eight places (dev-only
+    // logging in ErrorBoundary, fixture shortcuts in the preview code). Vite
+    // exposes the mode as `import.meta.env.MODE` instead, and leaves
+    // `process` undefined in the browser, so the eight reads would throw.
+    // Defining it keeps those files identical to upstream. The four
+    // `NEXT_PUBLIC_*` vars they also used were renamed to `VITE_*` at the call
+    // sites instead, since those names have to match this repo's shared .env.
+    // Taken from Vite's own `mode` rather than the ambient NODE_ENV, which is
+    // not reliably set when the CLI is invoked.
+    'process.env.NODE_ENV': JSON.stringify(
+      mode === 'development' ? 'development' : 'production',
+    ),
   },
   build: {
     rollupOptions: {
@@ -48,4 +66,4 @@ export default defineConfig({
       },
     },
   },
-})
+}))

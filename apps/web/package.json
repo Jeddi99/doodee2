@@ -9,7 +9,8 @@
     "lint": "oxlint",
     "typecheck": "tsc --noEmit",
     "test": "node --test --experimental-strip-types tests/scanQuality.test.ts tests/uploadSlot.test.ts tests/skinCapture.test.ts src/lib/dashboardData.test.js src/lib/authRouting.test.js src/lib/onboardingAnswers.test.js src/lib/promoCode.test.js src/lib/referral.test.js src/lib/visit.test.js src/lib/payout.test.js src/lib/profile.test.js src/lib/cssTokens.test.js src/lib/previewQueue.test.js src/lib/simulationStack.test.js src/lib/apiError.test.js src/lib/queryRetry.test.js src/lib/pollInterval.test.js src/lib/authForm.test.js src/lib/dashboardGate.test.js src/lib/simulationError.test.js src/lib/makeupGeometry.test.js src/lib/facePose.test.js src/lib/latestScan.test.js src/lib/skinTrend.test.js",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "build:preflight": "node scripts/build-scoped-preflight.mjs"
   },
   "dependencies": {
     "@doodee/shared": "*",
@@ -24,6 +25,7 @@
     "framer-motion": "^12.23.12",
     "html-to-image": "^1.11.13",
     "lucide-react": "^1.26.0",
+    "onnxruntime-web": "^1.26.0",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",
     "react-router-dom": "7.18.2",
