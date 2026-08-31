@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "notes": "Phase 1 — manual validation set. Add entries here and drop the matching consented image file alongside (e.g., public/validation/sample-1.jpg). The /validate route reads this file and runs the full scoring pipeline on each entry, comparing predicted overall to the expected range.",
+  "cases": [
+    {
+      "id": "example-skip",
+      "filename": "",
+      "gender": "male",
+      "ethnicity": "universal",
+      "expected_overall_min": 7.0,
+      "expected_overall_max": 9.0,
+      "notes": "Delete this example and add real cases. Each filename must exist in public/validation/."
+    }
+  ]
+}

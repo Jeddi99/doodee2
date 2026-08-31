@@ -10,6 +10,12 @@ import {
 import { postAttribution } from './lib/api';
 import { getFirebaseAuth } from './lib/firebase';
 import { useLocale } from './useLocale';
+// The prefix the ported UI is served from. Everything below it is handled by
+// dd/routes.tsx and must not touch the routing or auth-redirect logic that the
+// pre-existing pages depend on. Imported rather than redeclared: the ported
+// tree's Next shims rewrite their absolute paths against the same constant, and
+// the two drifting apart would send a ported screen to a pre-existing one.
+import { DD_BASE as DD_PREFIX } from './dd/shims/base-path';
 
 // The landing page carries the MediaPipe demo and the treatment canvas, so it
 // is worth its own chunk even though it is the first route most users hit.
@@ -29,11 +35,6 @@ const SkinScanPage = lazy(() => import('./pages/SkinScanPage'));
 // canonical only once its data layer is connected.
 const DoodeeUI = lazy(() => import('./dd/DoodeeUI'));
 const DoodeeRoutes = lazy(() => import('./dd/routes').then((m) => ({ default: m.DoodeeRoutes })));
-
-// The prefix the ported UI is served from. Everything below it is handled by
-// dd/routes.tsx and must not touch the routing or auth-redirect logic that the
-// pre-existing pages depend on.
-const DD_PREFIX = '/ui';
 
 function WorkspaceFallback({ locale }) {
   return <div className="workspace-loading" role="status">{locale === 'th' ? 'กำลังเปิดหน้า…' : 'Opening…'}</div>;

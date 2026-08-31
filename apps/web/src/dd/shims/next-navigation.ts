@@ -14,6 +14,7 @@ import {
   useParams as useRouterParams,
   useSearchParams as useRouterSearchParams,
 } from "react-router-dom";
+import { fromAppPath, toAppPath } from "./base-path";
 
 export interface AppRouterInstance {
   push(href: string): void;
@@ -28,8 +29,8 @@ export function useRouter(): AppRouterInstance {
   const navigate = useNavigate();
   return useMemo(
     () => ({
-      push: (href: string) => navigate(href),
-      replace: (href: string) => navigate(href, { replace: true }),
+      push: (href: string) => navigate(toAppPath(href)),
+      replace: (href: string) => navigate(toAppPath(href), { replace: true }),
       back: () => navigate(-1),
       forward: () => navigate(1),
       // Next's `refresh()` re-runs server components and re-renders with fresh
@@ -47,8 +48,13 @@ export function useRouter(): AppRouterInstance {
   );
 }
 
+/**
+ * Returns the path WITHOUT the mount prefix. Ported code compares this
+ * against upstream literals ("/scan", "/history"), so it has to keep seeing
+ * upstream paths. See ./base-path.
+ */
 export function usePathname(): string {
-  return useLocation().pathname;
+  return fromAppPath(useLocation().pathname);
 }
 
 /**
@@ -72,7 +78,7 @@ export function useParams<T = Record<string, string | undefined>>(): T {
  * throws for the nearest error boundary.
  */
 export function redirect(href: string): never {
-  window.location.assign(href);
+  window.location.assign(toAppPath(href));
   // Unreachable in practice — `assign` tears the document down — but the
   // `never` return is what lets call sites treat this as terminal.
   throw new Error(`redirect(${href})`);

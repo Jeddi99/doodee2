@@ -29,3 +29,7 @@ backend/celerybeat-schedule
 backend/datamock/*
 !backend/datamock/make_fixtures.py
 !backend/datamock/README.md
+
+# MediaPipe WASM runtime, copied out of node_modules by
+# apps/web/scripts/sync-mediapipe-wasm.mjs on predev/prebuild. Derived, not authored.
+apps/web/public/wasm/

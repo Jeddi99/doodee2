@@ -8,6 +8,7 @@
  */
 import { forwardRef } from "react";
 import { Link as RouterLink } from "react-router-dom";
+import { toAppPath } from "./base-path";
 import type { AnchorHTMLAttributes, ReactNode, Ref } from "react";
 
 type NextLinkProps = AnchorHTMLAttributes<HTMLAnchorElement> & {
@@ -58,7 +59,9 @@ export const Link = forwardRef(function Link(
   return (
     <RouterLink
       ref={ref}
-      to={href}
+      // The ported tree writes upstream's absolute paths; this maps them onto
+      // the prefix the UI is actually mounted at. See ./base-path.
+      to={toAppPath(href)}
       replace={replace}
       // Next scrolls to top on navigation unless told otherwise; react-router
       // does not scroll at all unless asked. `preventScrollReset` is the

@@ -492,7 +492,13 @@ export function EditorFaceCardPage() {
         </section>
       </div>
 
-      <style jsx global>{`
+      {/* Was `<style jsx global>` upstream. styled-jsx ships with Next and is
+          not available here, so React rendered the props as literal
+          `jsx="true" global="true"` attributes and warned twice on every
+          mount. Dropping them is behaviour-preserving: `global` told styled-jsx
+          NOT to scope the rules, which is exactly what a plain <style> does.
+          The rules below are all class- or keyframe-scoped by hand. */}
+      <style>{`
         @keyframes editorScanFocus {
           0% {
             opacity: 0.20;
