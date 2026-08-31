@@ -10,6 +10,7 @@ import {
   signInWithEmailAndPassword,
   signInWithPopup,
   signOut,
+  updateProfile,
 } from 'firebase/auth';
 
 
@@ -43,8 +44,15 @@ export async function googleSignIn() {
 // Email and password, for people without a Google account or who do not want to use one.
 // The backend needs no change for these: it verifies whatever Firebase ID token arrives and
 // creates the Django user on first sight (see backend/doodee/authentication.py).
-export async function emailSignUp(email, password) {
+export async function emailSignUp(email, password, displayName) {
   const credential = await createUserWithEmailAndPassword(getFirebaseAuth(), email.trim(), password);
+  if (displayName && displayName.trim()) {
+    try {
+      await updateProfile(credential.user, { displayName: displayName.trim() });
+    } catch {
+      // ignore
+    }
+  }
   // Nothing used to send this, so `email_verified` was false forever on every password account.
   // The referral reward is ฿30 and the server now refuses to attach an invite to an unverified
   // identity — without this mail, signing up with an address you own would be the only way

@@ -35,16 +35,30 @@ export function createApi(baseUrl: string, tokenProvider: TokenProvider) {
   return {
     session: () => request('/session/'),
     uploadScan: (body: FormData) => request('/scans/', { method: 'POST', body }),
+    uploadScanDirect: async (files: Record<string, { uri: string; type?: string }>, metadata: Record<string, unknown>) => {
+      const key = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      const types = Object.fromEntries(Object.entries(files).map(([view, file]) => [view, file.type || 'image/jpeg']));
+      const reserved = await request('/scans/uploads/', {
+        method: 'POST', headers: { 'Content-Type': 'application/json', 'Idempotency-Key': key },
+        body: JSON.stringify({ ...metadata, files: types }),
+      });
+      await Promise.all(Object.entries(reserved.uploads).map(async ([view, grant]: [string, any]) => {
+        const blob = await fetch(files[view].uri).then((response) => response.blob());
+        const response = await fetch(grant.url, { method: 'PUT', headers: { 'Content-Type': grant.content_type }, body: blob });
+        if (!response.ok) throw new Error(`Storage upload failed (${response.status})`);
+      }));
+      return request(`/scans/${reserved.id}/commit/`, { method: 'POST' });
+    },
     getScan: (id: string) => request(`/scans/${id}/status/`),
     deleteScan: (id: string) => request(`/scans/${id}/`, { method: 'DELETE' }),
     getProcedures: (region: string) => request(`/procedures/?region=${encodeURIComponent(region)}`),
     previewSimulation: (scanId: string, region: string, presetId: string) => request('/simulations/preview/', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      method: 'POST', headers: { 'Content-Type': 'application/json', 'Idempotency-Key': `${Date.now()}-${Math.random()}` },
       body: JSON.stringify({ scan_id: scanId, region, preset_id: presetId, simulation_consent_version: SIMULATION_CONSENT_VERSION }),
     }),
     createSimulation: (scanId: string, region: string, presetId: string) => request('/simulations/', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', 'Idempotency-Key': `${Date.now()}-${Math.random()}` },
       body: JSON.stringify({ scan_id: scanId, region, preset_id: presetId, simulation_consent_version: SIMULATION_CONSENT_VERSION }),
     }),
     getSimulation: (id: string) => request(`/simulations/${id}/status/`),

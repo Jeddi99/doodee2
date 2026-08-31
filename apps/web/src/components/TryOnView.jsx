@@ -10,6 +10,7 @@ import {
   presetSwatches, shadeById,
 } from '../data/makeup';
 import { paintLook } from '../lib/makeupPaint';
+import { latestCraniofacialScan } from '../lib/latestScan';
 
 // Makeup order rather than the old top-to-bottom one: lips carry the look, blush shapes it, eye
 // colour is the finishing touch. Hair tone is gone — tinting hair needs image segmentation, and the
@@ -26,7 +27,7 @@ export default function TryOnView({ lang = 'th' }) {
   const isTh = lang === 'th';
   const requestedScanId = new URLSearchParams(window.location.search).get('scan_id');
   const scans = useQuery({ queryKey: ['scans'], queryFn: getScans, enabled: !requestedScanId });
-  const scanId = requestedScanId || scans.data?.[0]?.id;
+  const scanId = requestedScanId || latestCraniofacialScan(scans.data)?.id;
   const scan = useQuery({ queryKey: ['scan', scanId], queryFn: () => getScan(scanId), enabled: Boolean(scanId) });
 
   const [activeTab, setActiveTab] = useState('lips');

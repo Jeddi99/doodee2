@@ -16,7 +16,56 @@ export type FrameQuality = {
 export type FacePose = { yaw: number; pitch: number; roll: number };
 export type FaceObservation = FacePose & { faceCount: number; smile: number };
 export type FaceBox = { left: number; right: number; top: number; bottom: number };
-export type Quality = { valid: boolean; message: string; score: number };
+/**
+ * Why a frame is not usable yet, or `"good"` when it is.
+ *
+ * A code rather than a sentence, for three reasons in ascending order of force. It has to be
+ * said in Thai. This module is pure and framework-free and is imported by `node --test`, so it
+ * must not reach for a locale dictionary. And — the one that settles it — the same condition
+ * needs different words depending on where the image came from: "Hold still, the image is
+ * blurry" is an instruction to someone in front of a camera, and it is nonsense said about a
+ * file the user has just picked from a folder. One gate, two registers of copy, which is only
+ * possible if the gate stops deciding the wording.
+ *
+ * The copy lives in `localization.ts` under `scan.quality.live` / `scan.quality.still`.
+ */
+export type QualityCode =
+  | "good"
+  | "no_face" | "multiple_faces"
+  | "too_dark" | "too_bright" | "blurry"
+  | "too_far" | "too_close" | "off_centre"
+  | "turn_farther_left" | "turn_farther_right" | "turn_slightly_left" | "turn_slightly_right"
+  | "tilt_up" | "tilt_down" | "level_head"
+  | "relax_expression"
+  // Live-capture progress states. Not failures of the frame — statements about where the capture
+  // loop is — but they occupy the same line of the screen as the rejections above, so they share
+  // the type. A screen slot that is sometimes a code and sometimes a loose sentence is worse than
+  // either.
+  | "starting" | "finding_face" | "checking_angle" | "hold_still" | "selecting_frame"
+  | "position_for_step"
+  // Reachable only from a picked file; the camera path cannot produce them.
+  | "face_too_small" | "sideways" | "unsupported_heic" | "unreadable_image" | "file_too_large"
+  // Light, checked only when capturing for skin. Every other mode measures shape, and shape is
+  // indifferent to which side of the face the window is on — these would be noise there. See
+  // `lib/skinCapture.ts` for why they are asked before the shutter rather than after the upload.
+  | "uneven_lighting" | "colour_cast" | "blown_highlights";
+
+/** Every member of `QualityCode`, so a test can assert the copy dictionaries cover them all. */
+export const QUALITY_CODES = [
+  "good",
+  "no_face", "multiple_faces",
+  "too_dark", "too_bright", "blurry",
+  "too_far", "too_close", "off_centre",
+  "turn_farther_left", "turn_farther_right", "turn_slightly_left", "turn_slightly_right",
+  "tilt_up", "tilt_down", "level_head",
+  "relax_expression",
+  "starting", "finding_face", "checking_angle", "hold_still", "selecting_frame",
+  "position_for_step",
+  "face_too_small", "sideways", "unsupported_heic", "unreadable_image", "file_too_large",
+  "uneven_lighting", "colour_cast", "blown_highlights",
+] as const satisfies readonly QualityCode[];
+
+export type Quality = { valid: boolean; code: QualityCode; score: number };
 export type PoseSignature = { x: number; y: number; yaw: number; pitch: number; at: number };
 export type AutoFrame = { centerX: number; centerY: number; zoom: number };
 export type MatrixLike = { rows?: number; columns?: number; data?: ArrayLike<number> };
@@ -83,16 +132,16 @@ function fallbackYaw(landmarks: LandmarkPoint[]) {
   return normalized * -380;
 }
 
-function poseMessage(stepIndex: number, pose: FacePose) {
+function poseCode(stepIndex: number, pose: FacePose): QualityCode | null {
   const step = captureSteps[stepIndex];
   if (!within(pose.yaw, step.yaw)) {
-    if (step.id === "left_profile") return pose.yaw > step.yaw[1] ? "Turn farther left" : "Turn slightly right";
-    if (step.id === "right_profile") return pose.yaw < step.yaw[0] ? "Turn farther right" : "Turn slightly left";
-    return pose.yaw < step.yaw[0] ? "Turn slightly right" : "Turn slightly left";
+    if (step.id === "left_profile") return pose.yaw > step.yaw[1] ? "turn_farther_left" : "turn_slightly_right";
+    if (step.id === "right_profile") return pose.yaw < step.yaw[0] ? "turn_farther_right" : "turn_slightly_left";
+    return pose.yaw < step.yaw[0] ? "turn_slightly_right" : "turn_slightly_left";
   }
-  if (!within(pose.pitch, step.pitch)) return pose.pitch < step.pitch[0] ? "Tilt down slightly" : "Tilt up slightly";
-  if (!within(pose.roll, step.roll)) return "Keep your head level";
-  return "";
+  if (!within(pose.pitch, step.pitch)) return pose.pitch < step.pitch[0] ? "tilt_down" : "tilt_up";
+  if (!within(pose.roll, step.roll)) return "level_head";
+  return null;
 }
 
 export function measurePose(
@@ -102,33 +151,77 @@ export function measurePose(
   _framingZoom = 1,
   observation?: Partial<FaceObservation>,
 ): Quality {
+  const reject = (code: QualityCode): Quality => ({ valid: false, code, score: 0 });
   const faceCount = observation?.faceCount ?? (landmarks.length >= 455 ? 1 : 0);
-  if (faceCount === 0 || landmarks.length < 455) return { valid: false, message: "Move your face into view", score: 0 };
-  if (faceCount > 1) return { valid: false, message: "Only one face can be visible", score: 0 };
+  if (faceCount === 0 || landmarks.length < 455) return reject("no_face");
+  if (faceCount > 1) return reject("multiple_faces");
   const box = getFaceBox(landmarks);
-  if (!box) return { valid: false, message: "Move your face into view", score: 0 };
+  if (!box) return reject("no_face");
   const height = box.bottom - box.top;
   const centerX = (box.left + box.right) / 2;
   const centerY = (box.top + box.bottom) / 2;
   if (frameQuality && (frameQuality.brightness < 45 || (frameQuality.darkRatio ?? 0) > 0.5))
-    return { valid: false, message: "Move into brighter light", score: 0 };
+    return reject("too_dark");
   if (frameQuality && (frameQuality.brightness > 210 || (frameQuality.clippedRatio ?? 0) > 0.2))
-    return { valid: false, message: "Reduce glare or backlight", score: 0 };
-  if (frameQuality && frameQuality.sharpness < 2) return { valid: false, message: "Hold still — image is blurry", score: 0 };
-  if (height < 0.22) return { valid: false, message: "Move closer", score: 0 };
-  if (height > 0.92) return { valid: false, message: "Move farther away", score: 0 };
-  if (Math.abs(centerX - 0.5) > 0.24 || Math.abs(centerY - 0.5) > 0.24)
-    return { valid: false, message: "Center your face", score: 0 };
+    return reject("too_bright");
+  if (frameQuality && frameQuality.sharpness < 2) return reject("blurry");
+  if (height < 0.22) return reject("too_far");
+  if (height > 0.92) return reject("too_close");
+  if (Math.abs(centerX - 0.5) > 0.24 || Math.abs(centerY - 0.5) > 0.24) return reject("off_centre");
   const pose = {
     yaw: observation?.yaw ?? fallbackYaw(landmarks),
     pitch: observation?.pitch ?? 0,
     roll: observation?.roll ?? 0,
   };
-  const guidance = poseMessage(stepIndex, pose);
-  if (guidance) return { valid: false, message: guidance, score: 0 };
+  const guidance = poseCode(stepIndex, pose);
+  if (guidance) return reject(guidance);
   if (captureSteps[stepIndex].id === "front" && (observation?.smile ?? 0) > 0.25)
-    return { valid: false, message: "Relax your expression", score: 0 };
-  return { valid: true, message: "Good angle · Hold still", score: 1 };
+    return reject("relax_expression");
+  return { valid: true, code: "good", score: 1 };
+}
+
+
+// The smallest face, in real pixels of the source photograph, worth measuring 468 landmarks on.
+//
+// Not about upscaling: `cropToJpeg` caps its scale factor at 1, so a crop is only ever shrunk.
+// It is about how much detail exists to measure. Every metric in the catalogue is a ratio between
+// landmark positions, so landmark quantisation error is a fixed number of pixels divided by a
+// distance that shrinks with the face — and a face this far from the lens in a phone photograph is
+// genuinely soft besides, from depth of field and from JPEG quantisation of low-contrast detail.
+//
+// A floor, not a target, and it has to stay under what live capture can produce or the upload path
+// would refuse photographs the camera path would have accepted. The smallest frame the camera ever
+// settles on is 960 tall (the low-frame-rate fallback in `startCamera`), and `measurePose` accepts
+// a face at 0.22 of it — 211 pixels. Anything at or above that number is a floor that rejects real
+// captures, which is why this sits below it rather than at a rounder-looking 240.
+export const MIN_FACE_PIXELS = 200;
+// Below this the face is a small object in a large scene rather than a portrait. Checked as well
+// as the pixel floor because a 240px face inside an 8000px panorama is still not a photograph of
+// a person, and cropping it would magnify sensor noise into what the engine reads as texture.
+export const MIN_FACE_FRACTION = 0.08;
+
+/**
+ * Whether a picked photograph can be cropped into something worth measuring.
+ *
+ * Deliberately not part of `measurePose`, and deliberately answered *before* the crop: the full
+ * gate has to run on the cropped image, because `measurePose` rejects `height < 0.22` and an
+ * off-centre face, which describes almost every real photograph of a person standing a metre and
+ * a half away. `faceCropRect` targets a face filling 0.6 of the frame, dead centre — so framing
+ * passes by construction once the crop exists, and running the gate on the raw file instead would
+ * reject good photographs with advice ("move closer") that cannot be acted on.
+ *
+ * What that leaves is the one thing cropping cannot fix, which is this function.
+ */
+export function stillFramingCode(box: FaceBox | null, imageHeight: number): QualityCode | null {
+  if (!box) return "no_face";
+  const fraction = box.bottom - box.top;
+  if (fraction <= 0) return "no_face";
+  if (fraction < MIN_FACE_FRACTION) return "face_too_small";
+  if (fraction * imageHeight < MIN_FACE_PIXELS) return "face_too_small";
+  // Width matters independently: a face can be tall enough and still be clipped by the frame edge,
+  // which loses the very landmarks (234 / 454) that every width ratio is measured between.
+  if (box.left < 0.01 || box.right > 0.99) return "off_centre";
+  return null;
 }
 
 export function getAutoFrame(landmarks: LandmarkPoint[], close: boolean): AutoFrame {

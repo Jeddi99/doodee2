@@ -31,9 +31,23 @@ def upload_image(object_name, data, content_type):
     return object_name
 
 
-def download_image(object_name):
+def signed_upload_url(object_name):
+    """Create one short-lived, one-object upload grant without exposing the service key."""
+    request = Request(
+        _url(object_name).replace("/object/", "/object/upload/sign/"),
+        data=b"{}",
+        method="POST",
+        headers={**_headers(), "Content-Type": "application/json"},
+    )
+    with urlopen(request, timeout=30) as response:
+        body = json.loads(response.read())
+    path = body.get("url") or body["signedURL"]
+    return path if path.startswith("http") else f"{os.environ['SUPABASE_URL'].rstrip('/')}/storage/v1{path}"
+
+
+def download_image(object_name, max_bytes=None):
     with urlopen(Request(_url(object_name), headers=_headers()), timeout=30) as response:
-        return response.read()
+        return response.read(max_bytes + 1 if max_bytes is not None else -1)
 
 
 def delete_image(object_name):

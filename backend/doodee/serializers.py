@@ -18,7 +18,7 @@ class ScanSerializer(serializers.ModelSerializer):
             "scan_mode", "analysis_data", "formula_version",
             "analysis_tier", "missing_optional_views", "front_url", "has_profile_images", "images_expired",
             "is_demo",
-            "error_code", "error_message", "expires_at", "created_at",
+            "error_code", "error_message", "expires_at", "created_at", "started_at", "finished_at",
         )
         read_only_fields = fields
 
@@ -72,9 +72,9 @@ class SimulationSerializer(serializers.ModelSerializer):
     class Meta:
         model = Simulation
         fields = (
-            "id", "scan_id", "status", "progress", "region", "preset", "selections", "source_view", "measurements",
+            "id", "scan_id", "status", "progress", "kind", "region", "preset", "selections", "source_view", "measurements",
             "related_procedures", "model_version", "before_url", "after_url", "error_code", "error_message",
-            "expires_at", "created_at",
+            "expires_at", "created_at", "started_at", "finished_at",
         )
         read_only_fields = fields
 

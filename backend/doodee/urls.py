@@ -5,7 +5,7 @@ from .views import (
     ChatViewSet, NotificationViewSet, OrderViewSet, ProcedureList, ScanViewSet, SimulationViewSet,
     attribution_view, cancel_withdrawal, credits, delete_account, demo_scan, omise_webhook,
     pay_order, payout_account, plans, profile, redeem, referral_claim, referral_overview,
-    register_push_token, session, validate_coupon_view, visit, withdrawals,
+    register_push_token, session, skin_vision_consent, validate_coupon_view, visit, withdrawals,
 )
 
 
@@ -22,6 +22,7 @@ urlpatterns = [
     path("scans/demo/", demo_scan),
     *router.urls,
     path("session/", session),
+    path("consent/skin-vision/", skin_vision_consent),
     # Unauthenticated by design — the second and last such route in this file, after the Omise
     # webhook below. It counts people who have no account, so it cannot require one; the view's
     # docstring explains why attaching an auth class here would corrupt the signup numbers.

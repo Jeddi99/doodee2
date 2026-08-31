@@ -64,89 +64,172 @@ const PILLAR_CATEGORIES: Record<PillarId, MetricCategory[]> = {
   dimorphism: [],
 };
 
-const PILLAR_LABELS: Record<PillarId, { label: string; note: string }> = {
-  harmony: { label: 'Harmony', note: 'Balanced proportions' },
-  angularity: { label: 'Angularity', note: 'Shape and definition' },
-  dimorphism: { label: 'Dimorphism', note: 'No reference data yet' },
-  features: { label: 'Features', note: 'Eyes, nose and lips' },
+const PILLAR_LABELS: Record<'th' | 'en', Record<PillarId, { label: string; note: string }>> = {
+  th: {
+    harmony: { label: 'ความสมดุล', note: 'สัดส่วนโดยรวมสมดุล' },
+    angularity: { label: 'โครงสร้างเหลี่ยมคม', note: 'มิติและความคมชัด' },
+    dimorphism: { label: 'เอกลักษณ์เฉพาะ', note: 'สัดส่วนเฉพาะบุคคล' },
+    features: { label: 'ตา จมูก ปาก', note: 'ความสมดุลขององค์ประกอบ' },
+  },
+  en: {
+    harmony: { label: 'Harmony', note: 'Balanced proportions' },
+    angularity: { label: 'Angularity', note: 'Shape and definition' },
+    dimorphism: { label: 'Dimorphism', note: 'Individual characteristics' },
+    features: { label: 'Features', note: 'Eyes, nose and lips' },
+  },
 };
 
 /**
- * Per-metric copy for the twelve keys the backend actually scores. Wording follows DESIGN.md:
- * describe what was measured and what it may indicate, never whether it looks good.
+ * Per-metric copy for the twelve keys the backend actually scores in Thai and English.
  */
-export const METRIC_COPY: Record<string, { name: string; detail: string; mayIndicate: string; affected: string[] }> = {
-  midface_height: {
-    name: 'Midface height',
-    detail: 'Nasion to subnasale, over the nasion–gnathion height.',
-    mayIndicate: 'How much of the face’s height sits in the middle third.',
-    affected: ['Midface', 'Upper third'],
+export const METRIC_COPY: Record<'th' | 'en', Record<string, { name: string; detail: string; mayIndicate: string; affected: string[] }>> = {
+  th: {
+    midface_height: {
+      name: 'ความสูงใบหน้าส่วนกลาง',
+      detail: 'ระยะจากหัวคิ้วถึงใต้จมูก เทียบกับความสูงใบหน้ารวม',
+      mayIndicate: 'สัดส่วนความยาวของใบหน้าช่วงกลาง',
+      affected: ['ใบหน้าส่วนกลาง', 'ใบหน้าส่วนบน'],
+    },
+    lower_face_height: {
+      name: 'ความสูงใบหน้าส่วนล่าง',
+      detail: 'ระยะจากใต้จมูกถึงปลายคาง เทียบกับความสูงใบหน้ารวม',
+      mayIndicate: 'สัดส่วนความยาวของใบหน้าช่วงล่างใต้จมูก',
+      affected: ['ใบหน้าส่วนล่าง', 'คาง'],
+    },
+    intercanthal: {
+      name: 'ระยะห่างหัวตา',
+      detail: 'ระยะห่างระหว่างหัวตาทั้งสองข้าง เทียบกับความกว้างใบหน้า',
+      mayIndicate: 'ความกว้างของช่องว่างระหว่างตาทั้งสองข้าง',
+      affected: ['ดวงตา', 'สันจมูก'],
+    },
+    eye_fissure: {
+      name: 'ความกว้างของดวงตา',
+      detail: 'ความกว้างเฉลี่ยจากหัวตาถึงหางตา เทียบกับสัดส่วนใบหน้า',
+      mayIndicate: 'ขนาดช่องเปิดและความยาวของดวงตา',
+      affected: ['ดวงตา'],
+    },
+    alar_width: {
+      name: 'ความกว้างปีกจมูก',
+      detail: 'ความกว้างของฐานปีกจมูกทั้งสองข้าง เทียบกับสัดส่วนใบหน้า',
+      mayIndicate: 'ความกว้างของฐานจมูกเมื่อมองตรง',
+      affected: ['จมูก'],
+    },
+    nasofrontal_angle: {
+      name: 'มุมหน้าผาก-จมูก',
+      detail: 'มุมรอยต่อระหว่างหน้าผากกับสันจมูก จากมุมมองด้านข้าง',
+      mayIndicate: 'ความลาดเอียงและความต่อเนื่องของสันจมูก',
+      affected: ['หน้าผาก', 'สันจมูก'],
+    },
+    nasolabial_angle: {
+      name: 'มุมจมูก-ริมฝีปาก',
+      detail: 'มุมระหว่างฐานจมูกกับริมฝีปากบน จากมุมมองด้านข้าง',
+      mayIndicate: 'การเชิดขึ้นหรือชี้ลงของปลายจมูก',
+      affected: ['ปลายจมูก', 'ริมฝีปากบน'],
+    },
+    upper_lip_length: {
+      name: 'ความยาวริมฝีปากบน (ร่องแก้ม)',
+      detail: 'ระยะจากใต้จมูกถึงขอบปากบน เทียบกับความสูงใบหน้า',
+      mayIndicate: 'ความยาวของร่องริมฝีปากบน (Philtrum)',
+      affected: ['ร่องปากบน', 'ริมฝีปากบน'],
+    },
+    upper_vermillion: {
+      name: 'ความหนาริมฝีปากบน',
+      detail: 'ความสูงเนื้อปากบนสีชมพู เทียบกับสัดส่วนใบหน้า',
+      mayIndicate: 'ความอวบอิ่มของริมฝีปากบน',
+      affected: ['ริมฝีปากบน'],
+    },
+    lower_vermillion: {
+      name: 'ความหนาริมฝีปากล่าง',
+      detail: 'ความสูงเนื้อปากล่างสีชมพู เทียบกับสัดส่วนใบหน้า',
+      mayIndicate: 'ความอวบอิ่มของริมฝีปากล่าง',
+      affected: ['ริมฝีปากล่าง'],
+    },
+    chin_height: {
+      name: 'ความสูงของคาง',
+      detail: 'ระยะจากรอยประกบริมฝีปากถึงปลายคาง',
+      mayIndicate: 'สัดส่วนความยาวและความเด่นชัดของคาง',
+      affected: ['คาง'],
+    },
+    facial_convexity_angle: {
+      name: 'มุมความนูนของใบหน้า',
+      detail: 'มุมความโค้งของแนวด้านข้างตั้งแต่สันจมูก ฐานจมูก ถึงปลายคาง',
+      mayIndicate: 'มิติความนูนหรือเว้าของใบหน้าด้านข้าง',
+      affected: ['จมูก', 'ริมฝีปาก', 'คาง'],
+    },
   },
-  lower_face_height: {
-    name: 'Lower face height',
-    detail: 'Subnasale to gnathion, over the nasion–gnathion height.',
-    mayIndicate: 'How much of the face’s height sits below the nose.',
-    affected: ['Lower third', 'Chin'],
-  },
-  intercanthal: {
-    name: 'Intercanthal distance',
-    detail: 'Spacing between the inner eye corners, over face height.',
-    mayIndicate: 'How widely set the eyes are relative to the face.',
-    affected: ['Eyes', 'Nose bridge'],
-  },
-  eye_fissure: {
-    name: 'Eye fissure width',
-    detail: 'Mean corner-to-corner eye width, over face height.',
-    mayIndicate: 'Eye aperture size relative to the face.',
-    affected: ['Eyes'],
-  },
-  alar_width: {
-    name: 'Alar width',
-    detail: 'Width across the nostril bases, over face height.',
-    mayIndicate: 'Nose base width relative to the face.',
-    affected: ['Nose'],
-  },
-  nasofrontal_angle: {
-    name: 'Nasofrontal angle',
-    detail: 'Angle from glabella through nasion to nose tip, read from profile.',
-    mayIndicate: 'How the forehead meets the nose bridge.',
-    affected: ['Forehead', 'Nose bridge'],
-  },
-  nasolabial_angle: {
-    name: 'Nasolabial angle',
-    detail: 'Angle between the columella and the upper lip, read from profile.',
-    mayIndicate: 'Nose tip rotation relative to the upper lip.',
-    affected: ['Nose tip', 'Upper lip'],
-  },
-  upper_lip_length: {
-    name: 'Upper lip length',
-    detail: 'Subnasale to the upper vermillion border, over face height.',
-    mayIndicate: 'Length of the area between nose and lip.',
-    affected: ['Philtrum', 'Upper lip'],
-  },
-  upper_vermillion: {
-    name: 'Upper vermillion height',
-    detail: 'Visible height of the upper lip, over face height.',
-    mayIndicate: 'Upper lip fullness relative to the face.',
-    affected: ['Upper lip'],
-  },
-  lower_vermillion: {
-    name: 'Lower vermillion height',
-    detail: 'Visible height of the lower lip, over face height.',
-    mayIndicate: 'Lower lip fullness relative to the face.',
-    affected: ['Lower lip'],
-  },
-  chin_height: {
-    name: 'Chin height',
-    detail: 'Stomion to gnathion, over face height.',
-    mayIndicate: 'How much lower-face height the chin accounts for.',
-    affected: ['Chin'],
-  },
-  facial_convexity_angle: {
-    name: 'Facial convexity angle',
-    detail: 'Deviation from straight through nasion, subnasale and gnathion.',
-    mayIndicate: 'Overall curvature of the side profile.',
-    affected: ['Nose', 'Lips', 'Chin'],
+  en: {
+    midface_height: {
+      name: 'Midface height',
+      detail: 'Nasion to subnasale, over the nasion–gnathion height.',
+      mayIndicate: 'How much of the face’s height sits in the middle third.',
+      affected: ['Midface', 'Upper third'],
+    },
+    lower_face_height: {
+      name: 'Lower face height',
+      detail: 'Subnasale to gnathion, over the nasion–gnathion height.',
+      mayIndicate: 'How much of the face’s height sits below the nose.',
+      affected: ['Lower third', 'Chin'],
+    },
+    intercanthal: {
+      name: 'Intercanthal distance',
+      detail: 'Spacing between the inner eye corners, over face height.',
+      mayIndicate: 'How widely set the eyes are relative to the face.',
+      affected: ['Eyes', 'Nose bridge'],
+    },
+    eye_fissure: {
+      name: 'Eye fissure width',
+      detail: 'Mean corner-to-corner eye width, over face height.',
+      mayIndicate: 'Eye aperture size relative to the face.',
+      affected: ['Eyes'],
+    },
+    alar_width: {
+      name: 'Alar width',
+      detail: 'Width across the nostril bases, over face height.',
+      mayIndicate: 'Nose base width relative to the face.',
+      affected: ['Nose'],
+    },
+    nasofrontal_angle: {
+      name: 'Nasofrontal angle',
+      detail: 'Angle from glabella through nasion to nose tip, read from profile.',
+      mayIndicate: 'How the forehead meets the nose bridge.',
+      affected: ['Forehead', 'Nose bridge'],
+    },
+    nasolabial_angle: {
+      name: 'Nasolabial angle',
+      detail: 'Angle between the columella and the upper lip, read from profile.',
+      mayIndicate: 'Nose tip rotation relative to the upper lip.',
+      affected: ['Nose tip', 'Upper lip'],
+    },
+    upper_lip_length: {
+      name: 'Upper lip length',
+      detail: 'Subnasale to the upper vermillion border, over face height.',
+      mayIndicate: 'Length of the area between nose and lip.',
+      affected: ['Philtrum', 'Upper lip'],
+    },
+    upper_vermillion: {
+      name: 'Upper vermillion height',
+      detail: 'Visible height of the upper lip, over face height.',
+      mayIndicate: 'Upper lip fullness relative to the face.',
+      affected: ['Upper lip'],
+    },
+    lower_vermillion: {
+      name: 'Lower vermillion height',
+      detail: 'Visible height of the lower lip, over face height.',
+      mayIndicate: 'Lower lip fullness relative to the face.',
+      affected: ['Lower lip'],
+    },
+    chin_height: {
+      name: 'Chin height',
+      detail: 'Stomion to gnathion, over face height.',
+      mayIndicate: 'How much lower-face height the chin accounts for.',
+      affected: ['Chin'],
+    },
+    facial_convexity_angle: {
+      name: 'Facial convexity angle',
+      detail: 'Deviation from straight through nasion, subnasale and gnathion.',
+      mayIndicate: 'Overall curvature of the side profile.',
+      affected: ['Nose', 'Lips', 'Chin'],
+    },
   },
 };
 
@@ -160,8 +243,14 @@ export const toTenScale = (score: number | null | undefined): number | null =>
  * Bands come from the normalized deviation, not the score, so the label says how far the
  * measurement sits from the reference rather than passing judgement on the face.
  */
-export function deviationStatus(normalizedDeviation: number): string {
+export function deviationStatus(normalizedDeviation: number, locale: 'th' | 'en' = 'en'): string {
   const z = Math.abs(Number(normalizedDeviation) || 0);
+  if (locale === 'th') {
+    if (z <= 0.5) return 'ใกล้เคียงเกณฑ์อ้างอิง';
+    if (z <= 1) return 'อยู่ในเกณฑ์ 1 SD';
+    if (z <= 2) return 'อยู่ในเกณฑ์ 2 SD';
+    return 'เกินกว่า 2 SD';
+  }
   if (z <= 0.5) return 'Close to reference';
   if (z <= 1) return 'Within one SD';
   if (z <= 2) return 'Within two SD';
@@ -177,15 +266,16 @@ const formatValue = (metric: ScoredMetric) => formatMeasure(metric.observed, met
 const formatReference = (metric: ScoredMetric) => formatMeasure(metric.reference, metric.unit);
 
 /** One scored backend metric in the row shape the analysis tables render. */
-export function toRatioRow(metric: ScoredMetric): RatioRow {
-  const copy = METRIC_COPY[metric.key] || {};
+export function toRatioRow(metric: ScoredMetric, locale: 'th' | 'en' = 'en'): RatioRow {
+  const dict = METRIC_COPY[locale] || METRIC_COPY.en;
+  const copy = dict[metric.key] || METRIC_COPY.en[metric.key] || {};
   return {
     id: metric.key,
     name: copy.name || metric.key,
     value: formatValue(metric),
     score: toTenScale(metric.score) ?? 0,
     ideal: formatReference(metric),
-    status: deviationStatus(metric.normalized_deviation),
+    status: deviationStatus(metric.normalized_deviation, locale),
     detail: copy.detail || '',
     mayIndicate: copy.mayIndicate || '',
     affected: copy.affected || [],
@@ -197,24 +287,24 @@ export function toRatioRow(metric: ScoredMetric): RatioRow {
 const referenceScores = (scan: Scan): ReferenceScores | null => scan?.analysis_data?.reference_scores || null;
 
 /** Scored metrics as rows, or an empty list when the scan has not produced any. */
-export function ratioRows(scan: Scan): RatioRow[] {
-  return (referenceScores(scan)?.metrics || []).map(toRatioRow);
+export function ratioRows(scan: Scan, locale: 'th' | 'en' = 'en'): RatioRow[] {
+  return (referenceScores(scan)?.metrics || []).map((m) => toRatioRow(m, locale));
 }
 
 /**
- * The four pillar cards. A pillar whose categories the backend did not score comes back locked,
- * which is the state qijek already renders — the difference is that here it reflects the data.
+ * The four pillar cards. A pillar whose categories the backend did not score comes back locked.
  */
-export function pillarsFor(scan: Scan): Pillar[] {
+export function pillarsFor(scan: Scan, locale: 'th' | 'en' = 'en'): Pillar[] {
   const scores = referenceScores(scan);
   const byCategory = new Map((scores?.categories || []).map((item) => [item.key, item]));
+  const dict = PILLAR_LABELS[locale] || PILLAR_LABELS.en;
   return (Object.keys(PILLAR_CATEGORIES) as PillarId[]).map((id) => {
     const categories = PILLAR_CATEGORIES[id];
     const present = categories.flatMap((key) => {
       const item = byCategory.get(key);
       return item ? [item] : [];
     });
-    const { label, note } = PILLAR_LABELS[id];
+    const { label, note } = dict[id] || PILLAR_LABELS.en[id];
     if (!present.length) return { id, label, note, score: '—', locked: true, metricCount: 0 };
     const mean = present.reduce((total, item) => total + item.score, 0) / present.length;
     return {
@@ -233,8 +323,9 @@ export const overallScore = (scan: Scan): number | null => toTenScale(referenceS
 const byScoreDescending = (a: RatioRow, b: RatioRow) => b.score - a.score;
 
 /** Highest-scoring measurements. Derived, never a stored literal. */
-export function strengthsFor(scan: Scan, limit = 3) {
-  return ratioRows(scan)
+export function strengthsFor(scan: Scan, limit = 3, locale: 'th' | 'en' = 'en') {
+  const refLabel = locale === 'th' ? 'เกณฑ์อ้างอิง' : 'Reference';
+  return ratioRows(scan, locale)
     .filter((row) => typeof row.score === 'number')
     .sort(byScoreDescending)
     .slice(0, limit)
@@ -242,16 +333,17 @@ export function strengthsFor(scan: Scan, limit = 3) {
       name: row.name,
       score: row.score.toFixed(1),
       detail: row.mayIndicate,
-      ratios: [`${row.name} ${row.score.toFixed(1)}`, `Reference ${row.ideal}`],
+      ratios: [`${row.name} ${row.score.toFixed(1)}`, `${refLabel} ${row.ideal}`],
     }));
 }
 
 /**
- * Measurements furthest from the reference. `score` is the signed deviation, matching the
- * "−0.42"-style figure the qijek card was designed around.
+ * Measurements furthest from the reference.
  */
-export function improvementsFor(scan: Scan, limit = 3) {
-  return ratioRows(scan)
+export function improvementsFor(scan: Scan, limit = 3, locale: 'th' | 'en' = 'en') {
+  const obsLabel = locale === 'th' ? 'ค่าที่วัดได้' : 'Observed';
+  const refLabel = locale === 'th' ? 'เกณฑ์อ้างอิง' : 'Reference';
+  return ratioRows(scan, locale)
     .filter((row) => typeof row.score === 'number')
     .sort((a, b) => Math.abs(b.normalizedDeviation) - Math.abs(a.normalizedDeviation))
     .slice(0, limit)
@@ -260,9 +352,9 @@ export function improvementsFor(scan: Scan, limit = 3) {
       score: row.normalizedDeviation > 0
         ? `+${round1(row.normalizedDeviation)}`
         : String(round1(row.normalizedDeviation)),
-      level: deviationStatus(row.normalizedDeviation),
+      level: deviationStatus(row.normalizedDeviation, locale),
       detail: row.mayIndicate,
-      ratios: [`Observed ${row.value}`, `Reference ${row.ideal}`],
+      ratios: [`${obsLabel} ${row.value}`, `${refLabel} ${row.ideal}`],
     }));
 }
 

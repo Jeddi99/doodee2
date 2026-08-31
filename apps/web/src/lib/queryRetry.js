@@ -32,8 +32,9 @@ export function retry(failureCount, error) {
 
 /**
  * Exponential backoff with jitter. `rng` is injectable so the spread is testable; production
- * passes nothing and gets Math.random.
+ * passes nothing (or React Query passes error) and gets Math.random.
  */
 export function retryDelay(attempt, rng = Math.random) {
-  return Math.min(1000 * 2 ** attempt, 8000) + Math.floor(rng() * 300);
+  const randomFn = typeof rng === 'function' ? rng : Math.random;
+  return Math.min(1000 * 2 ** attempt, 8000) + Math.floor(randomFn() * 300);
 }

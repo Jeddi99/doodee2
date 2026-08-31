@@ -1,14 +1,15 @@
 import os
-import base64
+import hashlib
+import math
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 import cv2
 import numpy as np
 from django.conf import settings
 from django.core.cache import cache
 from django.db import transaction
-from django.db.models import F
+from django.db.models import F, Sum
 from django.utils import timezone
 from rest_framework import mixins, status, viewsets
 from rest_framework.decorators import (
@@ -22,12 +23,12 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from .models import (
-    ChatConversation, ChatMessage, ChatRole, ChatSetting, ChatTopic, ChatUsage, ConsentEvent,
+    AIUsageLedger, ChatConversation, ChatMessage, ChatRole, ChatSetting, ChatTopic, ChatUsage, ConsentEvent,
     CouponGrant, CreditLedger, Notification, Order, PayoutAccount, Plan, PromoCode,
     PromoRedemption, PushToken, Scan, Simulation, SimulationPreviewUsage, SiteSetting,
     WithdrawalRequest,
 )
-from . import attribution, payout, referral
+from . import ai_budget, attribution, consent, payout, referral, skin_engine, skin_vision
 from .authentication import identity_is_verified
 from .notifications import unread_count
 from .billing import CouponError, activate, create_order, quote, sync_entitlement, validate_coupon
@@ -53,13 +54,15 @@ from .reference_scoring import REFERENCE_POPULATIONS
 from .percentile import score_card as build_score_card
 from .development_plan import build as build_development_plan
 from .simulation_engine import has_profile_images, related_union, simulate, source_for_scan, validate_selections
-from .storage import delete_image, download_image, signed_url, upload_image
+from .storage import delete_image, download_image, signed_upload_url, signed_url, upload_image
 from .tasks import cleanup_scan, process_scan, process_simulation, request_scan_deletion
 
 
 SCAN_VIEWS = SCAN_VIEW_MODES["full"]
 ALLOWED_TYPES = {"image/jpeg", "image/png", "image/webp"}
 MAX_IMAGE_BYTES = 10 * 1024 * 1024
+HEAVY_QUEUE_MAX = int(os.getenv("HEAVY_QUEUE_MAX", "100"))
+HEAVY_QUEUE_MAX_AGE_SECONDS = int(os.getenv("HEAVY_QUEUE_MAX_AGE_SECONDS", "600"))
 # Roughly one arrival per browser per day is the honest rate; a hundred a minute from one
 # address is not a marketing channel. Generous enough for an office behind one NAT.
 VISIT_RATE_PER_MINUTE = 30
@@ -143,6 +146,14 @@ def session(request):
         # recipient, and naming the wrong one is a false statement about where a user's data
         # went — so it is read from the live setting, never hardcoded in the client.
         "chat_provider": _chat_provider_label(),
+        # Whether this user has a *current* consent to send their photograph, and who would
+        # receive it. Both are server-decided for the same reason `chat_provider` is: a screen
+        # that names the wrong recipient, or shows the toggle on when the consent was
+        # withdrawn, is a false statement about where a user's face went.
+        "skin_vision_enabled": skin_vision.configured(),
+        "skin_vision_consented": consent.granted(request.user, ConsentEvent.Purpose.SKIN_VISION),
+        "skin_vision_provider": skin_vision.provider_label(),
+        "skin_vision_consent_version": skin_vision.SKIN_VISION_CONSENT_VERSION,
         "demo_scans_enabled": settings.DEMO_SCANS_ENABLED,
         # Same reasoning as preview_remaining: the client shows the counter and the upgrade
         # prompt, but the number it shows is the one the server will actually enforce.
@@ -160,6 +171,29 @@ def session(request):
     })
 
 
+@api_view(["POST"])
+def skin_vision_consent(request):
+    """Turn sending the photograph on or off.
+
+    A POST either way, rather than a DELETE for withdrawal, because both write a row: the log is
+    append-only and a withdrawal is an event worth keeping, not the absence of one. The client
+    sends the version string it displayed, so the record says which wording was agreed to and a
+    later change of terms cannot be back-dated onto this decision.
+    """
+    accepted = bool(request.data.get("accepted"))
+    version = str(request.data.get("policy_version") or "").strip()
+    if accepted and version != skin_vision.SKIN_VISION_CONSENT_VERSION:
+        # Agreeing to wording we are no longer showing is not agreement. Withdrawal is exempt:
+        # a user must always be able to switch this off, whatever version they signed.
+        raise ValidationError({"detail": "stale_consent_version"})
+
+    consent.record(
+        request.user, ConsentEvent.Purpose.SKIN_VISION,
+        version or skin_vision.SKIN_VISION_CONSENT_VERSION, accepted=accepted,
+    )
+    return Response({"skin_vision_consented": accepted})
+
+
 def _chat_provider_label(config=None):
     """A human name for whoever receives a typed question.
 
@@ -170,6 +204,8 @@ def _chat_provider_label(config=None):
     from urllib.parse import urlparse
 
     config = config or ChatSetting.current()
+    if config.provider == ChatSetting.Provider.GEMINI:
+        return "Google Gemini"
     if config.provider != ChatSetting.Provider.OPENAI:
         return "Anthropic"
     host = (urlparse(config.base_url).hostname or "").lower()
@@ -348,14 +384,119 @@ def _read_image(upload):
     return data
 
 
+def _validate_image_bytes(data, name="image"):
+    if not data or len(data) > MAX_IMAGE_BYTES:
+        raise ValidationError({name: "Each image must be between 1 byte and 10 MB"})
+    if cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_COLOR) is None:
+        raise ValidationError({name: "Image could not be decoded"})
+
+
+def _heavy_queue_available():
+    queued_scans = Scan.objects.filter(status=Scan.Status.QUEUED)
+    queued_simulations = Simulation.objects.filter(status=Simulation.Status.QUEUED)
+    if queued_scans.count() + queued_simulations.count() >= HEAVY_QUEUE_MAX:
+        return False
+    oldest = min(
+        (value for value in (
+            queued_scans.order_by("created_at").values_list("created_at", flat=True).first(),
+            queued_simulations.order_by("created_at").values_list("created_at", flat=True).first(),
+        ) if value),
+        default=None,
+    )
+    return oldest is None or (timezone.now() - oldest).total_seconds() < HEAVY_QUEUE_MAX_AGE_SECONDS
+
+
+def _queue_busy_response():
+    return Response(
+        {"detail": "heavy_queue_busy", "retry_after": 60},
+        status=status.HTTP_503_SERVICE_UNAVAILABLE,
+        headers={"Retry-After": "60"},
+    )
+
+
+def _scan_fields(data):
+    age_band = data.get("age_band")
+    if age_band not in Scan.AgeBand.values:
+        raise ValidationError({"age_band": "Must be adult or minor"})
+    reference_age_band = str(data.get("reference_age_band", "")).strip()
+    reference_profile = str(data.get("reference_profile", "")).strip()
+    if age_band == Scan.AgeBand.ADULT:
+        if reference_age_band not in ("18_35", "36_plus"):
+            raise ValidationError({"reference_age_band": "Must be 18_35 or 36_plus for adults"})
+        if reference_profile not in ("neutral", "masculine", "feminine"):
+            raise ValidationError({"reference_profile": "Must be neutral, masculine, or feminine"})
+    else:
+        reference_age_band, reference_profile = "under_18", "neutral"
+    reference_population = str(data.get("reference_population", "TH")).strip().upper() or "TH"
+    if reference_population not in REFERENCE_POPULATIONS:
+        raise ValidationError({"reference_population": f"Must be one of {', '.join(REFERENCE_POPULATIONS)}"})
+    consent_version = str(data.get("analysis_consent_version", "")).strip()
+    if not consent_version:
+        raise ValidationError({"analysis_consent_version": "Consent is required"})
+    scan_mode = str(data.get("scan_mode", DEFAULT_SCAN_MODE)).strip().lower() or DEFAULT_SCAN_MODE
+    if scan_mode not in SCAN_VIEW_MODES:
+        raise ValidationError({"scan_mode": f"Must be one of {', '.join(SCAN_VIEW_MODES)}"})
+    capture_method = str(data.get("capture_method", "")).strip().lower()
+    if capture_method and capture_method not in Scan.CaptureMethod.values:
+        raise ValidationError({"capture_method": f"Must be one of {', '.join(Scan.CaptureMethod.values)}"})
+    # A photograph picked from a folder may be of anybody, and nothing downstream can tell: the
+    # engine measures light, blur and head angle, all of which a picture of somebody else passes.
+    # So the client has to say whose face it is, and it has to say so here rather than only in a
+    # checkbox — a confirmation the server never sees is a decoration the client can skip.
+    attestation_version = str(data.get("upload_attestation_version", "")).strip()
+    if capture_method == Scan.CaptureMethod.UPLOAD and not attestation_version:
+        raise ValidationError(
+            {"upload_attestation_version": "Required when any image was uploaded rather than captured"},
+        )
+    return {
+        "age_band": age_band, "reference_age_band": reference_age_band,
+        "reference_profile": reference_profile, "reference_population": reference_population,
+        "scan_mode": scan_mode, "capture_method": capture_method,
+        "expires_at": timezone.now() + timedelta(hours=24 if age_band == Scan.AgeBand.MINOR else 30 * 24),
+    }, consent_version, tuple(scan_views_for_mode(scan_mode)), attestation_version
+
+
+def _record_scan_consents(user, age_band, consent_version, capture_method="", attestation_version=""):
+    """Write the consent rows one scan implies.
+
+    `consent.record` rather than `ConsentEvent.objects.create`: the two calls below predate
+    `consent.py` and there is no reason to keep adding to that split.
+    """
+    consent.record(user, ConsentEvent.Purpose.ANALYSIS, consent_version)
+    if age_band == Scan.AgeBand.ADULT:
+        consent.record(user, ConsentEvent.Purpose.STORAGE, consent_version)
+    # Only for a scan that actually carries an uploaded photograph. Recording it for a camera scan
+    # would put a claim in the log that nobody was ever asked to make.
+    if capture_method == Scan.CaptureMethod.UPLOAD and attestation_version:
+        consent.record(user, ConsentEvent.Purpose.PHOTO_OWNER, attestation_version)
+
+
+def _redact_skin_signals(skin, redacted):
+    """The signals this plan pays for.
+
+    Ordered by confidence rather than by value. "Show the strongest reading" would put the user's
+    most unusual result first, which is a ranking this feature does not make — the two kept are
+    the two the engine is most sure of, which is a statement about the measurement.
+
+    Shared by `/skin/` and `/skin-trend/` so a plan change cannot be honoured on one and not the
+    other; a locked feature that answers in full on a second route is not locked.
+    """
+    signals = dict(skin.get("signals") or {})
+    if not redacted:
+        return signals
+    confidence = skin.get("confidence") or {}
+    keep = sorted(signals, key=lambda key: -confidence.get(key, 0))[:2]
+    return {key: value for key, value in signals.items() if key in keep}
+
+
 class ScanViewSet(viewsets.GenericViewSet, mixins.ListModelMixin, mixins.RetrieveModelMixin):
     serializer_class = ScanSerializer
-    parser_classes = (MultiPartParser, FormParser)
+    parser_classes = (MultiPartParser, FormParser, JSONParser)
 
     # Per action, not a class attribute: a viewset is a single view as far as ScopedRateThrottle
     # is concerned, so `throttle_scope = "scan_create"` on the class would also put the polled
     # `status` endpoint under 6/hour and freeze the analysis screen.
-    THROTTLE_SCOPES = {"create": "scan_create"}
+    THROTTLE_SCOPES = {"create": "scan_create", "uploads": "scan_create"}
 
     def get_throttles(self):
         self.throttle_scope = self.THROTTLE_SCOPES.get(self.action)
@@ -369,40 +510,21 @@ class ScanViewSet(viewsets.GenericViewSet, mixins.ListModelMixin, mixins.Retriev
         return Response(self.get_serializer(queryset, many=True).data)
 
     def create(self, request):
-        age_band = request.data.get("age_band")
-        if age_band not in Scan.AgeBand.values:
-            raise ValidationError({"age_band": "Must be adult or minor"})
-        reference_age_band = str(request.data.get("reference_age_band", "")).strip()
-        reference_profile = str(request.data.get("reference_profile", "")).strip()
-        if age_band == Scan.AgeBand.ADULT:
-            if reference_age_band not in ("18_35", "36_plus"):
-                raise ValidationError({"reference_age_band": "Must be 18_35 or 36_plus for adults"})
-            if reference_profile not in ("neutral", "masculine", "feminine"):
-                raise ValidationError({"reference_profile": "Must be neutral, masculine, or feminine"})
-        else:
-            reference_age_band, reference_profile = "under_18", "neutral"
-        reference_population = str(request.data.get("reference_population", "TH")).strip().upper() or "TH"
-        if reference_population not in REFERENCE_POPULATIONS:
-            raise ValidationError({"reference_population": f"Must be one of {', '.join(REFERENCE_POPULATIONS)}"})
-        consent_version = str(request.data.get("analysis_consent_version", "")).strip()
-        if not consent_version:
-            raise ValidationError({"analysis_consent_version": "Consent is required"})
-        scan_mode = str(request.data.get("scan_mode", DEFAULT_SCAN_MODE)).strip().lower() or DEFAULT_SCAN_MODE
-        if scan_mode not in SCAN_VIEW_MODES:
-            raise ValidationError({"scan_mode": f"Must be one of {', '.join(SCAN_VIEW_MODES)}"})
-        # Absent means unknown, not invalid: the mobile app does not send this yet, and a scan
-        # must never fail because a report column would like to be complete.
-        capture_method = str(request.data.get("capture_method", "")).strip().lower()
-        if capture_method and capture_method not in Scan.CaptureMethod.values:
-            raise ValidationError(
-                {"capture_method": f"Must be one of {', '.join(Scan.CaptureMethod.values)}"}
-            )
-        required_views = tuple(v for v in scan_views_for_mode(scan_mode))
+        if not _heavy_queue_available():
+            return _queue_busy_response()
+        fields, consent_version, required_views, attestation_version = _scan_fields(request.data)
         missing = [view for view in required_views if view not in request.FILES]
         if missing:
             raise ValidationError({"missing_views": missing})
         payloads = {view: _read_image(request.FILES[view]) for view in required_views}
-        expires_at = timezone.now() + timedelta(hours=24 if age_band == Scan.AgeBand.MINOR else 30 * 24)
+        digest = hashlib.sha256()
+        for view in required_views:
+            digest.update(view.encode())
+            digest.update(payloads[view])
+        idempotency_key = request.headers.get("Idempotency-Key", "").strip()[:128] or f"legacy:{digest.hexdigest()}"
+        existing = Scan.objects.filter(user=request.user, idempotency_key=idempotency_key).first()
+        if existing:
+            return Response(self.get_serializer(existing).data, status=status.HTTP_202_ACCEPTED)
         uploaded = {}
         token = os.urandom(16).hex()
         upload_error = None
@@ -429,26 +551,14 @@ class ScanViewSet(viewsets.GenericViewSet, mixins.ListModelMixin, mixins.Retriev
             with transaction.atomic():
                 scan = Scan.objects.create(
                     user=request.user,
-                    age_band=age_band,
-                    reference_age_band=reference_age_band,
-                    reference_profile=reference_profile,
-                    reference_population=reference_population,
-                    scan_mode=scan_mode,
-                    capture_method=capture_method,
+                    **fields,
+                    idempotency_key=idempotency_key,
                     image_objects=uploaded,
-                    expires_at=expires_at,
                 )
-                ConsentEvent.objects.create(
-                    user=request.user,
-                    purpose=ConsentEvent.Purpose.ANALYSIS,
-                    policy_version=consent_version,
+                _record_scan_consents(
+                    request.user, fields["age_band"], consent_version,
+                    fields["capture_method"], attestation_version,
                 )
-                if age_band == Scan.AgeBand.ADULT:
-                    ConsentEvent.objects.create(
-                        user=request.user,
-                        purpose=ConsentEvent.Purpose.STORAGE,
-                        policy_version=consent_version,
-                    )
         except Exception:
             for object_name in uploaded.values():
                 try:
@@ -459,18 +569,199 @@ class ScanViewSet(viewsets.GenericViewSet, mixins.ListModelMixin, mixins.Retriev
         try:
             process_scan.delay(str(scan.id))
         except Exception:
-            for object_name in uploaded.values():
-                try:
-                    delete_image(object_name)
-                except Exception:
-                    pass
-            scan.delete()
-            return Response({"detail": "Analysis queue is unavailable"}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+            # The database row is the recovery source of truth; reconciliation will enqueue it.
+            pass
+        return Response(self.get_serializer(scan).data, status=status.HTTP_202_ACCEPTED)
+
+    @action(detail=False, methods=("post",), url_path="uploads")
+    def uploads(self, request):
+        """Reserve a scan and return per-object upload grants for private Supabase Storage."""
+        if not _heavy_queue_available():
+            return _queue_busy_response()
+        key = request.headers.get("Idempotency-Key", "").strip()[:128]
+        if not key:
+            raise ValidationError({"detail": "Idempotency-Key header is required"})
+        fields, consent_version, required_views, attestation_version = _scan_fields(request.data)
+        file_types = request.data.get("files") or {}
+        if set(file_types) != set(required_views):
+            raise ValidationError({"files": f"Exactly these views are required: {', '.join(required_views)}"})
+        if any(content_type not in ALLOWED_TYPES for content_type in file_types.values()):
+            raise ValidationError({"files": "Only JPEG, PNG, and WebP images are accepted"})
+        existing = Scan.objects.filter(user=request.user, idempotency_key=key).first()
+        if existing and existing.status != Scan.Status.UPLOADING:
+            return Response(self.get_serializer(existing).data, status=status.HTTP_202_ACCEPTED)
+        if existing:
+            scan = existing
+        else:
+            token = os.urandom(16).hex()
+            objects = {view: f"users/{request.user.id}/scans/{token}/{view}" for view in required_views}
+            with transaction.atomic():
+                scan = Scan.objects.create(
+                    user=request.user, status=Scan.Status.UPLOADING, idempotency_key=key,
+                    image_objects=objects, **fields,
+                )
+                _record_scan_consents(
+                    request.user, fields["age_band"], consent_version,
+                    fields["capture_method"], attestation_version,
+                )
+        try:
+            uploads = {
+                view: {"object_name": object_name, "url": signed_upload_url(object_name), "content_type": file_types[view]}
+                for view, object_name in scan.image_objects.items()
+            }
+        except Exception:
+            return Response({"detail": "Image storage is temporarily unavailable"}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+        return Response({"id": str(scan.id), "status": scan.status, "uploads": uploads}, status=status.HTTP_201_CREATED)
+
+    @action(detail=True, methods=("post",))
+    def commit(self, request, pk=None):
+        scan = self.get_object()
+        if scan.status != Scan.Status.UPLOADING:
+            return Response(self.get_serializer(scan).data, status=status.HTTP_202_ACCEPTED)
+        if not _heavy_queue_available():
+            return _queue_busy_response()
+        try:
+            for view, object_name in scan.image_objects.items():
+                _validate_image_bytes(download_image(object_name, max_bytes=MAX_IMAGE_BYTES), view)
+        except ValidationError:
+            raise
+        except Exception:
+            return Response({"detail": "upload_incomplete"}, status=status.HTTP_409_CONFLICT)
+        scan.status = Scan.Status.QUEUED
+        scan.save(update_fields=("status", "updated_at"))
+        try:
+            process_scan.delay(str(scan.id))
+        except Exception:
+            pass
         return Response(self.get_serializer(scan).data, status=status.HTTP_202_ACCEPTED)
 
     @action(detail=True, methods=("get",))
     def status(self, request, pk=None):
         return Response(self.get_serializer(self.get_object()).data)
+
+    @action(detail=False, methods=("get",), url_path="skin-trend")
+    def skin_trend(self, request):
+        """One user's skin readings over time, split into runs that may honestly be joined.
+
+        `skin_engine.comparison_break` is the whole design of this endpoint. Skin signals are
+        stable against light *within* one photograph and not at all across photographs taken in
+        different rooms, so a single line through every scan would draw the rooms as a change in
+        the user's skin — the failure that module exists to prevent, reintroduced by the chart
+        rather than by the measurement.
+
+        So the server does the splitting, not the client. Two reasons: the rule is one definition
+        and a TypeScript copy of it would drift, and the reason a run ended ("we changed how this
+        is measured" versus "the light was too different") is a sentence the screen has to say,
+        which means it has to be computed where the comparison happens.
+
+        Demo scans are excluded outright. Their `skin_analysis` is a hand-written fixture, and a
+        fabricated point plotted beside real ones is the same lie in a different costume.
+        """
+        limit = min(int(request.query_params.get("limit") or 20), 50)
+        scans = (
+            self.get_queryset()
+            .filter(status=Scan.Status.COMPLETED, age_band=Scan.AgeBand.ADULT, is_demo=False)
+            .order_by("-created_at")[:limit]
+        )
+        redacted = entitlement.current_plan(request.user).analysis_depth == Plan.AnalysisDepth.PARTIAL
+
+        # Oldest first, so a run is built in the direction a chart is read.
+        readings = []
+        for scan in reversed(list(scans)):
+            skin = (scan.analysis_data or {}).get("skin_analysis")
+            if skin:
+                readings.append((scan, skin))
+
+        series = []
+        previous = None
+        for scan, skin in readings:
+            reason = skin_engine.comparison_break(previous, skin) if previous else None
+            if previous is None or reason:
+                series.append({
+                    "engine_version": skin.get("engine_version"),
+                    # Why this run could not continue the one before it. None on the first run,
+                    # because nothing preceded it — an absent reason and "different lighting" are
+                    # different facts and the client draws them differently.
+                    "break_reason": reason,
+                    "points": [],
+                })
+            series[-1]["points"].append({
+                "scan_id": str(scan.id),
+                "captured_at": scan.created_at,
+                "scan_mode": scan.scan_mode,
+                "readable": bool(skin.get("readable")),
+                # An unreadable scan keeps its place in history and its explanation, but carries
+                # no values — there is nothing to plot and a zero would be read as a measurement.
+                "signals": _redact_skin_signals(skin, redacted) if skin.get("readable") else {},
+                "advisories": skin.get("advisories") or [],
+            })
+            # Compared against the previous *reading*, not the previous run: two scans in a row
+            # that are each unreadable should each break, rather than the second silently joining
+            # the first.
+            previous = skin
+
+        return Response({
+            "series": series,
+            "confidence": dict(skin_engine.SIGNAL_CONFIDENCE),
+            "redacted": redacted,
+            "engine_version": skin_engine.ENGINE_VERSION,
+        })
+
+    @action(detail=True, methods=("get",), url_path="skin")
+    def skin(self, request, pk=None):
+        """Skin observations for one scan, at the depth this user's plan pays for.
+
+        Redaction follows `score_card`: a free plan gets a 200 carrying the two strongest
+        signals rather than a 403, because a wall shows nothing and sells nothing. The
+        withholding happens here, before the response is built, so the locked readings never
+        reach the client — a locked feature that still answers in full over HTTP is not locked.
+
+        Everything on this route is computed locally. The model-written description, which is
+        the only part that involved sending a photograph anywhere, is served only to a user who
+        currently consents; a withdrawal hides it again on the next request without deleting
+        the scan.
+        """
+        scan = self.get_object()
+        skin = (scan.analysis_data or {}).get("skin_analysis")
+        if not skin:
+            return Response(
+                {"detail": "skin_analysis_unavailable", "scan_status": scan.status},
+                status=status.HTTP_409_CONFLICT,
+            )
+
+        tier = entitlement.current_plan(request.user)
+        redacted = tier.analysis_depth == Plan.AnalysisDepth.PARTIAL
+        signals = _redact_skin_signals(skin, redacted)
+
+        consented = consent.granted(request.user, ConsentEvent.Purpose.SKIN_VISION)
+        vision = (scan.analysis_data or {}).get("skin_vision") if consented else None
+        # Consent is often given after the scan that would have used it. Rather than a nightly
+        # job that back-fills everybody's history — unbounded spend nobody asked for — the
+        # description is generated the first time a consenting user opens the scan, and only
+        # while the photograph still exists. Once the 30-day purge has emptied `image_objects`
+        # there is nothing left to send, so `vision_pending` is false forever and the screen
+        # says so instead of spinning.
+        vision_pending = False
+        if consented and vision is None:
+            from .tasks import queue_skin_vision
+
+            vision_pending = queue_skin_vision(scan)
+        return Response({
+            "scan_id": str(scan.id),
+            "captured_at": scan.created_at,
+            "engine_version": skin.get("engine_version"),
+            "basis": skin.get("basis"),
+            "signals": signals,
+            "confidence": skin.get("confidence") or {},
+            "capture": skin.get("capture") or {},
+            "advisories": skin.get("advisories") or [],
+            "readable": skin.get("readable", False),
+            "redacted": redacted,
+            "is_demo": bool(skin.get("is_demo")),
+            "vision": vision,
+            "vision_consented": consented,
+            "vision_pending": vision_pending,
+        })
 
     @action(detail=True, methods=("get",), url_path="score-card")
     def score_card(self, request, pk=None):
@@ -554,6 +845,8 @@ class SimulationViewSet(viewsets.GenericViewSet, mixins.RetrieveModelMixin):
             return Response({"detail": "Simulation is temporarily unavailable"}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
         if _simulation_locked(request.user):
             return Response({"detail": "simulation_requires_entitlement"}, status=status.HTTP_403_FORBIDDEN)
+        if not _heavy_queue_available():
+            return _queue_busy_response()
         allowed_fields = {"scan_id", "region", "preset_id", "selections", "simulation_consent_version"}
         if set(request.data) - allowed_fields:
             raise ValidationError({"detail": "Only scan_id, selections (or region and preset_id), and simulation_consent_version are accepted"})
@@ -575,6 +868,12 @@ class SimulationViewSet(viewsets.GenericViewSet, mixins.RetrieveModelMixin):
         if active:
             return Response({"detail": "Only one simulation can run at a time"}, status=status.HTTP_409_CONFLICT)
         now = timezone.now()
+        key = request.headers.get("Idempotency-Key", "").strip()[:128]
+        if not key:
+            raise ValidationError({"detail": "Idempotency-Key header is required"})
+        existing = Simulation.objects.filter(scan=scan, idempotency_key=key).first()
+        if existing:
+            return Response(self.get_serializer(existing).data, status=status.HTTP_202_ACCEPTED)
         if not entitlement.allows(request.user, SAVES):
             return Response(
                 {"detail": "monthly_save_quota_reached",
@@ -583,6 +882,7 @@ class SimulationViewSet(viewsets.GenericViewSet, mixins.RetrieveModelMixin):
             )
         simulation = Simulation.objects.create(
             scan=scan,
+            idempotency_key=key,
             selections=selections,
             # The first item is mirrored into the old single-value columns so existing readers
             # — the serializer's `preset`, the admin, saved rows from before stacking — still work.
@@ -598,8 +898,7 @@ class SimulationViewSet(viewsets.GenericViewSet, mixins.RetrieveModelMixin):
         try:
             process_simulation.delay(str(simulation.id))
         except Exception:
-            simulation.delete()
-            return Response({"detail": "Simulation queue is unavailable"}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+            pass
         return Response(self.get_serializer(simulation).data, status=status.HTTP_202_ACCEPTED)
 
     @action(detail=False, methods=("post",), url_path="preview")
@@ -624,7 +923,7 @@ class SimulationViewSet(viewsets.GenericViewSet, mixins.RetrieveModelMixin):
             raise ValidationError({"scan_id": "A completed unexpired scan is required"})
         # The whole stack is resolved before quota, lock or storage is touched, so a request
         # that cannot be rendered in full costs nothing and renders nothing partial.
-        _selections, presets, targets = _resolve_stack(scan, request.data)
+        selections, presets, targets = _resolve_stack(scan, request.data)
         preset, target = presets[0], targets[0]
         cohort = _cohort_labels(scan)
         # Answered before any quota is claimed: an invisible warp should not cost a preview.
@@ -635,52 +934,50 @@ class SimulationViewSet(viewsets.GenericViewSet, mixins.RetrieveModelMixin):
 
         plan = _user_plan(request.user)
         tier = entitlement.current_plan(request.user)
-        lock_key = f"simulation-preview-lock:{request.user.id}"
-        if not cache.add(lock_key, 1, timeout=15):
-            return Response({"detail": "preview_in_progress"}, status=status.HTTP_409_CONFLICT)
-        remaining = None
-        claimed = False
+        if not _heavy_queue_available():
+            return _queue_busy_response()
+        key = request.headers.get("Idempotency-Key", "").strip()[:128]
+        if not key:
+            raise ValidationError({"detail": "Idempotency-Key header is required"})
+        existing = Simulation.objects.filter(scan=scan, idempotency_key=key).first()
+        if existing:
+            return Response(self.get_serializer(existing).data, status=status.HTTP_202_ACCEPTED)
+        hourly_key = f"simulation-preview-hour:{request.user.id}:{timezone.now():%Y%m%d%H}"
+        cache.add(hourly_key, 0, timeout=3700)
+        if cache.incr(hourly_key) > SiteSetting.current().preview_hourly_ceiling:
+            return Response({"detail": "preview_rate_limited"}, status=status.HTTP_429_TOO_MANY_REQUESTS)
+        claimed, remaining = _claim_preview(request.user, entitlement.quota(request.user, PREVIEWS, tier))
+        if not claimed:
+            return Response(
+                {"detail": "monthly_preview_quota_reached", "preview_remaining": 0, "plan": plan},
+                status=status.HTTP_429_TOO_MANY_REQUESTS,
+            )
+        # A slider can replace queued previews faster than a worker can render them. Only the
+        # newest pending preview is useful; a processing one is allowed to finish safely.
+        cancelled = Simulation.objects.filter(
+            scan__user=request.user, kind=Simulation.Kind.PREVIEW, status=Simulation.Status.QUEUED,
+        ).update(status=Simulation.Status.CANCELLED, finished_at=timezone.now())
+        for _ in range(cancelled):
+            _restore_preview(request.user)
+        simulation = Simulation.objects.create(
+            scan=scan, kind=Simulation.Kind.PREVIEW, idempotency_key=key, selections=selections,
+            region=selections[0]["region"], preset_id=selections[0]["preset_id"],
+            parameters={"delta": presets[0]["delta"], "deltas": [
+                {"region": item["region"], "preset_id": item["id"], "delta": item["delta"]}
+                for item in presets
+            ]},
+            model_version="local-mediapipe-opencv-1", related_procedures=related_union(presets),
+            expires_at=timezone.now() + timedelta(hours=1),
+        )
+        _record_simulation_consent(request.user, consent_version)
         try:
-            # The hourly ceiling is checked BEFORE the monthly claim. It is not a quota but a
-            # bound on how much CPU one stolen account can burn in an hour, so failing it must
-            # not cost the user a preview from their allowance — and it applies to every plan,
-            # including the ones sold as unlimited, which need it more rather than less.
-            hourly_key = f"simulation-preview-hour:{request.user.id}:{timezone.now():%Y%m%d%H}"
-            cache.add(hourly_key, 0, timeout=3700)
-            if cache.incr(hourly_key) > SiteSetting.current().preview_hourly_ceiling:
-                return Response({"detail": "preview_rate_limited"}, status=status.HTTP_429_TOO_MANY_REQUESTS)
-            # The monthly allowance is now every plan's, not only free's, so this runs for
-            # everybody rather than inside an `if plan == "free"`.
-            claimed, remaining = _claim_preview(request.user, entitlement.quota(request.user, PREVIEWS, tier))
-            if not claimed:
-                return Response(
-                    {"detail": "monthly_preview_quota_reached", "preview_remaining": 0, "plan": plan},
-                    status=status.HTTP_429_TOO_MANY_REQUESTS,
-                )
-            source, source_object, source_view = source_for_scan(scan, preset, download_image)
-            # 768 was rendering roughly half the pixels the viewer displays on a retina screen,
-            # so every preview arrived visibly softer than the untouched before image next to it.
-            output, measurements, focus_boxes = simulate(source, presets, max_side=1280, output_format=".webp")
-            _record_simulation_consent(request.user, consent_version)
-            return Response({
-                # `preset` and `focus_box` are the first item, kept for clients that predate stacking.
-                "preset": preset, "presets": presets, "source_view": source_view, "before_url": signed_url(source_object),
-                "after_data_url": f"data:image/webp;base64,{base64.b64encode(output).decode('ascii')}",
-                "measurements": measurements, "related_procedures": related_union(presets),
-                "focus_boxes": focus_boxes, "focus_box": focus_boxes[preset["region"]],
-                "already_near_reference": False, **cohort,
-                "entitlement": {"plan": plan, "preview_remaining": remaining},
-            })
-        except ValueError as exc:
-            if claimed:
-                _restore_preview(request.user)
-            raise ValidationError({"detail": str(exc)}) from exc
+            process_simulation.delay(str(simulation.id))
         except Exception:
-            if claimed:
-                _restore_preview(request.user)
-            return Response({"detail": "preview_unavailable"}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
-        finally:
-            cache.delete(lock_key)
+            pass
+        data = self.get_serializer(simulation).data
+        data["entitlement"] = {"plan": plan, "preview_remaining": remaining}
+        data.update(cohort)
+        return Response(data, status=status.HTTP_202_ACCEPTED)
 
     @action(detail=True, methods=("get",))
     def status(self, request, pk=None):
@@ -771,6 +1068,56 @@ def _refund_chat_turn(user):
     ChatUsage.objects.filter(user=user, period=timezone.localdate().replace(day=1), count__gt=0).update(count=F("count") - 1)
 
 
+# The estimate a chat turn is admitted against, before the model has said anything. 5,000 input
+# tokens is the cached system block plus a short history; the output half is whatever ceiling the
+# admin set. Kept here rather than in `ai_budget` because it is a fact about chat, not about
+# budgeting — skin vision reserves against a completely different shape of request.
+CHAT_RESERVE_INPUT_TOKENS = 5000
+
+
+def _reserve_ai_budget(user, key, config):
+    return ai_budget.reserve(
+        user, key,
+        provider=config.provider, model=config.model,
+        input_tokens=CHAT_RESERVE_INPUT_TOKENS, output_tokens=config.max_tokens,
+        price_in=settings.CHAT_PRICE_IN_USD_PER_MTOK,
+        price_out=settings.CHAT_PRICE_OUT_USD_PER_MTOK,
+    )
+
+
+def _settle_ai_budget(ledger, usage):
+    ai_budget.settle(
+        ledger, usage,
+        price_in=settings.CHAT_PRICE_IN_USD_PER_MTOK,
+        price_cached_in=settings.CHAT_PRICE_CACHED_IN_USD_PER_MTOK,
+        price_out=settings.CHAT_PRICE_OUT_USD_PER_MTOK,
+    )
+
+
+def _claim_chat_slot(user):
+    user_key = f"chat-slot:user:{user.id}"
+    if not cache.add(user_key, 1, timeout=60):
+        return None
+    global_key = "chat-slot:global"
+    cache.add(global_key, 0, timeout=120)
+    if cache.incr(global_key) > settings.CHAT_GLOBAL_CONCURRENCY:
+        cache.decr(global_key)
+        cache.delete(user_key)
+        return None
+    return user_key, global_key
+
+
+def _release_chat_slot(slot):
+    if not slot:
+        return
+    user_key, global_key = slot
+    cache.delete(user_key)
+    try:
+        cache.decr(global_key)
+    except ValueError:
+        pass
+
+
 class ChatViewSet(viewsets.GenericViewSet, mixins.ListModelMixin, mixins.RetrieveModelMixin, mixins.DestroyModelMixin):
     """DOODEE Chat.
 
@@ -803,7 +1150,10 @@ class ChatViewSet(viewsets.GenericViewSet, mixins.ListModelMixin, mixins.Retriev
             if not scan:
                 raise NotFound("Scan not found")
             return scan
-        return scans.order_by("-created_at").first()
+        # Skin scans excluded: chat answers questions about measurements, and a skin scan has
+        # none — `analyze_images` returns an empty catalogue for that mode. Picking the newest
+        # scan of any mode would mean a skin check-in silently emptied the chat's context.
+        return scans.exclude(scan_mode=Scan.ScanMode.SKIN).order_by("-created_at").first()
 
     @action(detail=False, methods=("get",), url_path="facts")
     def facts(self, request):
@@ -926,6 +1276,27 @@ class ChatViewSet(viewsets.GenericViewSet, mixins.ListModelMixin, mixins.Retriev
                 status=status.HTTP_429_TOO_MANY_REQUESTS,
             )
 
+        idempotency_key = request.headers.get("Idempotency-Key", "").strip()[:128]
+        if not idempotency_key:
+            _refund_chat_turn(request.user)
+            raise ValidationError({"detail": "Idempotency-Key header is required"})
+        config = ChatSetting.current()
+        ledger = _reserve_ai_budget(request.user, idempotency_key, config)
+        if ledger is None:
+            _refund_chat_turn(request.user)
+            return Response({"detail": "monthly_ai_budget_reached"}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+        if ledger is False:
+            _refund_chat_turn(request.user)
+            return Response({"detail": "request_already_processed"}, status=status.HTTP_409_CONFLICT)
+        slot = _claim_chat_slot(request.user)
+        if not slot:
+            ledger.status = AIUsageLedger.Status.REFUNDED
+            ledger.reserved_satang = 0
+            ledger.settled_at = timezone.now()
+            ledger.save(update_fields=("status", "reserved_satang", "settled_at"))
+            _refund_chat_turn(request.user)
+            return Response({"detail": "chat_busy", "retry_after": 5}, status=status.HTTP_429_TOO_MANY_REQUESTS)
+
         # History is read before the new question is stored, so the question is appended once.
         history = []
         if conversation:
@@ -933,29 +1304,39 @@ class ChatViewSet(viewsets.GenericViewSet, mixins.ListModelMixin, mixins.Retriev
                 history.append({"role": message.role, "content": message.content})
         history.append({"role": "user", "content": question})
 
-        config = ChatSetting.current()
         # An existing conversation keeps the voice it was opened with. Switching mid-thread would
         # change the cached system block and cost full price on every remaining turn, and a
         # thread that changes character halfway is not what anyone asked for either.
         role = ChatRole.resolve(conversation.role if conversation else request.data.get("role"))
         persona = "\n\n".join(part for part in (role.persona if role else "", config.persona) if part.strip())
         try:
-            answer, usage = chat_reply(
-                f"{system_prompt(persona)}\n\n{scan_context(scan)}",
-                history,
-                model=config.model,
-                effort=config.effort,
-                max_tokens=config.max_tokens,
-                provider=config.provider,
-                base_url=config.base_url,
-            )
-        except ChatUnavailable as exc:
-            # The turn was reserved before the call; an upstream failure must not spend it.
-            _refund_chat_turn(request.user)
-            return Response(
-                {"detail": "chat_upstream_error", "reason": str(exc)[:200]},
-                status=status.HTTP_502_BAD_GATEWAY,
-            )
+            try:
+                answer, usage = chat_reply(
+                    f"{system_prompt(persona)}\n\n{scan_context(scan)}",
+                    history,
+                    model=config.model,
+                    effort=config.effort,
+                    max_tokens=config.max_tokens,
+                    provider=config.provider,
+                    base_url=config.base_url,
+                )
+            except ChatUnavailable as exc:
+                uncertain = str(exc).startswith("unreachable:")
+                ledger.status = AIUsageLedger.Status.UNCERTAIN if uncertain else AIUsageLedger.Status.REFUNDED
+                if not uncertain:
+                    ledger.reserved_satang = 0
+                ledger.settled_at = timezone.now()
+                ledger.save(update_fields=("status", "reserved_satang", "settled_at"))
+                # The turn was reserved before the call; an upstream failure must not spend it.
+                _refund_chat_turn(request.user)
+                return Response(
+                    {"detail": "chat_upstream_error", "reason": str(exc)[:200]},
+                    status=status.HTTP_502_BAD_GATEWAY,
+                )
+        finally:
+            _release_chat_slot(slot)
+
+        _settle_ai_budget(ledger, usage)
 
         # Written only after a successful reply, so a failed turn leaves no half-conversation.
         with transaction.atomic():

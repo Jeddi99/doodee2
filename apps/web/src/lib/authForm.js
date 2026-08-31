@@ -19,9 +19,17 @@ export function passwordProblem(password) {
 }
 
 /** What is wrong with the form right now, or null when it may be submitted. */
-export function formProblem({ email, password, mode }) {
+export function formProblem({ email, password, confirmPassword, displayName, mode }) {
+  if (mode === 'signup') {
+    if (displayName !== undefined && !String(displayName || '').trim()) return 'name';
+  }
   if (!isEmail(email)) return 'email';
-  if (mode === 'signup') return passwordProblem(password);
+  if (mode === 'signup') {
+    const prob = passwordProblem(password);
+    if (prob) return prob;
+    if (confirmPassword !== undefined && password !== confirmPassword) return 'passwordMismatch';
+    return null;
+  }
   if (!password) return 'short';
   return null;
 }

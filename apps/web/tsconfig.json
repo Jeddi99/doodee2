@@ -14,6 +14,11 @@
     "forceConsistentCasingInFileNames": true,
     "module": "ESNext",
     "moduleResolution": "Bundler",
+    // So a module can be imported as "./thing.ts". Vite resolves either form, but `npm test` runs
+    // the sources directly under node, whose ESM resolver will not guess an extension — a test
+    // that reaches a module with relative imports can only load it if those imports are explicit.
+    // Safe here because nothing is emitted; see `noEmit` below.
+    "allowImportingTsExtensions": true,
     "resolveJsonModule": true,
     "isolatedModules": true,
     "noEmit": true,

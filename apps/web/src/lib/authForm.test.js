@@ -36,6 +36,16 @@ test('an empty password still blocks sign-in', () => {
   assert.equal(formProblem({ email: 'a@b.co', password: '', mode: 'signin' }), 'short');
 });
 
+test('missing name on signup is caught', () => {
+  assert.equal(formProblem({ email: 'a@b.co', password: 'password123', displayName: '', mode: 'signup' }), 'name');
+  assert.equal(formProblem({ email: 'a@b.co', password: 'password123', displayName: '  ', mode: 'signup' }), 'name');
+});
+
+test('mismatched confirm password on signup is caught', () => {
+  assert.equal(formProblem({ email: 'a@b.co', password: 'password123', confirmPassword: 'different123', displayName: 'Jed', mode: 'signup' }), 'passwordMismatch');
+  assert.equal(formProblem({ email: 'a@b.co', password: 'password123', confirmPassword: 'password123', displayName: 'Jed', mode: 'signup' }), null);
+});
+
 test('firebase codes become something a person can act on', () => {
   assert.equal(authErrorKey({ code: 'auth/email-already-in-use' }), 'emailInUse');
   assert.equal(authErrorKey({ code: 'auth/weak-password' }), 'weakPassword');

@@ -3,6 +3,7 @@ import { ArrowLeft, ArrowRight, Check, ChevronDown, Globe2, Mars, Minus, Plus, S
 import { useNavigate } from "react-router-dom";
 import Brand from "../Brand";
 import { canContinueFromAge, saveOnboardingAnswers } from "../lib/onboardingAnswers";
+import { useLocale } from "../useLocale";
 
 /**
  * POST /scans/ rejects an upload without this, and ConsentEvent records it against the user.
@@ -10,18 +11,206 @@ import { canContinueFromAge, saveOnboardingAnswers } from "../lib/onboardingAnsw
  */
 export const ANALYSIS_CONSENT_VERSION = "2026.3";
 
-const frequencyOptions = [
-  {
-    value: "yes",
-    label: "Yes",
-  },
-  {
-    value: "no",
-    label: "No",
-  },
-] as const;
+/* Onboarding shipped English-only while the rest of the app is Thailand-first, so a Thai user
+   met six English screens right after signing in. Rich paragraphs are stored as functions
+   returning JSX because the <strong> emphasis falls in different places in each language. */
+const COPY = {
+  th: {
+    stepOf: (step: number, total: number) => `ขั้นที่ ${step} จาก ${total}`,
+    stepShort: (step: number, total: number) => `${step} จาก ${total}`,
+    back: "ย้อนกลับ",
+    continue: "ถัดไป",
 
-type Frequency = (typeof frequencyOptions)[number]["value"];
+    yes: "ใช่",
+    no: "ไม่ใช่",
+
+    q1Label: "ความประทับใจแรก",
+    q1Title: "คนหน้าตาดีได้รับการปฏิบัติที่ดีกว่าจริงไหม?",
+    q1Hint: "เลือกสิ่งที่คุณคิด",
+    q1ResultLabel: "งานวิจัยพบว่า",
+    q1TitleNo: "คนส่วนใหญ่คิดต่างจากคุณ",
+    q1TitleYes: "87% คิดเหมือนคุณ",
+    q1LeadNo: "จากการสำรวจของ YouGov ในกลุ่มผู้ใหญ่ชาวอังกฤษ ปี 2021:",
+    q1LeadYes: () => (
+      <>จากการสำรวจของ YouGov ปี 2021 <strong>ผู้ใหญ่ 87% บอกว่าคนหน้าตาดีได้รับการปฏิบัติที่ดีกว่าจากคนรอบข้าง</strong></>
+    ),
+    q1ChartLabel: "87 เปอร์เซ็นต์บอกว่าคนหน้าตาดีได้รับการปฏิบัติที่ดีกว่า ส่วนอีก 13 เปอร์เซ็นต์ตอบอย่างอื่นหรือไม่แน่ใจ",
+    q1CaptionNo: "ไม่ใช่ / ไม่แน่ใจ",
+    q1CaptionYes: "ใช่",
+    q1BodyNo: () => (
+      <><strong>87%</strong> เชื่อว่าคนหน้าตาดีได้รับการปฏิบัติที่ดีกว่า มีเพียง <strong>13%</strong> ที่คิดต่างหรือไม่แน่ใจ</>
+    ),
+    q1BodyYes: () => (
+      <>ความได้เปรียบนี้ปรากฏในเรื่องอย่าง <strong>ความประทับใจแรก การเข้าสังคม ไปจนถึงโอกาสในการทำงาน</strong></>
+    ),
+    q1Source1: "YouGov Body Image Study · สหราชอาณาจักร · 2021",
+    q1Source2: "Beauty and the Labor Market · NBER",
+
+    q2Label: "ตัดสินใจเร็วๆ",
+    q2Title: "สองคนนี้มีทักษะและประสบการณ์เท่ากัน คุณจะเลือกใครก่อน?",
+    q2GroupLabel: "เลือกผู้สมัคร",
+    personA: "คนที่ A",
+    personB: "คนที่ B",
+    candidateAlt: (which: string) => `ผู้สมัคร ${which}`,
+    sameSkills: "ทักษะเท่ากัน · ประสบการณ์เท่ากัน",
+    q2ResultLabel: "ตัวเลือกของคุณเทียบกับคนอื่น",
+    q2TitleA: "คุณเลือกคนที่คนส่วนน้อยเลือก",
+    q2TitleB: "คุณเลือกเหมือนคนส่วนใหญ่",
+    q2LeadA: () => (
+      <>มีเพียง <strong>18%</strong> ที่เลือกคนที่ A ทั้งที่ผู้สมัครทั้งสองมีคุณสมบัติเท่ากัน</>
+    ),
+    q2LeadB: () => (
+      <><strong>82%</strong> เลือก <strong>คนที่ B</strong> ทั้งที่ผู้สมัครทั้งสองมี <strong>คุณสมบัติเท่ากัน</strong> ความแตกต่างที่มองเห็นได้มีเพียงรูปลักษณ์</>
+    ),
+    q2ChartLabel: (percent: number, person: string) => `${percent} เปอร์เซ็นต์เลือก${person}ในตัวอย่างนี้`,
+    q2Caption: (person: string) => `เลือก${person}ในตัวอย่างนี้`,
+    q2BodyA: () => (
+      <>งานวิจัยพบว่าผู้สมัครที่หน้าตาดีได้รับการติดต่อกลับจากนายจ้าง <strong>มากกว่าถึง 82%</strong></>
+    ),
+    q2BodyB1: "และรูปแบบนี้เกิดขึ้นจริงในการจ้างงาน",
+    q2BodyB2: () => (
+      <>ในการทดลองภาคสนามที่ใช้ <strong>เรซูเม่ 4,899 ฉบับ</strong> ผู้สมัครที่หน้าตาดีได้รับการติดต่อกลับ <strong>เกือบสองเท่า</strong> ของผู้สมัครที่มีคุณสมบัติใกล้เคียงกันแต่ถูกประเมินว่าหน้าตาด้อยกว่า</>
+    ),
+    q2BodyB3: () => (
+      <><strong>คุณสมบัติเท่ากัน รูปลักษณ์ต่างกัน ผลลัพธ์ต่างกัน</strong></>
+    ),
+    q2Source: "Galarza & Yamada · Journal of Applied Economics",
+
+    q3Label: "กลุ่มอ้างอิงของคุณ",
+    q3Title: "ให้เราใช้เกณฑ์อ้างอิงของเพศใดในการวิเคราะห์?",
+    q3Hint: "ช่วยให้เราเทียบสัดส่วนใบหน้ากับช่วงอ้างอิงที่ตรงกับคุณมากขึ้น",
+    q3GroupLabel: "เพศอ้างอิง",
+    male: "ชาย",
+    female: "หญิง",
+
+    q4Label: "อายุของคุณ",
+    q4Title: "คุณอายุเท่าไหร่?",
+    q4Hint: "อายุช่วยให้เราเลือกกลุ่มเปรียบเทียบที่เหมาะสม และอธิบายปัจจัยที่มาตามวัยได้ชัดขึ้น",
+    ageDrag: "ลากเพื่อเลือกอายุ",
+    ageValue: (age: number) => `อายุ ${age} ปี`,
+    ageDecrease: "ลดอายุ",
+    ageIncrease: "เพิ่มอายุ",
+    ageFine: "ปรับอายุอย่างละเอียด",
+    minorNotice: "DOODEE วิเคราะห์เฉพาะใบหน้าผู้ใหญ่ คุณต้องมีอายุ 18 ปีขึ้นไปจึงจะใช้งานต่อได้",
+
+    q5Label: "ภูมิหลังของคุณ",
+    q5Title: "คุณเกิดที่ประเทศใด?",
+    q5Hint: "เราใช้ประเทศเกิดเพื่อเลือกกลุ่มประชากรอ้างอิงที่ตรงกว่า ไม่ได้ใช้ระบุเชื้อชาติของคุณ",
+    countryLabel: "ประเทศที่เกิด",
+    countrySelect: "เลือกประเทศ",
+    countrySearch: "ค้นหาประเทศ",
+    countryList: "รายชื่อประเทศ",
+    countryEmpty: "ไม่พบประเทศที่ค้นหา",
+
+    q6Label: "ก่อนเริ่ม",
+    q6Title: "ความยินยอมของคุณ",
+    q6Hint: "DOODEE วิเคราะห์ใบหน้าผู้ใหญ่เพื่อให้ความรู้ความเข้าใจ ไม่ใช่การวินิจฉัยทางการแพทย์ และไม่ทดแทนผู้เชี่ยวชาญ",
+    consentAnalyseTitle: "วิเคราะห์รูปของฉัน",
+    consentAnalyseBody: "เราวัดจุดอ้างอิงบนใบหน้าและสัญญาณผิว เพื่อสร้างรายงานของคุณ",
+    consentStoreTitle: "เก็บรูปไว้ 30 วัน",
+    consentStoreBody: "รูปเก็บใน bucket ส่วนตัวหลังลิงก์ที่หมดอายุได้ และคุณลบเองได้ตลอดเวลา",
+    startScan: "เริ่มสแกน",
+  },
+  en: {
+    stepOf: (step: number, total: number) => `Step ${step} of ${total}`,
+    stepShort: (step: number, total: number) => `${step} of ${total}`,
+    back: "Back",
+    continue: "Continue",
+
+    yes: "Yes",
+    no: "No",
+
+    q1Label: "First impressions",
+    q1Title: "Do good-looking people get treated better?",
+    q1Hint: "Choose what you think.",
+    q1ResultLabel: "What the research found",
+    q1TitleNo: "Most people disagree with you.",
+    q1TitleYes: "87% agree with you.",
+    q1LeadNo: "In a 2021 YouGov survey of adults in Great Britain:",
+    q1LeadYes: () => (
+      <>In a 2021 YouGov survey, <strong>87% of adults said attractive people are treated better by others.</strong></>
+    ),
+    q1ChartLabel: "87 percent said good-looking people are treated better while 13 percent gave another response or were unsure",
+    q1CaptionNo: "No / unsure",
+    q1CaptionYes: "Yes",
+    q1BodyNo: () => (
+      <><strong>87%</strong> believe good-looking people are treated more favourably. Only <strong>13%</strong> said otherwise or weren’t sure.</>
+    ),
+    q1BodyYes: () => (
+      <>That advantage can show up in things like <strong>first impressions, social interactions, and even work opportunities.</strong></>
+    ),
+    q1Source1: "YouGov Body Image Study · Great Britain · 2021",
+    q1Source2: "Beauty and the Labor Market · NBER",
+
+    q2Label: "A quick decision",
+    q2Title: "These two people have the same skills and experience. Who would you choose first?",
+    q2GroupLabel: "Choose a candidate",
+    personA: "Person A",
+    personB: "Person B",
+    candidateAlt: (which: string) => `Candidate ${which}`,
+    sameSkills: "Same skills · Same experience",
+    q2ResultLabel: "How your choice compares",
+    q2TitleA: "You chose the less popular candidate.",
+    q2TitleB: "You chose what most people chose.",
+    q2LeadA: () => (
+      <>Only <strong>18%</strong> chose Person A — even though both candidates had the same qualifications.</>
+    ),
+    q2LeadB: () => (
+      <><strong>82%</strong> chose <strong>Person B</strong>, even though both candidates had the <strong>same qualifications</strong>. Appearance was the main visible difference.</>
+    ),
+    q2ChartLabel: (percent: number, person: string) => `${percent} percent chose ${person} in this example`,
+    q2Caption: (person: string) => `chose ${person} in this example`,
+    q2BodyA: () => (
+      <>Research found that attractive applicants received <strong>82% more callbacks</strong> from employers.</>
+    ),
+    q2BodyB1: "And this pattern shows up in real hiring.",
+    q2BodyB2: () => (
+      <>In a field experiment involving <strong>4,899 résumés</strong>, attractive candidates received <strong>nearly twice as many callbacks</strong> as similarly qualified candidates rated as less attractive.</>
+    ),
+    q2BodyB3: () => (
+      <><strong>Same qualifications. Different appearance. Different outcome.</strong></>
+    ),
+    q2Source: "Galarza & Yamada · Journal of Applied Economics",
+
+    q3Label: "Your reference",
+    q3Title: "Which sex should we use for your analysis?",
+    q3Hint: "This helps us compare facial proportions with a more relevant reference range.",
+    q3GroupLabel: "Sex reference",
+    male: "Male",
+    female: "Female",
+
+    q4Label: "Your age",
+    q4Title: "How old are you?",
+    q4Hint: "Age helps us use a more relevant comparison and explain age-related factors clearly.",
+    ageDrag: "Drag to choose age",
+    ageValue: (age: number) => `${age} years old`,
+    ageDecrease: "Decrease age",
+    ageIncrease: "Increase age",
+    ageFine: "Fine tune age",
+    minorNotice: "DOODEE analyses adult faces only. You need to be 18 or older to continue.",
+
+    q5Label: "Your background",
+    q5Title: "Where were you born?",
+    q5Hint: "We use your country of birth to select a more relevant population reference. It does not define your ethnicity.",
+    countryLabel: "Country of birth",
+    countrySelect: "Select country",
+    countrySearch: "Search country",
+    countryList: "Countries",
+    countryEmpty: "No country found",
+
+    q6Label: "Before we start",
+    q6Title: "Your consent",
+    q6Hint: "DOODEE analyses adult faces for educational insight. It is not a diagnosis and does not replace a qualified professional.",
+    consentAnalyseTitle: "Analyse my photos",
+    consentAnalyseBody: "Facial landmarks and skin signals are measured to build your report.",
+    consentStoreTitle: "Store them for 30 days",
+    consentStoreBody: "Photos sit in a private bucket behind expiring links, and you can delete them at any time.",
+    startScan: "Start my scan",
+  },
+} as const;
+
+
+type Frequency = "yes" | "no";
 type CandidateChoice = "a" | "b";
 type SexReference = "female" | "male";
 type Step = 1 | 2 | 3 | 4 | 5 | 6;
@@ -30,10 +219,14 @@ const TOTAL_STEPS = 6;
 
 const countryCodes = "AD AE AF AG AI AL AM AO AQ AR AS AT AU AW AX AZ BA BB BD BE BF BG BH BI BJ BL BM BN BO BQ BR BS BT BV BW BY BZ CA CC CD CF CG CH CI CK CL CM CN CO CR CU CV CW CX CY CZ DE DJ DK DM DO DZ EC EE EG EH ER ES ET FI FJ FK FM FO FR GA GB GD GE GF GG GH GI GL GM GN GP GQ GR GS GT GU GW GY HK HM HN HR HT HU ID IE IL IM IN IO IQ IR IS IT JE JM JO JP KE KG KH KI KM KN KP KR KW KY KZ LA LB LC LI LK LR LS LT LU LV LY MA MC MD ME MF MG MH MK ML MM MN MO MP MQ MR MS MT MU MV MW MX MY MZ NA NC NE NF NG NI NL NO NP NR NU NZ OM PA PE PF PG PH PK PL PM PN PR PS PT PW PY QA RE RO RS RU RW SA SB SC SD SE SG SH SI SJ SK SL SM SN SO SR SS ST SV SX SY SZ TC TD TF TG TH TJ TK TL TM TN TO TR TT TV TW TZ UA UG UM US UY UZ VA VC VE VG VI VN VU WF WS YE YT ZA ZM ZW".split(" ");
 
-const countryNames = new Intl.DisplayNames(["en"], { type: "region" });
-const countries = countryCodes
-  .map((code) => ({ code, name: countryNames.of(code) ?? code }))
-  .sort((a, b) => a.name.localeCompare(b.name));
+/* Built per locale rather than once at module load: hard-coding "en" here left the country
+   list in English on an otherwise Thai screen. Sorting also has to follow the locale. */
+function countriesFor(locale: string) {
+  const names = new Intl.DisplayNames([locale], { type: "region" });
+  return countryCodes
+    .map((code) => ({ code, name: names.of(code) ?? code }))
+    .sort((a, b) => a.name.localeCompare(b.name, locale));
+}
 
 function detectCountry() {
   const zone = Intl.DateTimeFormat().resolvedOptions().timeZone;
@@ -61,6 +254,16 @@ function detectCountry() {
 
 export default function OnboardingPage() {
   const navigate = useNavigate();
+  const { locale } = useLocale();
+  const c = COPY[locale === "en" ? "en" : "th"];
+  const countries = useMemo(() => countriesFor(locale), [locale]);
+  const frequencyOptions = useMemo(
+    () => [
+      { value: "yes" as const, label: c.yes },
+      { value: "no" as const, label: c.no },
+    ],
+    [c],
+  );
   const [step, setStep] = useState<Step>(1);
   const [analysisConsent, setAnalysisConsent] = useState(false);
   const [storageConsent, setStorageConsent] = useState(false);
@@ -84,7 +287,7 @@ export default function OnboardingPage() {
     const query = countryQuery.trim().toLocaleLowerCase();
     if (!query) return countries.slice(0, 10);
     return countries.filter((country) => country.name.toLocaleLowerCase().includes(query)).slice(0, 10);
-  }, [countryQuery]);
+  }, [countryQuery, countries]);
 
   useEffect(() => {
     if (!isCountryOpen) return;
@@ -169,8 +372,8 @@ export default function OnboardingPage() {
     <main className="onboarding-page">
       <header className="onboarding-header">
         <Brand />
-        <div className="onboarding-progress" aria-label={`Step ${step} of ${TOTAL_STEPS}`}>
-          <span>{step} of {TOTAL_STEPS}</span>
+        <div className="onboarding-progress" aria-label={c.stepOf(step, TOTAL_STEPS)}>
+          <span>{c.stepShort(step, TOTAL_STEPS)}</span>
           <span className="onboarding-progress__track" aria-hidden="true">
             <span style={{ width: `${(step / TOTAL_STEPS) * 100}%` }} />
           </span>
@@ -183,12 +386,12 @@ export default function OnboardingPage() {
             {!frequency ? (
               <>
                 <div className="onboarding-question onboarding-question--centered">
-                  <p className="onboarding-label">First impressions</p>
-                  <h1>Do good-looking people get treated better?</h1>
-                  <p>Choose what you think.</p>
+                  <p className="onboarding-label">{c.q1Label}</p>
+                  <h1>{c.q1Title}</h1>
+                  <p>{c.q1Hint}</p>
                 </div>
 
-                <div className="frequency-options frequency-options--binary" role="radiogroup" aria-label="Do good-looking people get treated better?">
+                <div className="frequency-options frequency-options--binary" role="radiogroup" aria-label={c.q1Title}>
                   {frequencyOptions.map((option) => (
                     <button
                       className="frequency-option frequency-option--binary"
@@ -209,51 +412,39 @@ export default function OnboardingPage() {
             ) : (
               <>
                 <div className="survey-result-heading" role="status">
-                  <p className="onboarding-label">What the research found</p>
-                  <h1>
-                    {frequency === "no"
-                      ? "Most people disagree with you."
-                      : "87% agree with you."}
-                  </h1>
-                  <p>
-                    {frequency === "no"
-                      ? "In a 2021 YouGov survey of adults in Great Britain:"
-                      : <>In a 2021 YouGov survey, <strong>87% of adults said attractive people are treated better by others.</strong></>}
-                  </p>
+                  <p className="onboarding-label">{c.q1ResultLabel}</p>
+                  <h1>{frequency === "no" ? c.q1TitleNo : c.q1TitleYes}</h1>
+                  <p>{frequency === "no" ? c.q1LeadNo : c.q1LeadYes()}</p>
                 </div>
 
-                <figure className={`survey-result-chart ${frequency === "no" ? "survey-result-chart--minority" : ""}`} aria-label="87 percent said good-looking people are treated better while 13 percent gave another response or were unsure">
+                <figure className={`survey-result-chart ${frequency === "no" ? "survey-result-chart--minority" : ""}`} aria-label={c.q1ChartLabel}>
                   <div className="survey-result-chart__bar" aria-hidden="true">
                     <span className={frequency === "no" ? "survey-result-chart__other" : "survey-result-chart__yes"} />
                   </div>
                   <figcaption>
                     {frequency === "no" ? (
-                      <span><strong>13%</strong><small>No / unsure</small></span>
+                      <span><strong>13%</strong><small>{c.q1CaptionNo}</small></span>
                     ) : (
-                      <span><strong>87%</strong><small>Yes</small></span>
+                      <span><strong>87%</strong><small>{c.q1CaptionYes}</small></span>
                     )}
                   </figcaption>
                 </figure>
 
                 <div className="survey-result-copy">
-                  <p>
-                    {frequency === "no"
-                      ? <><strong>87%</strong> believe good-looking people are treated more favourably. Only <strong>13%</strong> said otherwise or weren’t sure.</>
-                      : <>That advantage can show up in things like <strong>first impressions, social interactions, and even work opportunities.</strong></>}
-                  </p>
+                  <p>{frequency === "no" ? c.q1BodyNo() : c.q1BodyYes()}</p>
                   <div className="response-research__links">
                     <a href="https://yougov.com/en-gb/articles/35834-physical-appearance-todays-society" target="_blank" rel="noreferrer">
-                      YouGov Body Image Study · Great Britain · 2021 <ArrowRight size={14} />
+                      {c.q1Source1} <ArrowRight size={14} />
                     </a>
                     <a href="https://www.nber.org/papers/w4518" target="_blank" rel="noreferrer">
-                      Beauty and the Labor Market · NBER <ArrowRight size={14} />
+                      {c.q1Source2} <ArrowRight size={14} />
                     </a>
                   </div>
                 </div>
 
                 <div className="onboarding-actions onboarding-actions--end">
                   <button className="onboarding-primary" type="button" onClick={() => setStep(2)}>
-                    Continue <ArrowRight size={17} />
+                    {c.continue} <ArrowRight size={17} />
                   </button>
                 </div>
               </>
@@ -264,11 +455,11 @@ export default function OnboardingPage() {
             {!candidate ? (
               <>
                 <div className="onboarding-question onboarding-question--centered">
-                  <p className="onboarding-label">A quick decision</p>
-                  <h1>These two people have the same skills and experience. Who would you choose first?</h1>
+                  <p className="onboarding-label">{c.q2Label}</p>
+                  <h1>{c.q2Title}</h1>
                 </div>
 
-                <div className="candidate-grid" role="radiogroup" aria-label="Choose a candidate">
+                <div className="candidate-grid" role="radiogroup" aria-label={c.q2GroupLabel}>
                   <button
                     className="candidate-option"
                     type="button"
@@ -277,12 +468,12 @@ export default function OnboardingPage() {
                     onClick={() => setCandidate("a")}
                   >
                     <span className="candidate-option__image">
-                      <img src="/assets/candidate-right-glasses.png" alt="Candidate A" />
+                      <img src="/assets/candidate-right-glasses.png" alt={c.candidateAlt("A")} />
                       <span className="candidate-option__check"><Check size={16} /></span>
                     </span>
                     <span className="candidate-option__copy">
-                      <strong>Person A</strong>
-                      <span>Same skills · Same experience</span>
+                      <strong>{c.personA}</strong>
+                      <span>{c.sameSkills}</span>
                     </span>
                   </button>
 
@@ -294,66 +485,62 @@ export default function OnboardingPage() {
                     onClick={() => setCandidate("b")}
                   >
                     <span className="candidate-option__image">
-                      <img src="/assets/candidate-left.png" alt="Candidate B" />
+                      <img src="/assets/candidate-left.png" alt={c.candidateAlt("B")} />
                       <span className="candidate-option__check"><Check size={16} /></span>
                     </span>
                     <span className="candidate-option__copy">
-                      <strong>Person B</strong>
-                      <span>Same skills · Same experience</span>
+                      <strong>{c.personB}</strong>
+                      <span>{c.sameSkills}</span>
                     </span>
                   </button>
                 </div>
 
                 <div className="onboarding-actions">
                   <button className="onboarding-secondary" type="button" onClick={() => setStep(1)}>
-                    <ArrowLeft size={17} /> Back
+                    <ArrowLeft size={17} /> {c.back}
                   </button>
                 </div>
               </>
             ) : (
               <>
                 <div className="survey-result-heading" role="status">
-                  <p className="onboarding-label">How your choice compares</p>
-                  <h1>{candidate === "a" ? "You chose the less popular candidate." : "You chose what most people chose."}</h1>
-                  <p>
-                    {candidate === "a"
-                      ? <>Only <strong>18%</strong> chose Person A — even though both candidates had the same qualifications.</>
-                      : <><strong>82%</strong> chose <strong>Person B</strong>, even though both candidates had the <strong>same qualifications</strong>. Appearance was the main visible difference.</>}
-                  </p>
+                  <p className="onboarding-label">{c.q2ResultLabel}</p>
+                  <h1>{candidate === "a" ? c.q2TitleA : c.q2TitleB}</h1>
+                  <p>{candidate === "a" ? c.q2LeadA() : c.q2LeadB()}</p>
                 </div>
 
                 <figure
                   className={`survey-result-chart ${candidate === "a" ? "survey-result-chart--minority" : ""}`}
-                  aria-label={`${candidate === "a" ? 18 : 82} percent chose ${candidate === "a" ? "Person A" : "Person B"} in this example`}
+                  aria-label={c.q2ChartLabel(candidate === "a" ? 18 : 82, candidate === "a" ? c.personA : c.personB)}
                 >
                   <div className="survey-result-chart__bar" aria-hidden="true">
                     <span className={candidate === "a" ? "survey-result-chart__candidate-minority" : "survey-result-chart__candidate-majority"} />
                   </div>
                   <figcaption>
-                    <span><strong>{candidate === "a" ? "18%" : "82%"}</strong><small>chose {candidate === "a" ? "Person A" : "Person B"} in this example</small></span>
+                    <span><strong>{candidate === "a" ? "18%" : "82%"}</strong><small>{c.q2Caption(candidate === "a" ? c.personA : c.personB)}</small></span>
                   </figcaption>
                 </figure>
 
                 <div className="survey-result-copy">
                   {candidate === "a" ? (
-                    <p>Research found that attractive applicants received <strong>82% more callbacks</strong> from employers.</p>
+                    <p>{c.q2BodyA()}</p>
                   ) : (
                     <>
-                      <p>And this pattern shows up in real hiring.</p>
-                      <p>In a field experiment involving <strong>4,899 résumés</strong>, attractive candidates received <strong>nearly twice as many callbacks</strong> as similarly qualified candidates rated as less attractive.</p>
-                      <p><strong>Same qualifications. Different appearance. Different outcome.</strong></p>
+                      <p>{c.q2BodyB1}</p>
+                      <p>{c.q2BodyB2()}</p>
+                      <p>{c.q2BodyB3()}</p>
                     </>
                   )}
                   <div className="response-research__links">
                     <a href="https://www.tandfonline.com/doi/pdf/10.1016/S1514-0326%2817%2930002-8" target="_blank" rel="noreferrer">
-                      Galarza & Yamada · Journal of Applied Economics <ArrowRight size={14} />
+                      {c.q2Source} <ArrowRight size={14} />
                     </a>
                   </div>
                 </div>
 
                 <div className="onboarding-actions onboarding-actions--end">
                   <button className="onboarding-primary" type="button" onClick={() => setStep(3)}>
-                    Continue <ArrowRight size={17} />
+                    {c.continue} <ArrowRight size={17} />
                   </button>
                 </div>
               </>
@@ -362,15 +549,15 @@ export default function OnboardingPage() {
         ) : step === 3 ? (
           <div className="onboarding-step onboarding-step--profile" key="sex-reference">
             <div className="profile-question">
-              <p className="onboarding-label">Your reference</p>
-              <h1>Which sex should we use for your analysis?</h1>
-              <p>This helps us compare facial proportions with a more relevant reference range.</p>
+              <p className="onboarding-label">{c.q3Label}</p>
+              <h1>{c.q3Title}</h1>
+              <p>{c.q3Hint}</p>
             </div>
 
-            <div className="sex-options" role="radiogroup" aria-label="Sex reference">
+            <div className="sex-options" role="radiogroup" aria-label={c.q3GroupLabel}>
               {([
-                ["male", "Male", Mars],
-                ["female", "Female", Venus],
+                ["male", c.male, Mars],
+                ["female", c.female, Venus],
               ] as const).map(([value, label, Icon]) => (
                 <button
                   className={`sex-option ${sexReference === value ? "is-selected" : ""}`}
@@ -389,28 +576,28 @@ export default function OnboardingPage() {
 
             <div className="onboarding-actions">
               <button className="onboarding-secondary" type="button" onClick={() => setStep(2)}>
-                <ArrowLeft size={17} /> Back
+                <ArrowLeft size={17} /> {c.back}
               </button>
               <button className="onboarding-primary" type="button" disabled={!sexReference} onClick={() => setStep(4)}>
-                Continue <ArrowRight size={17} />
+                {c.continue} <ArrowRight size={17} />
               </button>
             </div>
           </div>
         ) : step === 4 ? (
           <div className="onboarding-step onboarding-step--profile onboarding-step--age" key="age-step">
             <div className="profile-question">
-              <p className="onboarding-label">Your age</p>
-              <h1>How old are you?</h1>
-              <p>Age helps us use a more relevant comparison and explain age-related factors clearly.</p>
+              <p className="onboarding-label">{c.q4Label}</p>
+              <h1>{c.q4Title}</h1>
+              <p>{c.q4Hint}</p>
             </div>
 
             <div className="age-picker">
               <div
-                aria-label="Drag to choose age"
+                aria-label={c.ageDrag}
                 aria-valuemax={80}
                 aria-valuemin={15}
                 aria-valuenow={age}
-                aria-valuetext={`${age} years old`}
+                aria-valuetext={c.ageValue(age)}
                 className={`age-wheel${isDraggingAge ? " is-dragging" : ""}`}
                 onKeyDown={handleAgeKey}
                 onPointerCancel={stopAgeDrag}
@@ -427,43 +614,43 @@ export default function OnboardingPage() {
                 </div>
               </div>
               <div className="age-controls">
-                <button type="button" aria-label="Decrease age" disabled={age <= 15} onClick={() => setAge((value) => Math.max(15, value - 1))}><Minus size={17} /></button>
+                <button type="button" aria-label={c.ageDecrease} disabled={age <= 15} onClick={() => setAge((value) => Math.max(15, value - 1))}><Minus size={17} /></button>
                 <input
-                  aria-label="Fine tune age"
+                  aria-label={c.ageFine}
                   type="range"
                   min="15"
                   max="80"
                   value={age}
                   onChange={(event) => setAge(Number(event.target.value))}
                 />
-                <button type="button" aria-label="Increase age" disabled={age >= 80} onClick={() => setAge((value) => Math.min(80, value + 1))}><Plus size={17} /></button>
+                <button type="button" aria-label={c.ageIncrease} disabled={age >= 80} onClick={() => setAge((value) => Math.min(80, value + 1))}><Plus size={17} /></button>
               </div>
               <div className="age-limits"><span>15</span><span>80</span></div>
             </div>
 
             {isMinor && (
               <p className="onboarding-minor-notice" role="status">
-                DOODEE analyses adult faces only. You need to be 18 or older to continue.
+                {c.minorNotice}
               </p>
             )}
 
             <div className="onboarding-actions">
-              <button className="onboarding-secondary" type="button" onClick={() => setStep(3)}><ArrowLeft size={17} /> Back</button>
-              <button className="onboarding-primary" type="button" disabled={isMinor} onClick={() => setStep(5)}>Continue <ArrowRight size={17} /></button>
+              <button className="onboarding-secondary" type="button" onClick={() => setStep(3)}><ArrowLeft size={17} /> {c.back}</button>
+              <button className="onboarding-primary" type="button" disabled={isMinor} onClick={() => setStep(5)}>{c.continue} <ArrowRight size={17} /></button>
             </div>
           </div>
         ) : step === 5 ? (
           <div className="onboarding-step onboarding-step--profile onboarding-step--country" key="birth-country">
             <div className="profile-question">
-              <p className="onboarding-label">Your background</p>
-              <h1>Where were you born?</h1>
-              <p>We use your country of birth to select a more relevant population reference. It does not define your ethnicity.</p>
+              <p className="onboarding-label">{c.q5Label}</p>
+              <h1>{c.q5Title}</h1>
+              <p>{c.q5Hint}</p>
             </div>
 
             <div className={`country-picker${isCountryOpen ? " is-open" : ""}`} ref={countryPickerRef}>
               <Globe2 className="country-picker__icon" aria-hidden="true" strokeWidth={1.25} />
               <div className="country-picker__control">
-                <span className="country-picker__label">Country of birth</span>
+                <span className="country-picker__label">{c.countryLabel}</span>
                 <button
                   aria-controls="country-options"
                   aria-expanded={isCountryOpen}
@@ -479,7 +666,7 @@ export default function OnboardingPage() {
                       <img alt="" src={`https://flagcdn.com/w40/${selectedCountry.code.toLocaleLowerCase()}.png`} />
                       {selectedCountry.name}
                     </span>
-                  ) : <span className="country-picker__placeholder">Select country</span>}
+                  ) : <span className="country-picker__placeholder">{c.countrySelect}</span>}
                   <ChevronDown aria-hidden="true" size={18} />
                 </button>
 
@@ -488,9 +675,9 @@ export default function OnboardingPage() {
                     <div className="country-menu__search">
                       <Search aria-hidden="true" size={17} />
                       <input
-                        aria-label="Search countries"
+                        aria-label={c.countrySearch}
                         autoComplete="off"
-                        placeholder="Search country"
+                        placeholder={c.countrySearch}
                         ref={countrySearchRef}
                         type="search"
                         value={countryQuery}
@@ -500,7 +687,7 @@ export default function OnboardingPage() {
                         }}
                       />
                     </div>
-                    <div aria-label="Countries" className="country-menu__list" role="listbox">
+                    <div aria-label={c.countryList} className="country-menu__list" role="listbox">
                       {filteredCountries.map((country) => (
                         <button
                           aria-selected={country.code === birthCountry}
@@ -519,7 +706,7 @@ export default function OnboardingPage() {
                           {country.code === birthCountry && <Check aria-hidden="true" size={16} />}
                         </button>
                       ))}
-                      {!filteredCountries.length && <p className="country-menu__empty">No country found</p>}
+                      {!filteredCountries.length && <p className="country-menu__empty">{c.countryEmpty}</p>}
                     </div>
                   </div>
                 )}
@@ -527,8 +714,8 @@ export default function OnboardingPage() {
             </div>
 
             <div className="onboarding-actions">
-              <button className="onboarding-secondary" type="button" onClick={() => setStep(4)}><ArrowLeft size={17} /> Back</button>
-              <button className="onboarding-primary" type="button" disabled={!birthCountry} onClick={() => setStep(6)}>Continue <ArrowRight size={17} /></button>
+              <button className="onboarding-secondary" type="button" onClick={() => setStep(4)}><ArrowLeft size={17} /> {c.back}</button>
+              <button className="onboarding-primary" type="button" disabled={!birthCountry} onClick={() => setStep(6)}>{c.continue} <ArrowRight size={17} /></button>
             </div>
           </div>
         ) : (
@@ -537,9 +724,9 @@ export default function OnboardingPage() {
              option markup as steps 3–5 so it reads as part of the same flow. */
           <div className="onboarding-step onboarding-step--profile" key="consent">
             <div className="profile-question">
-              <p className="onboarding-label">Before we start</p>
-              <h1>Your consent</h1>
-              <p>DOODEE analyses adult faces for educational insight. It is not a diagnosis and does not replace a qualified professional.</p>
+              <p className="onboarding-label">{c.q6Label}</p>
+              <h1>{c.q6Title}</h1>
+              <p>{c.q6Hint}</p>
             </div>
 
             <div className="consent-options">
@@ -552,8 +739,8 @@ export default function OnboardingPage() {
               >
                 <span className="consent-option__symbol" aria-hidden="true"><ShieldCheck /></span>
                 <span className="consent-option__copy">
-                  <strong>Analyse my photos</strong>
-                  <span>Facial landmarks and skin signals are measured to build your report.</span>
+                  <strong>{c.consentAnalyseTitle}</strong>
+                  <span>{c.consentAnalyseBody}</span>
                 </span>
                 <span className="frequency-option__check" aria-hidden="true"><Check size={15} /></span>
               </button>
@@ -567,22 +754,22 @@ export default function OnboardingPage() {
               >
                 <span className="consent-option__symbol" aria-hidden="true"><Globe2 /></span>
                 <span className="consent-option__copy">
-                  <strong>Store them for 30 days</strong>
-                  <span>Photos sit in a private bucket behind expiring links, and you can delete them at any time.</span>
+                  <strong>{c.consentStoreTitle}</strong>
+                  <span>{c.consentStoreBody}</span>
                 </span>
                 <span className="frequency-option__check" aria-hidden="true"><Check size={15} /></span>
               </button>
             </div>
 
             <div className="onboarding-actions">
-              <button className="onboarding-secondary" type="button" onClick={() => setStep(5)}><ArrowLeft size={17} /> Back</button>
+              <button className="onboarding-secondary" type="button" onClick={() => setStep(5)}><ArrowLeft size={17} /> {c.back}</button>
               <button
                 className="onboarding-primary"
                 type="button"
                 disabled={!analysisConsent || !storageConsent}
                 onClick={finish}
               >
-                Start my scan <ArrowRight size={17} />
+                {c.startScan} <ArrowRight size={17} />
               </button>
             </div>
           </div>

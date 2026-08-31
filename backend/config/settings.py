@@ -92,8 +92,12 @@ STORAGES = {
     # Compresses and fingerprints admin assets so they can be cached forever.
     "staticfiles": {"BACKEND": "whitenoise.storage.CompressedManifestStaticFilesStorage"},
 }
-DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
-CORS_ALLOWED_ORIGINS = [item for item in os.getenv("CORS_ORIGINS", "http://localhost:5173").split(",") if item]
+CORS_ALLOWED_ORIGINS = [item for item in os.getenv("CORS_ORIGINS", "http://localhost:5173,http://localhost:5174,http://localhost:5175,http://localhost:5180").split(",") if item]
+if DEBUG:
+    CORS_ALLOWED_ORIGIN_REGEXES = [
+        r"^http://localhost:\d+$",
+        r"^http://127\.0\.0\.1:\d+$",
+    ]
 # On by default so the feature is usable out of the box. data.md still requires clinician,
 # privacy and validation review before any public medical launch, so a real deployment must
 # set SIMULATION_ENABLED=false deliberately until those are done.
@@ -136,12 +140,26 @@ PAYOUT_ENCRYPTION_KEY = os.getenv("PAYOUT_ENCRYPTION_KEY", "")
 # Anthropic's published rates for whichever model CHAT_MODEL points at — update both together.
 # The report labels the result an estimate: the exchange rate below is a constant we choose,
 # and the invoice from Anthropic is always the real number.
-CHAT_PRICE_IN_USD_PER_MTOK = float(os.getenv("CHAT_PRICE_IN_USD_PER_MTOK", "5"))
-CHAT_PRICE_OUT_USD_PER_MTOK = float(os.getenv("CHAT_PRICE_OUT_USD_PER_MTOK", "25"))
+# Was declared twice, the first assignment (default "5") overwritten on the very next line and
+# never read. Removed rather than kept as a comment: two lines that look like configuration and
+# disagree is worse than one line that is the configuration.
+CHAT_PRICE_IN_USD_PER_MTOK = float(os.getenv("CHAT_PRICE_IN_USD_PER_MTOK", "0.20"))
+CHAT_PRICE_CACHED_IN_USD_PER_MTOK = float(os.getenv("CHAT_PRICE_CACHED_IN_USD_PER_MTOK", "0.02"))
+CHAT_PRICE_OUT_USD_PER_MTOK = float(os.getenv("CHAT_PRICE_OUT_USD_PER_MTOK", "1.20"))
 USD_THB_RATE = float(os.getenv("USD_THB_RATE", "35"))
+
+# Skin vision is pinned to Opus 5 (`skin_vision.MODEL`) and is billed at Opus rates, which are
+# more than twenty times the chat model's per-token price. Reusing CHAT_PRICE_* here would have
+# under-reserved every photograph by that factor and let the monthly ceiling be walked straight
+# through. A photograph also arrives as thousands of input tokens rather than a sentence.
+SKIN_VISION_PRICE_IN_USD_PER_MTOK = float(os.getenv("SKIN_VISION_PRICE_IN_USD_PER_MTOK", "5"))
+SKIN_VISION_PRICE_CACHED_IN_USD_PER_MTOK = float(os.getenv("SKIN_VISION_PRICE_CACHED_IN_USD_PER_MTOK", "0.5"))
+SKIN_VISION_PRICE_OUT_USD_PER_MTOK = float(os.getenv("SKIN_VISION_PRICE_OUT_USD_PER_MTOK", "25"))
 # Turns the LLM cost card red once the month's spend passes this. Sized against the ~฿570 of
 # the ฿1,000 budget that is not the VPS.
 LLM_BUDGET_THB_PER_MONTH = float(os.getenv("LLM_BUDGET_THB_PER_MONTH", "570"))
+LLM_BUDGET_ADMISSION_RATIO = float(os.getenv("LLM_BUDGET_ADMISSION_RATIO", "0.90"))
+CHAT_GLOBAL_CONCURRENCY = int(os.getenv("CHAT_GLOBAL_CONCURRENCY", "30"))
 
 # Email. Off by default in exactly the sense SENTRY_DSN is off by default: without EMAIL_HOST
 # every message is printed to the console, so local runs and CI send nothing to anybody and a
@@ -209,13 +227,26 @@ REST_FRAMEWORK = {
     },
 }
 CELERY_BROKER_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
-CELERY_RESULT_BACKEND = CELERY_BROKER_URL
-CELERY_TASK_TRACK_STARTED = True
+CELERY_RESULT_BACKEND = None
+CELERY_TASK_IGNORE_RESULT = True
+CELERY_TASK_ACKS_LATE = True
+CELERY_TASK_REJECT_ON_WORKER_LOST = True
+CELERY_WORKER_PREFETCH_MULTIPLIER = 1
 CELERY_TASK_SERIALIZER = "json"
 CELERY_ACCEPT_CONTENT = ["json"]
 CELERY_RESULT_SERIALIZER = "json"
 CELERY_TASK_TIME_LIMIT = 180
 CELERY_TASK_SOFT_TIME_LIMIT = 165
+CELERY_TASK_ROUTES = {
+    "doodee.tasks.process_scan": {"queue": "cv"},
+    "doodee.tasks.process_simulation": {"queue": "cv"},
+    # Shares the cv queue rather than getting its own. It is one HTTP call per completed scan
+    # for consenting users only, so it cannot starve scan processing at any plausible volume —
+    # and a queue nobody watches is worse than a queue that is slightly mixed. Split it out if
+    # an Anthropic outage ever shows up as scan latency.
+    "doodee.tasks.process_skin_vision": {"queue": "cv"},
+    "doodee.tasks.reconcile_heavy_jobs": {"queue": "maintenance"},
+}
 # Renewal reminders. Plain Celery beat rather than django-celery-beat: one daily job does not
 # need a database-backed scheduler and an admin screen to edit it.
 #
@@ -226,6 +257,10 @@ CELERY_TASK_SOFT_TIME_LIMIT = 165
 # missed. Nothing here is the *authority* on entitlement either: `sync_entitlement` still expires
 # access on read, so beat not running costs reminders, never correctness.
 CELERY_BEAT_SCHEDULE = {
+    "reconcile-heavy-jobs": {
+        "task": "doodee.tasks.reconcile_heavy_jobs",
+        "schedule": 60.0,
+    },
     "renewal-reminders": {
         "task": "doodee.tasks.send_renewal_reminders",
         "schedule": crontab(hour=2, minute=0),

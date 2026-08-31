@@ -5,21 +5,27 @@ from pathlib import Path
 from functools import lru_cache
 
 from .reference_scoring import angle, score_observations
+from .skin_engine import analyze_skin
 
 
 # 2026.4 rescales landmark x into height units before measuring. Scores from earlier versions
 # carry the photo's aspect ratio in every width-over-height ratio and are not comparable.
 FORMULA_VERSION = "2026.4-isotropic"
-MEDIAPIPE_SOURCE = "https://ai.google.dev/edge/mediapipe/solutions/vision/face_landmarker"
 ANTHROPOMETRY_SOURCE = "https://pubmed.ncbi.nlm.nih.gov/37487528/"
 POSE_TARGETS = json.loads((Path(__file__).parent / "pose_targets.json").read_text())
 SCAN_VIEW_MODES = {
     "fast": ("front", "left_oblique", "right_oblique"),
     "standard": ("front", "left_profile", "right_profile"),
     "full": ("front", "front_smile", "left_oblique", "right_oblique", "left_profile", "right_profile", "basal"),
+    # One close, evenly-lit front photograph, captured to be measured for skin rather than for
+    # shape. It shares this function because it needs the same decode and the same landmark
+    # mesh — `skin_engine` draws every region from that mesh and white-balances off the sclera,
+    # so a skin scan is still a whole face, just a nearer one.
+    "skin": ("front",),
 }
 PROFILE_VIEWS = ("left_profile", "right_profile")
 DEFAULT_SCAN_MODE = "full"
+SKIN_SCAN_MODE = "skin"
 
 FRONT_METRICS = (
     ("upper_face_height_ratio", "harmony", 10, 168, "height"),
@@ -161,6 +167,13 @@ def measured_views(scan_mode):
     Everything else is captured for context only, so an off-target pose there is reported but
     does not throw the whole scan away.
     """
+    # A skin scan measures none — its output is `skin_analysis`, which reads colour off patches
+    # of the face and does not care whether the head was turned a few degrees. Leaving `front`
+    # in here would mean nine degrees of yaw threw away a photograph whose lighting was perfect,
+    # for a reason that has nothing to do with what the scan was taken for. The pose error is
+    # still reported, as an advisory.
+    if scan_mode == SKIN_SCAN_MODE:
+        return set()
     views = {"front"}
     captured = set(SCAN_VIEW_MODES.get(scan_mode, ()))
     views |= {view for view in PROFILE_VIEWS if view in captured}
@@ -193,27 +206,6 @@ def _metric(key, category, value, confidence=0.72, source=ANTHROPOMETRY_SOURCE):
     }
 
 
-def _skin_metrics(image, points):
-    import cv2
-    import numpy as np
-
-    height, width = image.shape[:2]
-    hull = cv2.convexHull(np.array([(int(x * width), int(y * height)) for x, y, _ in points], dtype=np.int32))
-    mask = np.zeros((height, width), dtype=np.uint8)
-    cv2.fillConvexPoly(mask, hull, 255)
-    pixels = image[mask == 255].astype(np.float32) / 255.0
-    if len(pixels) < 100:
-        raise ValueError("skin_region_unavailable")
-    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    texture = cv2.Laplacian(gray, cv2.CV_32F)[mask == 255]
-    b, g, r = pixels[:, 0], pixels[:, 1], pixels[:, 2]
-    return (
-        _metric("visible_tone_unevenness", "skin_observation", min(float(gray[mask == 255].std()) / 64, 1), 0.5, MEDIAPIPE_SOURCE),
-        _metric("visible_redness", "skin_observation", float(np.mean(np.clip(r - (g + b) / 2, 0, 1))), 0.45, MEDIAPIPE_SOURCE),
-        _metric("visible_texture", "skin_observation", min(float(texture.var()) / 1000, 1), 0.45, MEDIAPIPE_SOURCE),
-    )
-
-
 def scan_views_for_mode(scan_mode):
     return SCAN_VIEW_MODES[scan_mode]
 
@@ -237,9 +229,35 @@ def analyze_images(images, age_band="adult", scan_mode=DEFAULT_SCAN_MODE, refere
             normalized[view], poses[view] = _landmarks(image)
         except ValueError as exc:
             raise ValueError(f"{exc}:{view}") from exc
-        # Measurements need square units; the skin mask below still needs raw image fractions.
+        # Measurements need square units; the skin masks still need raw image fractions.
         points[view] = _isotropic(normalized[view], image)
     pose_advisories = _validate_pose_set(poses, scan_mode)
+
+    # Skin is measured separately and reported under its own key. It was folded into `metrics`
+    # once; that put three photometric numbers in a catalogue of scale-free ratios, where they
+    # were scored, capped and eventually hidden. See skin_engine for why they are regional now.
+    skin = analyze_skin(decoded["front"], normalized["front"])
+
+    if scan_mode == SKIN_SCAN_MODE:
+        # Everything below this line measures shape, and a skin scan has no business producing
+        # any of it. Returning an empty catalogue rather than a short one is the point: a
+        # partial set of craniofacial ratios computed from a deliberately closer photograph
+        # would be scored against the reference population and read as the user's face
+        # changing, when all that changed was how far away they stood.
+        return {
+            "metrics": [],
+            "metric_count": 0,
+            "formula_version": FORMULA_VERSION,
+            "experimental": True,
+            "minor_restricted": age_band == "minor",
+            "analysis_tier": SKIN_SCAN_MODE,
+            "missing_optional_views": [],
+            "pose_advisories": pose_advisories,
+            "poses": {view: {axis: round(value, 2) for axis, value in pose.items()} for view, pose in poses.items()},
+            "reference_scores": None,
+            "skin_analysis": skin,
+        }
+
     front = points["front"]
     width, height = _distance(front, 234, 454), _distance(front, 10, 152)
     reference_height = _distance(front, 168, 152)
@@ -265,7 +283,6 @@ def analyze_images(images, age_band="adult", scan_mode=DEFAULT_SCAN_MODE, refere
             metrics.append(_metric(f"{view}_nose_projection_ratio", "side_profile", _ratio(_distance(profile, 168, 1), profile_height), 0.58))
             metrics.append(_metric(f"{view}_facial_convexity_ratio", "side_profile", _ratio(_point_line_distance(profile, 1, 10, 152), profile_height), 0.58))
 
-    metrics.extend(_skin_metrics(decoded["front"], normalized["front"]))
     if len(metrics) > 30:
         raise AssertionError("Core metric catalog must stay at or below 30")
 
@@ -308,4 +325,5 @@ def analyze_images(images, age_band="adult", scan_mode=DEFAULT_SCAN_MODE, refere
         # against real scans before it is tightened or widened again.
         "poses": {view: {axis: round(value, 2) for axis, value in pose.items()} for view, pose in poses.items()},
         "reference_scores": score_observations(observations, reference_profile, reference_age_band, age_band, reference_population),
+        "skin_analysis": skin,
     }

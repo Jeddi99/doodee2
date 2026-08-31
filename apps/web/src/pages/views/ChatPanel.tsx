@@ -17,8 +17,9 @@ import {
   askChatTopic, deleteChat, getChat, getChatFacts, getChatRoles, getChats, getScan, getScans,
   getSession, sendChat,
 } from "../../lib/api";
-import { errorMessage } from "../../lib/apiError";
+import { errorMessage, errorReason } from "../../lib/apiError";
 import { useLocale } from "../../useLocale";
+import { latestCraniofacialScan } from "../../lib/latestScan";
 
 /**
  * DOODEE Chat, on qijek's chat shell.
@@ -130,7 +131,7 @@ export default function ChatPanel() {
 
   const session = useQuery({ queryKey: ["session"], queryFn: getSession });
   const scans = useQuery({ queryKey: ["scans"], queryFn: getScans });
-  const scanId = scans.data?.[0]?.id;
+  const scanId = latestCraniofacialScan(scans.data)?.id;
   const scan = useQuery({ queryKey: ["scan", scanId], queryFn: () => getScan(scanId), enabled: Boolean(scanId) });
   const conversations = useQuery({ queryKey: ["chats"], queryFn: getChats });
   const conversation = useQuery({
@@ -383,6 +384,16 @@ export default function ChatPanel() {
                   </span>
                   <p>
                     {copy.failed} — {errorMessage(send.error || ask.error)}
+                    {/* The code above says which gate refused; this says why the provider did.
+                        Without it "chat_upstream_error" is all a misconfigured key ever shows,
+                        which reads as the feature being broken rather than as something fixable
+                        in the admin. Credentials are stripped by `errorReason`. */}
+                    {errorReason(send.error || ask.error) ? (
+                      <>
+                        <br />
+                        <small className="gpt-error-reason">{errorReason(send.error || ask.error)}</small>
+                      </>
+                    ) : null}
                   </p>
                 </div>
               ) : null}

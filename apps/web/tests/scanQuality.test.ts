@@ -12,12 +12,16 @@ import {
   getPoseSignature,
   isPoseWindowStable,
   measurePose,
+  MIN_FACE_PIXELS,
   poseFromMatrix,
+  QUALITY_CODES,
   smoothAutoFrame,
+  stillFramingCode,
   type FaceObservation,
   type LandmarkPoint,
   type PoseSignature,
 } from "../src/scanQuality.ts";
+import { siteCopy } from "../src/localization.ts";
 
 function face(height = 0.6): LandmarkPoint[] {
   const landmarks = Array.from({ length: 478 }, (_, index) => {
@@ -66,26 +70,29 @@ test("accepts front and full profiles only inside calibrated targets", () => {
   assert.equal(measurePose(face(), 1, clearFrame, 1, observation(-40)).valid, false);
 });
 
+// Codes, not sentences. The assertions used to compare the exact English wording, which meant
+// rewording a hint broke a test that had nothing to say about wording; they now assert the
+// behaviour, and `every quality code has copy in both locales` covers the words.
 test("returns useful pose guidance", () => {
-  assert.equal(measurePose(face(), 1, clearFrame, 1, observation(0)).message, "Turn farther left");
-  assert.equal(measurePose(face(), 2, clearFrame, 1, observation(0)).message, "Turn farther right");
-  assert.equal(measurePose(face(), 0, clearFrame, 1, observation(0, 24)).message, "Tilt up slightly");
-  assert.equal(measurePose(face(), 0, clearFrame, 1, observation(0, 0, 18)).message, "Keep your head level");
+  assert.equal(measurePose(face(), 1, clearFrame, 1, observation(0)).code, "turn_farther_left");
+  assert.equal(measurePose(face(), 2, clearFrame, 1, observation(0)).code, "turn_farther_right");
+  assert.equal(measurePose(face(), 0, clearFrame, 1, observation(0, 24)).code, "tilt_up");
+  assert.equal(measurePose(face(), 0, clearFrame, 1, observation(0, 0, 18)).code, "level_head");
 });
 
 test("rejects multiple faces, poor light, blur, and expression", () => {
-  assert.equal(measurePose(face(), 0, clearFrame, 1, observation(0, 0, 0, { faceCount: 2 })).message, "Only one face can be visible");
-  assert.equal(measurePose(face(), 0, { ...clearFrame, brightness: 30 }, 1, observation()).message, "Move into brighter light");
-  assert.equal(measurePose(face(), 0, { ...clearFrame, clippedRatio: 0.3 }, 1, observation()).message, "Reduce glare or backlight");
-  assert.equal(measurePose(face(), 0, { ...clearFrame, sharpness: 1 }, 1, observation()).message, "Hold still — image is blurry");
-  assert.equal(measurePose(face(), 0, clearFrame, 1, observation(0, 0, 0, { smile: 0.5 })).message, "Relax your expression");
+  assert.equal(measurePose(face(), 0, clearFrame, 1, observation(0, 0, 0, { faceCount: 2 })).code, "multiple_faces");
+  assert.equal(measurePose(face(), 0, { ...clearFrame, brightness: 30 }, 1, observation()).code, "too_dark");
+  assert.equal(measurePose(face(), 0, { ...clearFrame, clippedRatio: 0.3 }, 1, observation()).code, "too_bright");
+  assert.equal(measurePose(face(), 0, { ...clearFrame, sharpness: 1 }, 1, observation()).code, "blurry");
+  assert.equal(measurePose(face(), 0, clearFrame, 1, observation(0, 0, 0, { smile: 0.5 })).code, "relax_expression");
 });
 
 test("requires usable raw-image framing", () => {
-  assert.equal(measurePose(face(0.18), 0, clearFrame, 2.5, observation()).message, "Move closer");
+  assert.equal(measurePose(face(0.18), 0, clearFrame, 2.5, observation()).code, "too_far");
   const shifted = face();
   shifted.forEach((point) => { point.x += 0.28; });
-  assert.equal(measurePose(shifted, 0, clearFrame, 1, observation()).message, "Center your face");
+  assert.equal(measurePose(shifted, 0, clearFrame, 1, observation()).code, "off_centre");
 });
 
 test("stability checks position, yaw, and pitch over multiple frames", () => {
@@ -146,4 +153,68 @@ test("completes the calibrated three-view flow", () => {
     captures[step] = "captured";
   });
   assert.equal(captures.every(Boolean), true);
+});
+
+
+test("still framing rejects only what cropping cannot fix", () => {
+  assert.equal(stillFramingCode(null, 3000), "no_face");
+  const box = getFaceBox(face(0.15));
+  // A face this size is normal in a photograph of somebody a metre and a half away. On a tall
+  // enough image it carries plenty of pixels, and it must not be turned away for its fraction.
+  assert.equal(stillFramingCode(box, 3000), null);
+  // The same fraction of a small image is a face of about a hundred pixels, which has too little
+  // detail left for 468 landmarks to sit anywhere meaningful.
+  assert.equal(stillFramingCode(box, 700), "face_too_small");
+  assert.equal(stillFramingCode(getFaceBox(face(0.04)), 4000), "face_too_small");
+});
+
+test("the pixel floor sits below anything live capture could produce", () => {
+  // The camera path already refuses a face under 0.22 of the frame, and its smallest frame is
+  // 960 tall. So this floor can only ever reject photographs, never a captured frame.
+  assert.ok(MIN_FACE_PIXELS < 0.22 * 960);
+});
+
+test("cropping first is what lets a real photograph pass the gate", () => {
+  // The reason `prepareUpload` measures twice. A face filling 0.15 of the frame — an ordinary
+  // photograph of someone standing back a little — is refused outright by the live gate, with
+  // advice ("move closer") that cannot be acted on inside a picture already taken.
+  const landmarks = face(0.15);
+  assert.equal(measurePose(landmarks, 0, clearFrame, 1, observation()).code, "too_far");
+
+  // Remap the landmarks into the crop `faceCropRect` would produce, exactly as re-detecting the
+  // encoded crop would see them.
+  const crop = faceCropRect(getFaceBox(landmarks), 3000, 4000);
+  const remapped = landmarks.map((point) => ({
+    x: (point.x * 3000 - crop.x) / crop.width,
+    y: (point.y * 4000 - crop.y) / crop.height,
+  }));
+
+  const after = measurePose(remapped, 0, clearFrame, 1, observation());
+  assert.notEqual(after.code, "too_far", "cropping must lift the face out of the too-far band");
+  assert.notEqual(after.code, "off_centre", "cropping must centre the face");
+  assert.equal(after.valid, true);
+});
+
+test("every quality code has copy in both locales and both registers", () => {
+  // The guard on the two-register split. A code added to the union without copy behind it would
+  // otherwise render as nothing at all, in one language, in one of the two situations.
+  for (const locale of ["en", "th"] as const) {
+    for (const register of ["live", "still"] as const) {
+      for (const code of QUALITY_CODES) {
+        const text = siteCopy[locale].scan.quality[register][code];
+        assert.equal(typeof text, "string", `${locale}.${register}.${code} is missing`);
+        assert.ok(text.length > 0, `${locale}.${register}.${code} is empty`);
+      }
+    }
+  }
+});
+
+test("every capture step has a label and an instruction in both locales", () => {
+  for (const locale of ["en", "th"] as const) {
+    for (const step of captureSteps) {
+      const copy = siteCopy[locale].scan.steps[step.id];
+      assert.ok(copy.label.length > 0, `${locale}.${step.id}.label`);
+      assert.ok(copy.short.length > 0, `${locale}.${step.id}.short`);
+    }
+  }
 });

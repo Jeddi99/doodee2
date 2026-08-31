@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { Activity, ArrowLeft, Check, Lock, Maximize2, MoveHorizontal, Save, ScanFace, ShieldCheck, Ticket, Unlock, X, ZoomIn } from 'lucide-react';
-import { focusTransform, NO_ZOOM, SIMULATION_CONSENT_VERSION } from '@doodee/shared';
+import { focusTransform, NO_ZOOM, pollUntilSettled, SIMULATION_CONSENT_VERSION } from '@doodee/shared';
 import { createSimulation, getProcedures, getScan, getScans, getSession, getSimulation, previewSimulation } from '../lib/api';
 import { statusPollInterval } from '../lib/pollInterval.js';
 import { daysRemaining } from '../lib/promoCode';
@@ -11,6 +11,7 @@ import {
   MAX_ITEMS, clearAll, clearUnlocked, count, emptyStack, isLocked, itemFor, remove as removeFromStack, select as selectInStack,
   toRequest, toggleLock, total, unlock,
 } from '../lib/simulationStack';
+import { latestCraniofacialScan } from '../lib/latestScan';
 
 const REGIONS = [
   ['eyes', 'ดวงตา', 'Eyes'], ['nose', 'จมูก', 'Nose'], ['lips', 'ริมฝีปาก', 'Lips'],
@@ -108,7 +109,7 @@ export default function SimulationView({ lang = 'th', onNavigate }) {
   const isTh = lang === 'th';
   const requestedScanId = new URLSearchParams(window.location.search).get('scan_id');
   const scans = useQuery({ queryKey: ['scans'], queryFn: getScans, enabled: !requestedScanId });
-  const scanId = requestedScanId || scans.data?.[0]?.id;
+  const scanId = requestedScanId || latestCraniofacialScan(scans.data)?.id;
   const scan = useQuery({ queryKey: ['scan', scanId], queryFn: () => getScan(scanId), enabled: Boolean(scanId) });
   const session = useQuery({ queryKey: ['session'], queryFn: getSession });
   const [targetMode, setTargetMode] = useState('preset'); // 'preset' | 'reference'
@@ -168,6 +169,9 @@ export default function SimulationView({ lang = 'th', onNavigate }) {
   const runPreview = ({ selection: pick, sequence }) => {
     setRenderingView(pick.view);
     previewSimulation(scanId, pick.selections, CONSENT_VERSION)
+      .then((created) => created.already_near_reference
+        ? created
+        : pollUntilSettled(created, () => getSimulation(created.id)))
       .then((result) => ({ result, error: null }))
       .catch((error) => ({ result: null, error }))
       .then(({ result, error }) => {
@@ -283,7 +287,7 @@ export default function SimulationView({ lang = 'th', onNavigate }) {
   });
   const finalResult = saved.data?.status === 'completed' ? saved.data : null;
   const beforeUrl = finalResult?.before_url || preview?.before_url || (activeView === 'front' ? scan.data?.front_url : null);
-  const afterUrl = finalResult?.after_url || preview?.after_data_url;
+  const afterUrl = finalResult?.after_url || preview?.after_url || preview?.after_data_url;
   // A saved image is the same framing as the preview it came from, so its box still applies.
   // Aim at whichever region was touched last; it is the one the user is looking for.
   const focusBox = preview?.focus_boxes?.[lastTouched] || preview?.focus_box || null;

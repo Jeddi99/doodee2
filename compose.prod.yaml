@@ -7,9 +7,9 @@
 # undo one of those, so that the thing that ships is not the thing that was convenient to type.
 services:
   postgres:
-    # No default. compose.yaml's postgres/postgres is fine on a laptop and is not a password.
-    environment:
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    # Production uses Supabase Postgres. This service remains available only for an explicit
+    # local recovery profile; it is not started by the production stack.
+    profiles: [local-postgres]
     command: postgres -c max_connections=100
     restart: unless-stopped
 
@@ -20,9 +20,19 @@ services:
     # instead — views.py already turns that into a 503 rather than a lost job.
     command: >-
       redis-server --maxmemory 256mb --maxmemory-policy noeviction
-      --save 60 1000 --appendonly no
+      --save 60 1000 --appendonly yes --appendfsync everysec
     volumes:
       - doodee_redis:/data
+    restart: unless-stopped
+
+  redis-cache:
+    image: redis:7-alpine
+    command: redis-server --maxmemory 128mb --maxmemory-policy allkeys-lru --appendonly no
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
     restart: unless-stopped
 
   # Migrations run once, in their own container, before the api starts — not as a prefix on the
@@ -36,11 +46,13 @@ services:
       - path: .env
         required: false
     environment:
-      DATABASE_URL: postgresql://postgres:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/doodee
+      DATABASE_URL: ${MIGRATION_DATABASE_URL:?set the Supabase direct MIGRATION_DATABASE_URL in .env}
       REDIS_URL: redis://redis:6379/0
+      REDIS_CACHE_URL: redis://redis-cache:6379/0
     volumes: !override []
-    depends_on:
-      postgres: {condition: service_healthy}
+    depends_on: !override
+      redis: {condition: service_healthy}
+      redis-cache: {condition: service_healthy}
     command: python manage.py migrate --noinput
     restart: "no"
 
@@ -48,9 +60,9 @@ services:
     # null so the image's own CMD wins: gthread, 3 workers x 8 threads, no --reload. compose.yaml
     # sets a development command; this hands the decision back to the Dockerfile.
     command: null
-    depends_on:
-      postgres: {condition: service_healthy}
+    depends_on: !override
       redis: {condition: service_healthy}
+      redis-cache: {condition: service_healthy}
       migrate: {condition: service_completed_successfully}
     # !override, not a plain list: compose *merges* volumes and ports across files rather than
     # replacing them, so without the tag compose.yaml's ./backend bind mount and its
@@ -65,7 +77,8 @@ services:
         bind:
           create_host_path: false
     environment:
-      DATABASE_URL: postgresql://postgres:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/doodee
+      DATABASE_URL: ${DATABASE_URL:?set the Supabase pooler DATABASE_URL in .env}
+      REDIS_CACHE_URL: redis://redis-cache:6379/0
     # Bound to loopback: a reverse proxy terminates TLS and forwards here. Published on 0.0.0.0
     # this would be a plaintext Django open to the internet.
     ports: !override ["127.0.0.1:8001:8000"]
@@ -74,7 +87,11 @@ services:
   worker:
     volumes: !override []
     environment:
-      DATABASE_URL: postgresql://postgres:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/doodee
+      DATABASE_URL: ${DATABASE_URL:?set the Supabase pooler DATABASE_URL in .env}
+      REDIS_CACHE_URL: redis://redis-cache:6379/0
+    depends_on: !override
+      redis: {condition: service_healthy}
+      redis-cache: {condition: service_healthy}
     # --max-tasks-per-child because mediapipe and opencv are not leak-free over thousands of
     # frames, and a prefork child is cheap to replace. --prefetch-multiplier 1 because these
     # tasks run for seconds: prefetching parks work on a busy child while another sits idle.
@@ -83,20 +100,106 @@ services:
     # api needs no such prefix — config/wsgi.py refuses at import and gunicorn cannot boot.
     command: >-
       sh -c "python manage.py check_production_config &&
-      exec celery -A config worker --loglevel=info --concurrency=2
+      exec celery -A config worker --loglevel=info --queues=cv --concurrency=2
       --max-tasks-per-child=50 --prefetch-multiplier=1"
+    restart: unless-stopped
+
+  maintenance-worker:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      DATABASE_URL: ${DATABASE_URL:?set the Supabase pooler DATABASE_URL in .env}
+      REDIS_URL: redis://redis:6379/0
+      REDIS_CACHE_URL: redis://redis-cache:6379/0
+    depends_on:
+      redis: {condition: service_healthy}
+      redis-cache: {condition: service_healthy}
+    command: >-
+      sh -c "python manage.py check_production_config &&
+      exec celery -A config worker --loglevel=info --queues=maintenance,celery
+      --concurrency=1 --prefetch-multiplier=1"
     restart: unless-stopped
 
   beat:
     volumes: !override []
     environment:
-      DATABASE_URL: postgresql://postgres:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/doodee
+      DATABASE_URL: ${DATABASE_URL:?set the Supabase pooler DATABASE_URL in .env}
+      REDIS_CACHE_URL: redis://redis-cache:6379/0
+    depends_on: !override
+      redis: {condition: service_healthy}
+      redis-cache: {condition: service_healthy}
     command: >-
       sh -c "python manage.py check_production_config &&
       exec celery -A config beat --loglevel=info"
     # Never scale this service. Two beat processes fire every scheduled job twice, and nothing
     # here can prevent that — `docker compose up --scale beat=2` would do it. One container is
     # the default; the rule is for whoever operates it, not something compose enforces.
+    restart: unless-stopped
+
+  # Route /api/v1/chat/ here at the reverse proxy. Slow LLM calls then cannot consume the
+  # normal API's threads. All other routes should continue to api:8000.
+  chat-api:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      DATABASE_URL: ${DATABASE_URL:?set the Supabase pooler DATABASE_URL in .env}
+      REDIS_URL: redis://redis:6379/0
+      REDIS_CACHE_URL: redis://redis-cache:6379/0
+      GOOGLE_APPLICATION_CREDENTIALS: /run/secrets/firebase-service-account.json
+    volumes:
+      - type: bind
+        source: ./firebase-service-account.json
+        target: /run/secrets/firebase-service-account.json
+        read_only: true
+        bind:
+          create_host_path: false
+    depends_on:
+      redis: {condition: service_healthy}
+      redis-cache: {condition: service_healthy}
+      migrate: {condition: service_completed_successfully}
+    command: >-
+      gunicorn config.wsgi:application --bind 0.0.0.0:8000 -k gthread
+      --workers 2 --threads 15 --timeout 60 --max-requests 2000 --max-requests-jitter 200
+    ports: !override ["127.0.0.1:8002:8000"]
+    restart: unless-stopped
+
+  # Permanent compatibility lane for old multipart POST /scans/. Route only that exact method
+  # and path here; two threads cap memory pressure while new clients upload directly to Storage.
+  legacy-upload-api:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      DATABASE_URL: ${DATABASE_URL:?set the Supabase pooler DATABASE_URL in .env}
+      REDIS_URL: redis://redis:6379/0
+      REDIS_CACHE_URL: redis://redis-cache:6379/0
+      GOOGLE_APPLICATION_CREDENTIALS: /run/secrets/firebase-service-account.json
+    volumes:
+      - type: bind
+        source: ./firebase-service-account.json
+        target: /run/secrets/firebase-service-account.json
+        read_only: true
+        bind:
+          create_host_path: false
+    depends_on:
+      redis: {condition: service_healthy}
+      redis-cache: {condition: service_healthy}
+      migrate: {condition: service_completed_successfully}
+    command: >-
+      gunicorn config.wsgi:application --bind 0.0.0.0:8000 -k gthread
+      --workers 1 --threads 2 --timeout 120 --max-requests 500 --max-requests-jitter 50
+    ports: !override ["127.0.0.1:8003:8000"]
     restart: unless-stopped
 
 volumes:

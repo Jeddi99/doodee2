@@ -5,6 +5,7 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type PointerEvent,
 } from "react";
@@ -25,6 +26,7 @@ import {
   strengthsFor,
 } from "../lib/dashboardData";
 import {
+  AlertCircle,
   ArrowLeft,
   ArrowRight,
   BarChart3,
@@ -33,9 +35,11 @@ import {
   CircleHelp,
   CircleUserRound,
   FlaskConical,
+  Globe,
   ImageOff,
   LayoutGrid,
   LockKeyhole,
+  LogOut,
   Menu,
   MessageCircle,
   Plus,
@@ -45,6 +49,7 @@ import {
   Share2,
   ShieldCheck,
   SlidersHorizontal,
+  Droplets,
   Sparkles,
   Target,
   WandSparkles,
@@ -60,6 +65,7 @@ import {
   type MetricGroup,
   type MetricMethod,
 } from "../analysisCatalog";
+import { latestCraniofacialScan } from "../lib/latestScan";
 
 type AppView =
   | "overview"
@@ -73,7 +79,8 @@ type AppView =
   | "settings"
   | "scorecard"
   | "referral"
-  | "profile";
+  | "profile"
+  | "skin";
 type PillarId = "harmony" | "angularity" | "dimorphism" | "features";
 type FaceAngle = "front" | "side";
 type AnalysisMode = "results" | "library";
@@ -82,14 +89,6 @@ type AnalysisMode = "results" | "library";
    hardcoded verdicts; the real status names how far a measurement sits from the reference. */
 type RatioMetric = RatioRow;
 
-
-const views: { id: AppView; label: string }[] = [
-  { id: "overview", label: "Overview" },
-  { id: "analysis", label: "Analysis" },
-  { id: "plan", label: "Plan" },
-  { id: "simulate", label: "Simulate" },
-  { id: "doodeegpt", label: "DOODEE GPT" },
-];
 
 /** qijek switched these five with location.hash; doodee gives each its own URL. */
 export const VIEW_ROUTES: Record<AppView, string> = {
@@ -105,6 +104,7 @@ export const VIEW_ROUTES: Record<AppView, string> = {
   scorecard: "/score-card",
   referral: "/referral",
   profile: "/profile",
+  skin: "/skin",
 };
 
 /** The views that render the scan photograph itself, and so cannot draw without one. */
@@ -115,6 +115,7 @@ const IMAGE_BACKED_VIEWS = new Set<AppView>(["overview", "analysis", "plan", "si
 const accountViews: { id: AppView; label: string }[] = [
   { id: "profile", label: "Profile" },
   { id: "scorecard", label: "Score card" },
+  { id: "skin", label: "Skin" },
   { id: "referral", label: "Invite" },
   { id: "tryon", label: "Try-on" },
   { id: "history", label: "History" },
@@ -262,47 +263,6 @@ export function GlassCard({
   );
 }
 
-function ScoreCurve() {
-  return (
-    <svg
-      className="score-curve"
-      viewBox="0 0 760 220"
-      role="img"
-      aria-label="Your score compared with the reference range"
-    >
-      <defs>
-        <linearGradient id="curveFill" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0" stopColor="#1687ff" stopOpacity=".2" />
-          <stop offset="1" stopColor="#1687ff" stopOpacity="0" />
-        </linearGradient>
-      </defs>
-      <path
-        className="score-curve__grid"
-        d="M40 174H720M40 128H720M40 82H720"
-      />
-      <path
-        className="score-curve__fill"
-        d="M42 174C158 174 195 167 249 140C308 111 322 44 380 38C438 44 452 111 511 140C565 167 602 174 718 174V200H42Z"
-      />
-      <path
-        className="score-curve__line"
-        d="M42 174C158 174 195 167 249 140C308 111 322 44 380 38C438 44 452 111 511 140C565 167 602 174 718 174"
-      />
-      <line
-        className="score-curve__marker"
-        x1="488"
-        y1="80"
-        x2="488"
-        y2="181"
-      />
-      <circle cx="488" cy="145" r="7" />
-      <text x="488" y="66" textAnchor="middle">
-        YOU · 7.4
-      </text>
-    </svg>
-  );
-}
-
 function InsightList({
   kind,
   items,
@@ -372,126 +332,337 @@ function Overview({
   openView: (view: AppView) => void;
   onUnlock: () => void;
 }) {
-  const { pillars, strengths, improvements } = useScanData();
-  const unlockedCount = pillars.filter((item) => !item.locked).length;
-  const current = pillars[0];
-  return (
-    <div className="app-view app-overview">
-      <section className="app-pillar-grid" aria-label="Score pillars">
-        {pillars.map((item) => (
-          <button
-            className={`pillar-card app-glass ${item.id === "harmony" ? "is-active" : ""} ${item.locked ? "is-locked" : ""}`}
-            data-pillar={item.id}
-            type="button"
-            onClick={() =>
-              item.locked ? onUnlock() : openView("analysis")
-            }
-            key={item.id}
-          >
-            <span className={`pillar-art pillar-art--${item.id}`} aria-hidden="true" />
-            <span className="pillar-card__head">
-              <i className={`pillar-mark pillar-mark--${item.id}`} />
-              {item.label}
-              <ArrowRight />
-            </span>
-            <strong aria-hidden={item.locked}>
-              {item.score}
-              <small>/10</small>
-            </strong>
-            {item.locked ? (
-              <span className="pillar-unlock">
-                <LockKeyhole /> Unlock your score
-              </span>
-            ) : (
-              <span className="pillar-unlock pillar-unlock--open">
-                <ArrowRight /> View harmony ratios
-              </span>
-            )}
-          </button>
-        ))}
-      </section>
+  const { pillars, rows, strengths, improvements, overall } = useScanData();
+  const { locale } = useLocale();
+  const th = locale !== "en";
+  const navigate = useNavigate();
+  const [activeTab, setActiveTab] = useState<"summary" | "ratios" | "insights" | "scorecard">("summary");
+  const [selectedPillar, setSelectedPillar] = useState<PillarId | "all">("all");
+  const [selectedRatio, setSelectedRatio] = useState<RatioMetric | null>(null);
 
-      <GlassCard className="overall-card">
-        <header>
-          <div>
-            <span className="eyebrow">Overall score</span>
-            <h1>{current.label}</h1>
-          </div>
-          <span className="overall-card__count">{unlockedCount} of {pillars.length} pillars</span>
-        </header>
-        <div className="overall-card__body">
-          <div className="overall-score">
-            <strong>{current.score}</strong>
-            <span>/10</span>
-            <p>{current.note}</p>
-            <div className="score-portrait-pair">
-              <figure>
-                <ScanPhoto alt="Your front scan" />
-                <figcaption>Front</figcaption>
+  const unlockedCount = pillars.filter((item) => !item.locked).length;
+  const overallVal = overall !== null ? overall : parseFloat(pillars[0]?.score || "0");
+  const scoreDisplay = overallVal.toFixed(1);
+
+  // SVG Gauge calculations
+  const radius = 64;
+  const circumference = 2 * Math.PI * radius;
+  const progressOffset = circumference - (Math.min(10, Math.max(0, overallVal)) / 10) * circumference;
+
+  const filteredRows = selectedPillar === "all" ? rows : rows.filter((r) => pillarOf(r.category) === selectedPillar);
+
+  return (
+    <div className="app-view app-overview app-overview--modern">
+      {/* Sub-tabs Navigation */}
+      <nav className="doodee-subtabs" aria-label="Overview tabs">
+        <button
+          type="button"
+          className={activeTab === "summary" ? "is-active" : ""}
+          onClick={() => setActiveTab("summary")}
+        >
+          <LayoutGrid size={16} />
+          <span>{th ? "ภาพรวม" : "Summary"}</span>
+        </button>
+        <button
+          type="button"
+          className={activeTab === "ratios" ? "is-active" : ""}
+          onClick={() => setActiveTab("ratios")}
+        >
+          <SlidersHorizontal size={16} />
+          <span>{th ? "สัดส่วน 12 ค่า" : "12 Measurements"}</span>
+        </button>
+        <button
+          type="button"
+          className={activeTab === "insights" ? "is-active" : ""}
+          onClick={() => setActiveTab("insights")}
+        >
+          <Target size={16} />
+          <span>{th ? "จุดเด่น & การพัฒนา" : "Insights"}</span>
+        </button>
+        <button
+          type="button"
+          className={activeTab === "scorecard" ? "is-active" : ""}
+          onClick={() => setActiveTab("scorecard")}
+        >
+          <BarChart3 size={16} />
+          <span>{th ? "การ์ดคะแนน" : "Score Card"}</span>
+        </button>
+      </nav>
+
+      {/* TAB 1: SUMMARY */}
+      {activeTab === "summary" && (
+        <>
+          {/* Hero Face Summary Card */}
+          <GlassCard className="doodee-hero-score-card">
+            <div className="doodee-hero-score-card__faces">
+              <figure className="doodee-face-thumb">
+                <ScanPhoto alt="Front view" />
+                <figcaption>{th ? "หน้าตรง" : "Front"}</figcaption>
               </figure>
-              <figure>
-                <ScanPhoto alt="Your side scan" className="is-side" />
-                <figcaption>Side</figcaption>
+              <figure className="doodee-face-thumb">
+                <ScanPhoto alt="Side profile" className="is-side" />
+                <figcaption>{th ? "ด้านข้าง" : "Side"}</figcaption>
               </figure>
             </div>
-          </div>
-          <div className="overall-distribution">
-            <div className="overall-distribution__blur">
-              <ScoreCurve />
-              <div className="curve-legend">
-                <span>Lower</span>
-                <span>Reference range</span>
-                <span>Higher</span>
+
+            <div className="doodee-hero-score-card__gauge">
+              <div className="doodee-gauge-wrapper">
+                <svg className="doodee-gauge-svg" viewBox="0 0 160 160">
+                  <circle
+                    className="doodee-gauge-bg"
+                    cx="80"
+                    cy="80"
+                    r={radius}
+                    strokeWidth="12"
+                  />
+                  <circle
+                    className="doodee-gauge-meter"
+                    cx="80"
+                    cy="80"
+                    r={radius}
+                    strokeWidth="12"
+                    strokeDasharray={circumference}
+                    strokeDashoffset={progressOffset}
+                  />
+                </svg>
+                <div className="doodee-gauge-content">
+                  <strong>{scoreDisplay}</strong>
+                  <small>/10</small>
+                </div>
+              </div>
+              <div className="doodee-gauge-info">
+                <span className="doodee-badge doodee-badge--primary">
+                  {th ? "ความสมดุลใกล้เคียงเกณฑ์" : "High Balance Index"}
+                </span>
+                <h2>{th ? "ผลวิเคราะห์สัดส่วนใบหน้า" : "Facial Analysis Score"}</h2>
+                <p>
+                  {th
+                    ? "คำนวณเปรียบเทียบกับกลุ่มอ้างอิงคนไทยอายุ 18-35 ปี โดยประเมินความสมดุล 12 มิติ"
+                    : "Calibrated against Thai adult reference standard (18-35 yrs) across 12 facial dimensions."}
+                </p>
               </div>
             </div>
-            <button type="button" onClick={onUnlock}>
-              <LockKeyhole /> Unlock to see where you stand
-            </button>
+
+            <div className="doodee-hero-score-card__actions">
+              <button
+                type="button"
+                className="doodee-btn doodee-btn--primary"
+                onClick={() => openView("doodeegpt")}
+              >
+                <MessageCircle size={16} />
+                <span>{th ? "ถาม AI เกี่ยวกับผลนี้" : "Ask Gemini AI"}</span>
+              </button>
+              <button
+                type="button"
+                className="doodee-btn doodee-btn--secondary"
+                onClick={() => openView("simulate")}
+              >
+                <WandSparkles size={16} />
+                <span>{th ? "จำลองรูปหน้า" : "Simulation"}</span>
+              </button>
+              <button
+                type="button"
+                className="doodee-btn doodee-btn--ghost"
+                onClick={() => navigate("/scan")}
+              >
+                <RefreshCw size={15} />
+                <span>{th ? "สแกนใหม่" : "New Scan"}</span>
+              </button>
+            </div>
+          </GlassCard>
+
+          {/* 4 Pillars Grid (2x2) */}
+          <div className="doodee-section-header">
+            <div>
+              <span className="eyebrow">{th ? "4 มิติหลักของใบหน้า" : "4 Core Pillars"}</span>
+              <h3>{th ? "ความสมดุลและโครงสร้างรูปหน้า" : "Harmony & Structural Ratios"}</h3>
+            </div>
+            <span className="doodee-tag">{unlockedCount} / {pillars.length} {th ? "ปลดล็อกแล้ว" : "Unlocked"}</span>
           </div>
-        </div>
-      </GlassCard>
 
-      <section className="insight-grid">
-        <InsightList kind="strength" items={strengths} />
-        <InsightList kind="improve" items={improvements} />
-      </section>
+          <section className="doodee-pillar-grid-clean" aria-label="Score pillars">
+            {pillars.map((item) => {
+              const scoreVal = parseFloat(item.score || "0");
+              const pct = Math.min(100, Math.max(0, scoreVal * 10));
+              return (
+                <GlassCard
+                  key={item.id}
+                  className={`doodee-pillar-card ${item.locked ? "is-locked" : ""}`}
+                >
+                  <div className="doodee-pillar-card__head">
+                    <div className="doodee-pillar-icon">
+                      <span className={`pillar-mark pillar-mark--${item.id}`} />
+                      <h4>{item.label}</h4>
+                    </div>
+                    <strong className="doodee-pillar-score">
+                      {item.score}
+                      <small>/10</small>
+                    </strong>
+                  </div>
 
-      <GlassCard className="score-card-lock">
-        <div>
-          <span className="eyebrow">Score card</span>
-          <h2>Your card.</h2>
-          <p>Save it. Share it.</p>
+                  <div className="doodee-progress-bar">
+                    <div
+                      className={`doodee-progress-bar__fill doodee-progress-bar__fill--${item.id}`}
+                      style={{ width: `${pct}%` }}
+                    />
+                  </div>
+
+                  <p className="doodee-pillar-note">{item.note}</p>
+
+                  <div className="doodee-pillar-footer">
+                    {item.locked ? (
+                      <button
+                        type="button"
+                        className="doodee-btn-link doodee-btn-link--lock"
+                        onClick={onUnlock}
+                      >
+                        <LockKeyhole size={14} /> {th ? "ปลดล็อกคะแนนเต็ม" : "Unlock Full Pillar"}
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        className="doodee-btn-link"
+                        onClick={() => {
+                          setSelectedPillar(item.id);
+                          setActiveTab("ratios");
+                        }}
+                      >
+                        <span>{th ? "ดูค่าที่วัดได้" : "View Measurements"}</span>
+                        <ArrowRight size={14} />
+                      </button>
+                    )}
+                  </div>
+                </GlassCard>
+              );
+            })}
+          </section>
+        </>
+      )}
+
+      {/* TAB 2: RATIOS (12 Measurements) */}
+      {activeTab === "ratios" && (
+        <div className="doodee-ratios-tab">
+          <div className="doodee-filter-chips">
+            <button
+              type="button"
+              className={selectedPillar === "all" ? "is-active" : ""}
+              onClick={() => setSelectedPillar("all")}
+            >
+              {th ? "ทั้งหมด" : "All (12)"}
+            </button>
+            {pillars.map((p) => (
+              <button
+                key={p.id}
+                type="button"
+                className={selectedPillar === p.id ? "is-active" : ""}
+                onClick={() => setSelectedPillar(p.id)}
+              >
+                {p.label}
+              </button>
+            ))}
+          </div>
+
+          <GlassCard className="doodee-ratios-card">
+            <div className="ratio-table" role="table" aria-label="Measurements list">
+              {filteredRows.map((r) => (
+                <button
+                  key={r.id}
+                  type="button"
+                  className="ratio-row"
+                  onClick={() => setSelectedRatio(r)}
+                >
+                  <div className="ratio-row__info">
+                    <strong>{r.name}</strong>
+                    {/* `value` and `ideal` already carry the unit — formatMeasure() adds it.
+                        Re-reading observed/reference/unit off the row was reading fields
+                        RatioRow never had, so the whole line rendered blank. */}
+                    <small>{r.value} ({th ? "อ้างอิง" : "reference"}: {r.ideal})</small>
+                  </div>
+                  <div className="ratio-row__score">
+                    <span className="doodee-badge doodee-badge--outline">{r.status}</span>
+                    <b>{r.score}/10</b>
+                    <ArrowRight size={16} />
+                  </div>
+                </button>
+              ))}
+            </div>
+          </GlassCard>
         </div>
-        <div className="score-card-lock__preview">
-          <LockKeyhole />
-          <strong>Unlock your shareable score card</strong>
-          <span>One image, ready to save or share.</span>
+      )}
+
+      {/* TAB 3: INSIGHTS */}
+      {activeTab === "insights" && (
+        <section className="insight-grid">
+          <InsightList kind="strength" items={strengths} />
+          <InsightList kind="improve" items={improvements} />
+        </section>
+      )}
+
+      {/* TAB 4: SCORECARD */}
+      {activeTab === "scorecard" && (
+        <div className="doodee-scorecard-tab">
+          <Suspense fallback={<div className="app-view" aria-busy="true" />}>
+            <ScoreCardPanel />
+          </Suspense>
         </div>
-        <button type="button" onClick={onUnlock}>
-          Unlock full analysis <ArrowRight />
-        </button>
-      </GlassCard>
-      <GlassCard className="pillar-progress-card">
-        <div className="pillar-progress-mark">
-          <span>H</span>
-          <span>A</span>
-          <span>D</span>
-          <span>F</span>
-        </div>
-        <div>
-          <span className="eyebrow">{unlockedCount} of {pillars.length} pillars analyzed</span>
-          <h2>Complete your facial profile.</h2>
-          <p>
-            Finish every pillar for a more accurate understanding of your face.
-          </p>
-        </div>
-        <button type="button" onClick={() => openView("analysis")}>
-          Continue analysis <ArrowRight />
-        </button>
-      </GlassCard>
+      )}
+
+      {/* Ratio Details Modal if opened */}
+      {selectedRatio && (
+        <RatioModal
+          metric={selectedRatio}
+          index={rows.indexOf(selectedRatio)}
+          total={rows.length}
+          onClose={() => setSelectedRatio(null)}
+        />
+      )}
     </div>
   );
 }
+
+/* The tab ids stay English so the active-tab comparison never depends on the locale;
+   only their labels are translated. */
+const RATIO_TABS = ["overview", "simulate", "celebrities", "edit"] as const;
+type RatioTab = (typeof RATIO_TABS)[number];
+
+const RATIO_MODAL_COPY = {
+  th: {
+    close: "ปิด",
+    closeDetails: "ปิดรายละเอียดสัดส่วน",
+    photoAlt: (name: string) => `ค่าที่วัดได้ของ${name}`,
+    score: "คะแนน",
+    reference: "ค่าอ้างอิง",
+    ideal: (value: string) => `ค่าอ้างอิง ${value}`,
+    tabs: { overview: "ภาพรวม", simulate: "จำลอง", celebrities: "ตัวอย่าง", edit: "แก้ไข" },
+    about: "เกี่ยวกับสัดส่วนนี้",
+    mayIndicate: "อาจบ่งบอกถึง",
+    affected: "ค่าที่เกี่ยวข้อง",
+    simulateTitle: "ดูแนวทางที่เป็นไปได้",
+    simulateBody: "เปิดค่านี้ในสตูดิโอจำลอง เพื่อเทียบภาพตัวอย่างการเปลี่ยนแปลง",
+    celebritiesTitle: "ตัวอย่างอ้างอิง",
+    celebritiesBody: "ใช้เทียบช่วงของสัดส่วน ไม่ใช่เทียบหน้าตาโดยรวมของใคร",
+    editTitle: "แก้ไขจุดอ้างอิง",
+    editBody: "ปรับค่านี้ได้ถ้าจุดอ้างอิงที่จับมาคลาดเคลื่อน",
+  },
+  en: {
+    close: "Close",
+    closeDetails: "Close ratio details",
+    photoAlt: (name: string) => `Your ${name} measurement`,
+    score: "Score",
+    reference: "Reference",
+    ideal: (value: string) => `Ideal ${value}`,
+    tabs: { overview: "Overview", simulate: "Simulate", celebrities: "Celebrities", edit: "Edit" },
+    about: "About this ratio",
+    mayIndicate: "May indicate",
+    affected: "Affected measurements",
+    simulateTitle: "See a direction.",
+    simulateBody: "Open this measurement in Simulate to compare an illustrative change.",
+    celebritiesTitle: "Reference examples.",
+    celebritiesBody: "Compare the ratio range, not a person's overall appearance.",
+    editTitle: "Correct the landmark.",
+    editBody: "Adjust this measurement if the captured landmark is inaccurate.",
+  },
+} as const;
 
 function RatioModal({
   metric,
@@ -504,7 +675,9 @@ function RatioModal({
   total: number;
   onClose: () => void;
 }) {
-  const [tab, setTab] = useState("Overview");
+  const { locale } = useLocale();
+  const c = RATIO_MODAL_COPY[locale === "en" ? "en" : "th"];
+  const [tab, setTab] = useState<RatioTab>("overview");
   return (
     <div
       className="app-modal"
@@ -516,7 +689,7 @@ function RatioModal({
         className="app-modal__scrim"
         type="button"
         onClick={onClose}
-        aria-label="Close ratio details"
+        aria-label={c.closeDetails}
       />
       <section className="ratio-modal app-glass">
         <header>
@@ -524,17 +697,17 @@ function RatioModal({
             {index + 1} / {total}
           </span>
           <h2 id="ratio-modal-title">{metric.name}</h2>
-          <button type="button" onClick={onClose} aria-label="Close">
+          <button type="button" onClick={onClose} aria-label={c.close}>
             <X />
           </button>
         </header>
         <div className="ratio-modal__hero">
           <figure>
-            <ScanPhoto alt={`Your ${metric.name} measurement`} />
+            <ScanPhoto alt={c.photoAlt(metric.name)} />
             <span>{metric.value}</span>
           </figure>
           <div className="ratio-modal__score">
-            <span className="eyebrow">Score</span>
+            <span className="eyebrow">{c.score}</span>
             <strong>
               {metric.score.toFixed(1)}
               <small>/10</small>
@@ -545,36 +718,36 @@ function RatioModal({
                   left: `${Math.min(92, Math.max(8, metric.score * 10))}%`,
                 }}
               />
-              <span>Reference</span>
+              <span>{c.reference}</span>
             </div>
             <b>{metric.value}</b>
-            <p>Ideal {metric.ideal}</p>
+            <p>{c.ideal(metric.ideal)}</p>
           </div>
         </div>
         <nav>
-          {["Overview", "Simulate", "Celebrities", "Edit"].map((item) => (
+          {RATIO_TABS.map((item) => (
             <button
               className={tab === item ? "is-active" : ""}
               type="button"
               onClick={() => setTab(item)}
               key={item}
             >
-              {item}
+              {c.tabs[item]}
             </button>
           ))}
         </nav>
-        {tab === "Overview" ? (
+        {tab === "overview" ? (
           <div className="ratio-modal__content">
             <div>
-              <span className="eyebrow">About this ratio</span>
+              <span className="eyebrow">{c.about}</span>
               <p>{metric.detail}</p>
             </div>
             <div>
-              <span className="eyebrow">May indicate</span>
+              <span className="eyebrow">{c.mayIndicate}</span>
               <p>{metric.mayIndicate}</p>
             </div>
             <div>
-              <span className="eyebrow">Affected measurements</span>
+              <span className="eyebrow">{c.affected}</span>
               <div className="ratio-chips">
                 {metric.affected.map((item) => (
                   <span key={item}>{item}</span>
@@ -582,28 +755,23 @@ function RatioModal({
               </div>
             </div>
           </div>
-        ) : tab === "Simulate" ? (
+        ) : tab === "simulate" ? (
           <div className="ratio-modal__empty">
             <WandSparkles />
-            <h3>See a direction.</h3>
-            <p>
-              Open this measurement in Simulate to compare an illustrative
-              change.
-            </p>
+            <h3>{c.simulateTitle}</h3>
+            <p>{c.simulateBody}</p>
           </div>
-        ) : tab === "Celebrities" ? (
+        ) : tab === "celebrities" ? (
           <div className="ratio-modal__empty">
             <CircleUserRound />
-            <h3>Reference examples.</h3>
-            <p>Compare the ratio range, not a person's overall appearance.</p>
+            <h3>{c.celebritiesTitle}</h3>
+            <p>{c.celebritiesBody}</p>
           </div>
         ) : (
           <div className="ratio-modal__empty">
             <SlidersHorizontal />
-            <h3>Correct the landmark.</h3>
-            <p>
-              Adjust this measurement if the captured landmark is inaccurate.
-            </p>
+            <h3>{c.editTitle}</h3>
+            <p>{c.editBody}</p>
           </div>
         )}
       </section>
@@ -1180,6 +1348,7 @@ const SettingsPanel = lazy(() => import("./views/SettingsPanel"));
 const ScoreCardPanel = lazy(() => import("./views/ScoreCardPanel"));
 const ReferralPanel = lazy(() => import("./views/ReferralPanel"));
 const ProfilePanel = lazy(() => import("./views/ProfilePanel"));
+const SkinPanel = lazy(() => import("./views/SkinPanel"));
 // Replaces the hardcoded `Plan` mock below, which promised a target score and a per-action
 // point gain. No such figure exists in this system, and chat.py's rules forbid stating one.
 const DevelopmentPlanPanel = lazy(() => import("./views/DevelopmentPlanPanel"));
@@ -1187,9 +1356,108 @@ const DevelopmentPlanPanel = lazy(() => import("./views/DevelopmentPlanPanel"));
  * rather than a component threaded through DashboardPage state. */
 const ChatPanel = lazy(() => import("./views/ChatPanel"));
 
+function ProfileMenu({
+  openView,
+  planLabel,
+  th,
+}: {
+  openView: (view: AppView) => void;
+  planLabel: string;
+  th: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const menuRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (menuRef.current && !menuRef.current.contains(event.target as Node)) {
+        setOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, []);
+
+  return (
+    <div className="doodee-profile-menu-container" ref={menuRef}>
+      <button
+        type="button"
+        className={`doodee-profile-trigger ${open ? "is-active" : ""}`}
+        onClick={() => setOpen(!open)}
+        aria-label="Profile and settings"
+      >
+        <CircleUserRound size={18} />
+        <span className="doodee-profile-trigger__badge">{planLabel}</span>
+      </button>
+
+      {open && (
+        <div className="doodee-profile-dropdown" role="menu">
+          <div className="doodee-profile-dropdown__header">
+            <strong>{th ? "บัญชีของฉัน" : "My Account"}</strong>
+            <span className="doodee-badge doodee-badge--primary">{planLabel}</span>
+          </div>
+
+          <div className="doodee-profile-dropdown__list">
+            <button
+              type="button"
+              onClick={() => {
+                setOpen(false);
+                openView("profile");
+              }}
+            >
+              <CircleUserRound size={15} />
+              <span>{th ? "ข้อมูลโปรไฟล์" : "Profile"}</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setOpen(false);
+                openView("skin");
+              }}
+            >
+              <Droplets size={15} />
+              <span>{th ? "วิเคราะห์ผิว" : "Skin Analysis"}</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setOpen(false);
+                openView("pricing");
+              }}
+            >
+              <Sparkles size={15} />
+              <span>{th ? "อัปเกรดแพ็กเกจ" : "Plans & Billing"}</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setOpen(false);
+                openView("settings");
+              }}
+            >
+              <Settings2 size={15} />
+              <span>{th ? "ตั้งค่าระบบวิเคราะห์" : "Settings"}</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setOpen(false);
+                window.open("mailto:support@doodee.ai", "_blank");
+              }}
+            >
+              <CircleHelp size={15} />
+              <span>{th ? "ช่วยเหลือ & ติดต่อทีมงาน" : "Help & Support"}</span>
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function DashboardPage({ view }: { view: AppView }) {
   const navigate = useNavigate();
-  const { locale } = useLocale();
+  const { locale, chooseLocale } = useLocale();
   const th = locale !== "en";
   // The most recent scan is the one the dashboard describes. /analysis may name a specific one
   // through ?scan_id=, which is how ScanPage hands off straight after an upload.
@@ -1202,7 +1470,7 @@ export default function DashboardPage({ view }: { view: AppView }) {
     PLAN_LABELS[sessionQuery.data?.plan] ??
     (locale === "en" ? sessionQuery.data?.plan_name_en : sessionQuery.data?.plan_name_th) ??
     "…";
-  const scanId = requestedScanId || scanList.data?.[0]?.id;
+  const scanId = requestedScanId || latestCraniofacialScan(scanList.data)?.id;
   const scanQuery = useQuery({
     queryKey: ["scan", scanId],
     queryFn: () => getScan(scanId),
@@ -1218,14 +1486,14 @@ export default function DashboardPage({ view }: { view: AppView }) {
   const scanImage = scan?.front_url || null;
   const scanData = useMemo<ScanData>(
     () => ({
-      pillars: pillarsFor(scan),
-      rows: ratioRows(scan),
-      strengths: strengthsFor(scan),
-      improvements: improvementsFor(scan),
+      pillars: pillarsFor(scan, locale),
+      rows: ratioRows(scan, locale),
+      strengths: strengthsFor(scan, 3, locale),
+      improvements: improvementsFor(scan, 3, locale),
       overall: overallScore(scan),
       availability: catalogAvailability(scan),
     }),
-    [scan],
+    [scan, locale],
   );
   const queryClient = useQueryClient();
   const seedDemo = useMutation({
@@ -1237,12 +1505,27 @@ export default function DashboardPage({ view }: { view: AppView }) {
   });
   const [menuOpen, setMenuOpen] = useState(false);
   const [unlockOpen, setUnlockOpen] = useState(false);
-  const [toolPanel, setToolPanel] = useState<"settings" | "help" | null>(null);
   const [toast, setToast] = useState("");
   const activeLabel = useMemo(
-    () =>
-      [...views, ...accountViews].find((item) => item.id === view)?.label ?? "Overview",
-    [view],
+    () => {
+      const labels: Record<AppView, { th: string; en: string }> = {
+        overview: { th: "วิเคราะห์รูปหน้า", en: "Face Analysis" },
+        analysis: { th: "สัดส่วน 12 ค่า", en: "Measurements" },
+        plan: { th: "แผนพัฒนา", en: "Plan" },
+        simulate: { th: "สตูดิโอจำลอง", en: "Simulation Studio" },
+        doodeegpt: { th: "DOODEE AI Chat", en: "DOODEE AI Chat" },
+        tryon: { th: "สตูดิโอสไตล์", en: "Style Try-on" },
+        history: { th: "ประวัติการสแกน", en: "Scan History" },
+        pricing: { th: "แพ็กเกจ & สิทธิพิเศษ", en: "Plans & Rewards" },
+        settings: { th: "ตั้งค่าระบบ", en: "Settings" },
+        scorecard: { th: "การ์ดคะแนน", en: "Score Card" },
+        referral: { th: "ชวนเพื่อนรับ 30฿", en: "Invite Friends" },
+        profile: { th: "โปรไฟล์ของฉัน", en: "My Profile" },
+        skin: { th: "วิเคราะห์ผิว", en: "Skin Analysis" },
+      };
+      return th ? (labels[view]?.th ?? "ภาพรวม") : (labels[view]?.en ?? "Overview");
+    },
+    [view, th],
   );
 
   // Only the views that describe a scan need one. Settings, plans, history and try-on must stay
@@ -1268,7 +1551,6 @@ export default function DashboardPage({ view }: { view: AppView }) {
     const close = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
         setUnlockOpen(false);
-        setToolPanel(null);
         setMenuOpen(false);
       }
     };
@@ -1278,7 +1560,6 @@ export default function DashboardPage({ view }: { view: AppView }) {
 
   const openView = (next: AppView) => {
     setMenuOpen(false);
-    setToolPanel(null);
     navigate(VIEW_ROUTES[next]);
     window.scrollTo({ top: 0, behavior: "smooth" });
   };
@@ -1290,25 +1571,133 @@ export default function DashboardPage({ view }: { view: AppView }) {
     navigator.clipboard?.writeText(window.location.href).catch(() => undefined);
     notify("Analysis link copied");
   };
-  // Deleting the scan is a real server action, so it lives on /history where it already has a
-  // confirmation. Here the control just takes the user there rather than dropping local state.
-  const goToHistory = () => navigate("/history");
+  const handleSignOut = async () => {
+    try {
+      const { firebaseSignOut } = await import("../lib/firebase");
+      await firebaseSignOut();
+    } catch (err) {
+      // Swallowing this silently is what hid the wrong import name here: the sign-out threw,
+      // /login bounced straight back in, and nothing said why. Leaving on /login without a
+      // session cleared would repeat that, so surface it and stay put.
+      console.error("Sign out failed", err);
+      return;
+    }
+    navigate("/login");
+  };
 
-  // Without this the shell sits on an empty aria-busy panel forever whenever the API is down,
-  // which reads as a broken page rather than an unreachable server.
   const loadError = scanList.error || scanQuery.error;
-  if (loadError)
+  if (loadError) {
+    const rawErr = errorMessage(loadError) || (loadError as Error).message || "";
+    const isAuthErr =
+      rawErr.toLowerCase().includes("account is disabled") ||
+      rawErr.toLowerCase().includes("authentication") ||
+      rawErr.toLowerCase().includes("token") ||
+      rawErr.toLowerCase().includes("401");
+
     return (
       <main className="doodee-app doodee-app--handoff">
-        <div className="app-load-error" role="alert">
-          <strong>We could not load your analysis.</strong>
-          <p>{errorMessage(loadError) || (loadError as Error).message}</p>
-          <button type="button" onClick={() => { void scanList.refetch(); void scanQuery.refetch(); }}>
-            <RefreshCw size={16} /> Try again
-          </button>
+        <div
+          className="app-load-error"
+          role="alert"
+          style={{
+            maxWidth: 480,
+            margin: "80px auto",
+            textAlign: "center",
+            padding: "40px 28px",
+            background: "rgba(255, 255, 255, 0.85)",
+            backdropFilter: "blur(24px)",
+            borderRadius: "24px",
+            boxShadow: "0 20px 60px rgba(15, 23, 42, 0.08)",
+            border: "1px solid rgba(22, 40, 66, 0.08)",
+          }}
+        >
+          <div
+            style={{
+              width: 54,
+              height: 54,
+              margin: "0 auto 18px",
+              borderRadius: "16px",
+              background: "rgba(239, 68, 68, 0.1)",
+              color: "#ef4444",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+            }}
+          >
+            <AlertCircle size={28} />
+          </div>
+          <strong
+            style={{
+              fontSize: "1.25rem",
+              fontWeight: 800,
+              color: "#0f172a",
+              marginBottom: "8px",
+              display: "block",
+            }}
+          >
+            {th ? "ไม่สามารถโหลดข้อมูลการวิเคราะห์ได้" : "We could not load your analysis."}
+          </strong>
+          <p
+            style={{
+              color: "#64748b",
+              fontSize: "13.5px",
+              lineHeight: 1.55,
+              marginBottom: "24px",
+            }}
+          >
+            {isAuthErr
+              ? th
+                ? "บัญชีนี้ถูกปิดการใช้งาน หรือเซสชันหมดอายุ กรุณาเข้าสู่ระบบใหม่อีกครั้ง"
+                : "Your account is disabled or your session has expired. Please sign in again."
+              : rawErr}
+          </p>
+          <div style={{ display: "flex", gap: "12px", justifyContent: "center", flexWrap: "wrap" }}>
+            <button
+              type="button"
+              onClick={() => {
+                void scanList.refetch();
+                void scanQuery.refetch();
+              }}
+              style={{
+                padding: "10px 20px",
+                borderRadius: "12px",
+                background: "var(--app-ink, #0f172a)",
+                color: "#fff",
+                border: 0,
+                fontWeight: 600,
+                fontSize: "13px",
+                display: "flex",
+                alignItems: "center",
+                gap: "8px",
+                cursor: "pointer",
+              }}
+            >
+              <RefreshCw size={15} /> {th ? "ลองใหม่อีกครั้ง" : "Try again"}
+            </button>
+            <button
+              type="button"
+              onClick={handleSignOut}
+              style={{
+                padding: "10px 20px",
+                borderRadius: "12px",
+                background: "rgba(239, 68, 68, 0.08)",
+                color: "#dc2626",
+                border: "1px solid rgba(239, 68, 68, 0.2)",
+                fontWeight: 600,
+                fontSize: "13px",
+                display: "flex",
+                alignItems: "center",
+                gap: "8px",
+                cursor: "pointer",
+              }}
+            >
+              <LogOut size={15} /> {th ? "ออกจากระบบ" : "Sign out"}
+            </button>
+          </div>
         </div>
       </main>
     );
+  }
 
   // Wait on the *analysis*, never on the photo. `purge_scan_images` deletes the images 30 days
   // after a scan and keeps the measurements, so "completed with no photo" is the normal steady
@@ -1379,8 +1768,8 @@ export default function DashboardPage({ view }: { view: AppView }) {
             <X />
           </button>
         </div>
-        {/* Was a plain <div>: an avatar, a name, a plan and a cog icon that looked like the way
-            into an account page and did nothing when pressed. It goes to the profile now. */}
+
+        {/* Profile Card & Plan badge */}
         <button
           className="sidebar-profile"
           type="button"
@@ -1389,29 +1778,20 @@ export default function DashboardPage({ view }: { view: AppView }) {
         >
           <CircleUserRound />
           <span>
-            <strong>My analysis</strong>
-            {/* qijek hardcoded "Free plan" here; showing that to a paying member is a lie the
-                sidebar tells on every page. The server's own name is preferred so a tier added
-                in the admin never shows up here as "…". */}
+            <strong>{th ? "โปรไฟล์ของฉัน" : "My Profile"}</strong>
             <small>{planLabel}</small>
           </span>
           <Settings2 />
         </button>
-        <button
-          className="sidebar-upgrade"
-          type="button"
-          onClick={() => setUnlockOpen(true)}
-        >
-          <Sparkles /> Unlock full analysis
-        </button>
+
+        {/* Quick New Scan CTA */}
         <div className="sidebar-section">
-          <span>History</span>
-          <button className="sidebar-new" type="button" onClick={() => navigate("/scan")}>
-            <Plus /> New scan
+          <button className="sidebar-new sidebar-new--primary" type="button" onClick={() => navigate("/scan")}>
+            <Plus /> {th ? "เริ่มสแกนใบหน้า" : "New Face Scan"}
           </button>
         </div>
-        {/* Keyed on the scan existing, not on its photo. A scan whose images were purged is
-            still a scan, and telling its owner "No scan yet" would be plainly false. */}
+
+        {/* Latest Scan Thumbnail */}
         {scanId ? (
           <button
             className="history-card is-active"
@@ -1420,74 +1800,102 @@ export default function DashboardPage({ view }: { view: AppView }) {
           >
             <ScanPhoto alt="Latest scan" />
             <span>
-              <strong>Latest scan</strong>
-              <small>{scanData.overall === null ? "Analysing…" : `Overall ${scanData.overall.toFixed(1)}`}</small>
+              <strong>{th ? "ผลสแกนล่าสุด" : "Latest Scan"}</strong>
+              <small>{scanData.overall === null ? (th ? "กำลังวิเคราะห์…" : "Analysing…") : `Overall ${scanData.overall.toFixed(1)}/10`}</small>
             </span>
             <ArrowRight />
           </button>
         ) : (
           <button className="history-card is-empty" type="button" onClick={() => navigate("/scan")}>
             <span>
-              <strong>No scan yet</strong>
-              <small>Capture three angles to begin</small>
+              <strong>{th ? "ยังไม่มีผลสแกน" : "No scan yet"}</strong>
+              <small>{th ? "ถ่ายสามมุมเพื่อเริ่มต้น" : "Capture three angles"}</small>
             </span>
             <ArrowRight />
           </button>
         )}
-        <nav className="sidebar-nav" aria-label="Dashboard">
-          <span>Explore</span>
-          {views.map((item) => (
-            <button
-              className={view === item.id ? "is-active" : ""}
-              type="button"
-              onClick={() => openView(item.id)}
-              key={item.id}
-            >
-              {item.id === "overview" ? (
-                <LayoutGrid />
-              ) : item.id === "analysis" ? (
-                <BarChart3 />
-              ) : item.id === "plan" ? (
-                <Target />
-              ) : item.id === "simulate" ? (
-                <WandSparkles />
-              ) : (
-                <MessageCircle />
-              )}
-              {item.label}
-            </button>
-          ))}
+
+        {/* Main 4 Core Hubs Navigation */}
+        <nav className="sidebar-nav" aria-label="Dashboard Hubs">
+          <span>{th ? "เมนูหลัก" : "Core Features"}</span>
+          <button
+            className={view === "overview" || view === "analysis" || view === "plan" ? "is-active" : ""}
+            type="button"
+            onClick={() => openView("overview")}
+          >
+            <LayoutGrid />
+            <span>{th ? "วิเคราะห์รูปหน้า" : "Face Analysis"}</span>
+          </button>
+          <button
+            className={view === "simulate" || view === "tryon" ? "is-active" : ""}
+            type="button"
+            onClick={() => openView("simulate")}
+          >
+            <WandSparkles />
+            <span>{th ? "สตูดิโอจำลอง" : "Simulation Studio"}</span>
+          </button>
+          <button
+            className={view === "doodeegpt" ? "is-active" : ""}
+            type="button"
+            onClick={() => openView("doodeegpt")}
+          >
+            <MessageCircle />
+            <span>{th ? "DOODEE AI Chat" : "DOODEE AI Chat"}</span>
+          </button>
+          <button
+            className={view === "pricing" ? "is-active" : ""}
+            type="button"
+            onClick={() => openView("pricing")}
+          >
+            <Sparkles />
+            <span>{th ? "แพ็กเกจ & สิทธิพิเศษ" : "Plans & Rewards"}</span>
+          </button>
         </nav>
-        <nav className="sidebar-nav" aria-label="Account">
-          <span>Account</span>
-          {accountViews.map((item) => (
-            <button
-              className={view === item.id ? "is-active" : ""}
-              type="button"
-              onClick={() => openView(item.id)}
-              key={item.id}
-            >
-              {item.id === "tryon" ? (
-                <WandSparkles />
-              ) : item.id === "history" ? (
-                <RefreshCw />
-              ) : item.id === "pricing" ? (
-                <Sparkles />
-              ) : item.id === "scorecard" ? (
-                <BarChart3 />
-              ) : (
-                <Settings2 />
-              )}
-              {item.label}
-            </button>
-          ))}
+
+        {/* Secondary Navigation Tools */}
+        <nav className="sidebar-nav" aria-label="Account Tools">
+          <span>{th ? "เครื่องมือ & รางวัล" : "Tools & Rewards"}</span>
+          <button
+            className={view === "scorecard" ? "is-active" : ""}
+            type="button"
+            onClick={() => openView("scorecard")}
+          >
+            <BarChart3 />
+            <span>{th ? "การ์ดคะแนน (Percentile)" : "Score Card"}</span>
+          </button>
+          <button
+            className={view === "skin" ? "is-active" : ""}
+            type="button"
+            onClick={() => openView("skin")}
+          >
+            <Droplets />
+            <span>{th ? "วิเคราะห์ผิว" : "Skin Analysis"}</span>
+          </button>
+          <button
+            className={view === "referral" ? "is-active" : ""}
+            type="button"
+            onClick={() => openView("referral")}
+          >
+            <Share2 />
+            <span>{th ? "ชวนเพื่อนรับ 30฿" : "Invite (Get 30฿)"}</span>
+          </button>
+          <button
+            className={view === "history" ? "is-active" : ""}
+            type="button"
+            onClick={() => openView("history")}
+          >
+            <RefreshCw />
+            <span>{th ? "ประวัติการสแกน" : "Scan History"}</span>
+          </button>
         </nav>
+
         <div className="sidebar-foot">
-          <button type="button" onClick={goToHistory}>
-            Manage scans
+          <button type="button" onClick={() => openView("settings")}>
+            <Settings2 size={14} /> {th ? "ตั้งค่าระบบ" : "Settings"}
           </button>
         </div>
       </aside>
+
       <div className="app-shell">
         <header className="app-topbar">
           <button
@@ -1499,67 +1907,72 @@ export default function DashboardPage({ view }: { view: AppView }) {
             <Menu />
           </button>
           <span className="app-mobile-title">{activeLabel}</span>
-          <nav aria-label="Analysis sections">
-            {views.map((item) => (
-              <button
-                className={view === item.id ? "is-active" : ""}
-                type="button"
-                onClick={() => openView(item.id)}
-                key={item.id}
-              >
-                {item.label}
-              </button>
-            ))}
+          <nav aria-label="Analysis sections" className="app-topbar-nav">
+            <button
+              className={view === "overview" || view === "analysis" || view === "plan" ? "is-active" : ""}
+              type="button"
+              onClick={() => openView("overview")}
+            >
+              {th ? "วิเคราะห์รูปหน้า" : "Face Analysis"}
+            </button>
+            <button
+              className={view === "simulate" || view === "tryon" ? "is-active" : ""}
+              type="button"
+              onClick={() => openView("simulate")}
+            >
+              {th ? "สตูดิโอจำลอง" : "Studio"}
+            </button>
+            <button
+              className={view === "doodeegpt" ? "is-active" : ""}
+              type="button"
+              onClick={() => openView("doodeegpt")}
+            >
+              {th ? "DOODEE AI" : "DOODEE AI"}
+            </button>
+            <button
+              className={view === "pricing" ? "is-active" : ""}
+              type="button"
+              onClick={() => openView("pricing")}
+            >
+              {th ? "แพ็กเกจ" : "Plans"}
+            </button>
           </nav>
           <div className="app-tools">
-            <button type="button" onClick={share} aria-label="Share">
-              <Share2 />
-            </button>
+            {/* 1. Share Button */}
             <button
               type="button"
-              onClick={() =>
-                setToolPanel(toolPanel === "settings" ? null : "settings")
-              }
-              aria-label="Settings"
+              className="doodee-tool-btn"
+              onClick={share}
+              title={th ? "แชร์ผลวิเคราะห์" : "Share Analysis"}
+              aria-label="Share"
             >
-              <Settings2 />
+              <Share2 size={17} />
             </button>
+
+            {/* 2. Language Switcher Button */}
+            <button
+              type="button"
+              className="doodee-lang-toggle"
+              onClick={() => chooseLocale(th ? "en" : "th")}
+              title={th ? "เปลี่ยนภาษาเป็น English" : "Switch to Thai"}
+              aria-label="Switch Language"
+            >
+              <Globe size={15} />
+              <span>{locale.toUpperCase()}</span>
+            </button>
+
+            {/* 3. Notifications Bell */}
             <NotificationBell />
-            <button
-              type="button"
-              onClick={() => setToolPanel(toolPanel === "help" ? null : "help")}
-              aria-label="Help"
-            >
-              <CircleHelp />
-            </button>
-            {toolPanel && (
-              <div className="app-tool-panel">
-                <strong>
-                  {toolPanel === "settings"
-                    ? "Analysis settings"
-                    : "Need help?"}
-                </strong>
-                <p>
-                  {toolPanel === "settings"
-                    ? "Reference: Male · Global"
-                    : "Review capture guidance or contact support."}
-                </p>
-                <button
-                  type="button"
-                  onClick={() =>
-                    notify(
-                      toolPanel === "settings"
-                        ? "Settings saved"
-                        : "Help center opened",
-                    )
-                  }
-                >
-                  {toolPanel === "settings" ? "Save settings" : "Open help"}
-                </button>
-              </div>
-            )}
+
+            {/* 4. Profile & Settings Menu */}
+            <ProfileMenu
+              openView={openView}
+              planLabel={planLabel}
+              th={th}
+            />
           </div>
         </header>
+
         <div className="app-content">
           {view === "overview" && (
             <Overview
@@ -1592,9 +2005,47 @@ export default function DashboardPage({ view }: { view: AppView }) {
             {view === "scorecard" && <ScoreCardPanel />}
             {view === "referral" && <ReferralPanel />}
             {view === "profile" && <ProfilePanel />}
+            {view === "skin" && <SkinPanel />}
           </Suspense>
         </div>
+
+        {/* Floating Mobile Bottom Navigation Bar */}
+        <nav className="doodee-mobile-bottom-bar" aria-label="Mobile Navigation">
+          <button
+            type="button"
+            className={view === "overview" || view === "analysis" ? "is-active" : ""}
+            onClick={() => openView("overview")}
+          >
+            <LayoutGrid size={20} />
+            <span>{th ? "วิเคราะห์" : "Analysis"}</span>
+          </button>
+          <button
+            type="button"
+            className={view === "simulate" || view === "tryon" ? "is-active" : ""}
+            onClick={() => openView("simulate")}
+          >
+            <WandSparkles size={20} />
+            <span>{th ? "จำลอง" : "Studio"}</span>
+          </button>
+          <button
+            type="button"
+            className={view === "doodeegpt" ? "is-active" : ""}
+            onClick={() => openView("doodeegpt")}
+          >
+            <MessageCircle size={20} />
+            <span>{th ? "AI แชท" : "AI Chat"}</span>
+          </button>
+          <button
+            type="button"
+            className={view === "pricing" || view === "profile" || view === "referral" ? "is-active" : ""}
+            onClick={() => openView("pricing")}
+          >
+            <Sparkles size={20} />
+            <span>{th ? "แพ็กเกจ" : "Plans"}</span>
+          </button>
+        </nav>
       </div>
+
       {menuOpen && (
         <button
           className="app-scrim"

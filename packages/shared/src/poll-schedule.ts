@@ -18,7 +18,7 @@
 const STEPS = [1500, 1500, 2500, 4000, 6000];
 
 /** The statuses that mean the job is over, in either direction. */
-export const SETTLED_STATUSES = ['completed', 'failed'];
+export const SETTLED_STATUSES = ['completed', 'failed', 'cancelled'];
 
 export function isSettled(status: unknown): boolean {
   return typeof status === 'string' && SETTLED_STATUSES.includes(status);

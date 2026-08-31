@@ -22,6 +22,7 @@ from django.utils import timezone
 
 from .models import Scan
 from .reference_scoring import CATEGORIES, reference_for, score_observations
+from .skin_engine import ENGINE_VERSION, SIGNAL_CONFIDENCE
 
 # Offsets in standard deviations from the Thai reference mean, per metric. Chosen to produce a
 # believable spread rather than a flat profile: one clearly atypical metric (alar_width) so the
@@ -62,6 +63,43 @@ def demo_observations(profile="neutral"):
     return observations
 
 
+# A readable, unremarkable skin frame. Values sit where the engine puts an ordinary photograph
+# taken in even light: a mild under-eye shadow, cheeks a little warmer than the forehead, a
+# slightly shinier T-zone. Deliberately not a dramatic one — the demo exists so the screens can
+# be used, and a sample face with striking skin would be read as the product's idea of a
+# problem to solve.
+#
+# `readable: True` with no advisories, because a demo that opened on "we could not read this
+# photograph" would teach the wrong thing about a feature that is working.
+DEMO_SKIN = {
+    "engine_version": ENGINE_VERSION,
+    "basis": "within_image_regional",
+    "signals": {
+        "undereye_shadow": 6.4,
+        "tone_spread": 4.1,
+        "cheek_redness": 2.2,
+        "nose_redness": 3.5,
+        "tzone_shine": 0.031,
+        "texture": 0.0125,
+    },
+    "confidence": dict(SIGNAL_CONFIDENCE),
+    # Left out on purpose: the per-region colour means. They describe a face, and this demo
+    # deliberately has none — see the module docstring. The signals above are differences, so
+    # they carry no portrait with them.
+    "regions": {},
+    "capture": {
+        "brightness": 132.0,
+        "colour_cast": 0.04,
+        "shadow_ratio": 1.08,
+        "max_clipped_fraction": 0.0,
+        "white_balanced": True,
+    },
+    "advisories": [],
+    "readable": True,
+    "is_demo": True,
+}
+
+
 def demo_analysis_data(profile="neutral"):
     """A full `analysis_data` blob, scored by the real scoring module.
 
@@ -73,6 +111,7 @@ def demo_analysis_data(profile="neutral"):
         "reference_scores": score_observations(demo_observations(profile)),
         "analysis_tier": Scan.ScanMode.STANDARD,
         "missing_optional_views": [],
+        "skin_analysis": dict(DEMO_SKIN),
         "is_demo": True,
     }
 

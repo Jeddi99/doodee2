@@ -30,12 +30,32 @@ class ConsentEvent(models.Model):
         ANALYSIS = "analysis", "วิเคราะห์ใบหน้า"
         STORAGE = "storage", "เก็บภาพและประวัติ"
         SIMULATION = "simulation", "จำลองผลในเครื่อง"
-        # Separate from ANALYSIS because it is the only purpose that sends anything off this
-        # system. Analysis and simulation both run here; a typed chat question sends the
-        # scan's twelve measurements to Anthropic. Photographs are never sent (see chat.py),
-        # but numbers derived from a face still leave, and consent to be measured is not
-        # consent to be forwarded.
+        # Separate from ANALYSIS because analysis and simulation both run on this system,
+        # while a typed chat question sends the scan's twelve measurements to an external
+        # model. Numbers derived from a face leaving is not the same as being measured, and
+        # consent to be measured is not consent to be forwarded.
+        #
+        # This purpose still forwards numbers only — chat.py sends no images. Face images
+        # leave this system under exactly one purpose, SKIN_VISION below, and only for users
+        # who turned it on.
         CHAT = "chat", "ส่งตัวเลขให้โมเดลภายนอก (แชท)"
+        # And separate again from CHAT, by the same argument one step further along. CHAT
+        # forwards twelve numbers; this forwards the photograph they were derived from. A
+        # measurement can be argued to be about a face without being of one — an image cannot,
+        # and it carries everything the user did not choose to have measured. Consent to send
+        # numbers is not consent to send the picture, so this is its own opt-in, off unless
+        # asked for, and revocable in settings. Nothing reads a face image out of this system
+        # without a row here.
+        SKIN_VISION = "skin_vision", "ส่งภาพใบหน้าให้โมเดลภายนอก (วิเคราะห์ผิว)"
+        # Every other purpose here asks about what may be done with the user's face. This one asks
+        # whose face it is, and it exists because the file picker made that a question. A live
+        # capture carries a weak but real answer — somebody sat in front of the camera and turned
+        # their head on request — and an uploaded file carries none at all. Nothing in the pipeline
+        # can tell the difference: `_decode` measures light and blur, `_validate_pose_set` measures
+        # head angle, and a sharp well-lit photograph of somebody else passes both. So the answer
+        # is asked for and written down rather than detected, and `_scan_fields` refuses an upload
+        # that arrives without one.
+        PHOTO_OWNER = "photo_owner", "ยืนยันว่าภาพที่อัปโหลดเป็นใบหน้าของตนเอง"
 
     user = models.ForeignKey(
         settings.AUTH_USER_MODEL, null=True, on_delete=models.SET_NULL, verbose_name="ผู้ใช้",
@@ -55,28 +75,45 @@ class ConsentEvent(models.Model):
 
 class Scan(models.Model):
     class Status(models.TextChoices):
+        UPLOADING = "uploading", "กำลังอัปโหลด"
         QUEUED = "queued", "รอคิว"
         PROCESSING = "processing", "กำลังประมวลผล"
         COMPLETED = "completed", "เสร็จแล้ว"
         FAILED = "failed", "ล้มเหลว"
+        CANCELLED = "cancelled", "ยกเลิก"
         DELETION_PENDING = "deletion_pending", "รอลบ"
 
     class ScanMode(models.TextChoices):
         FULL = "full", "ครบ 7 มุม"
         STANDARD = "standard", "หน้าตรงและด้านข้างสองข้าง"
         FAST = "fast", "เร็ว 3 มุม"
+        # Front only, framed closer. Produces `skin_analysis` and no craniofacial metrics, so
+        # it must never be picked up as "the user's latest scan" by the pages that read shape —
+        # see `latest_craniofacial_scan`.
+        SKIN = "skin", "วิเคราะห์ผิว (ระยะใกล้)"
 
     class AgeBand(models.TextChoices):
         ADULT = "adult", "18 ปีขึ้นไป"
         MINOR = "minor", "ต่ำกว่า 18 ปี"
 
     class CaptureMethod(models.TextChoices):
-        # No `upload` member: there is no file picker anywhere in the app, so a choice nobody can
-        # emit would teach an operator something untrue about their own product. Add it the day
-        # an upload path ships. No `demo` member either — `is_demo` already answers that, and two
-        # fields that can disagree about the same fact is a bug waiting to be written.
+        # No `demo` member: `is_demo` already answers that, and two fields that can disagree about
+        # the same fact is a bug waiting to be written.
         WEB_CAMERA = "web_camera", "กล้องบนเว็บ"
         MOBILE_CAMERA = "mobile_camera", "กล้องบนแอปมือถือ"
+        # Set when *any* angle came from a file rather than the camera, not only when all of them
+        # did. A scan is one unit of analysis and cannot be half a camera scan: everything an
+        # operator reads into "web_camera" — that tracking ran, that framing was enforced by the
+        # capture UI, that the subject was present when the shutter fired — is false of a scan
+        # holding one uploaded photograph, so calling it a camera scan would be the same untruth
+        # the missing member used to guard against.
+        #
+        # Not `web_upload`, although the two above name a surface. A photo-library picker on the
+        # mobile app should report this same value, and which surface it was is recoverable from
+        # UserAttribution.device anyway. If per-angle provenance is ever wanted it belongs as a
+        # {view: source} map beside `image_objects`, where it can be exact, rather than as a
+        # combinatorial spread of enum members here.
+        UPLOAD = "upload", "อัปโหลดรูป"
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     user = models.ForeignKey(
@@ -86,6 +123,10 @@ class Scan(models.Model):
         max_length=24, choices=Status.choices, default=Status.QUEUED, db_index=True, verbose_name="สถานะ",
     )
     progress = models.PositiveSmallIntegerField(default=0, verbose_name="ความคืบหน้า (%)")
+    idempotency_key = models.CharField(max_length=128, blank=True, default="", verbose_name="รหัสกันส่งซ้ำ")
+    attempt_count = models.PositiveSmallIntegerField(default=0, verbose_name="จำนวนครั้งที่ประมวลผล")
+    started_at = models.DateTimeField(null=True, blank=True, verbose_name="เริ่มประมวลผลเมื่อ")
+    finished_at = models.DateTimeField(null=True, blank=True, verbose_name="จบประมวลผลเมื่อ")
     age_band = models.CharField(max_length=8, choices=AgeBand.choices, verbose_name="ช่วงอายุ")
     reference_age_band = models.CharField(max_length=16, default="18_35", verbose_name="ช่วงอายุกลุ่มอ้างอิง")
     reference_profile = models.CharField(max_length=12, default="neutral", verbose_name="โปรไฟล์กลุ่มอ้างอิง")
@@ -120,6 +161,13 @@ class Scan(models.Model):
 
     class Meta:
         ordering = ("-created_at",)
+        constraints = (
+            models.UniqueConstraint(
+                fields=("user", "idempotency_key"), condition=~models.Q(idempotency_key=""),
+                name="unique_scan_idempotency_key",
+            ),
+        )
+        indexes = (models.Index(fields=("status", "created_at"), name="doodee_scan_status_created_idx"),)
         verbose_name = "การสแกน"
         verbose_name_plural = "การสแกน"
 
@@ -130,7 +178,12 @@ class Simulation(models.Model):
         PROCESSING = "processing", "กำลังประมวลผล"
         COMPLETED = "completed", "เสร็จแล้ว"
         FAILED = "failed", "ล้มเหลว"
+        CANCELLED = "cancelled", "ยกเลิก"
         DELETION_PENDING = "deletion_pending", "รอลบ"
+
+    class Kind(models.TextChoices):
+        PREVIEW = "preview", "พรีวิวชั่วคราว"
+        SAVED = "saved", "บันทึก"
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     scan = models.ForeignKey(Scan, on_delete=models.CASCADE, related_name="simulations", verbose_name="การสแกน")
@@ -138,6 +191,11 @@ class Simulation(models.Model):
         max_length=24, choices=Status.choices, default=Status.QUEUED, db_index=True, verbose_name="สถานะ",
     )
     progress = models.PositiveSmallIntegerField(default=0, verbose_name="ความคืบหน้า (%)")
+    kind = models.CharField(max_length=8, choices=Kind.choices, default=Kind.SAVED, db_index=True, verbose_name="ชนิด")
+    idempotency_key = models.CharField(max_length=128, blank=True, default="", verbose_name="รหัสกันส่งซ้ำ")
+    attempt_count = models.PositiveSmallIntegerField(default=0, verbose_name="จำนวนครั้งที่ประมวลผล")
+    started_at = models.DateTimeField(null=True, blank=True, verbose_name="เริ่มประมวลผลเมื่อ")
+    finished_at = models.DateTimeField(null=True, blank=True, verbose_name="จบประมวลผลเมื่อ")
     # `region` and `preset_id` hold the first selection so rows written before stacking, and
     # readers that only know about one, keep working. `selections` is the whole stack.
     region = models.CharField(max_length=16, verbose_name="บริเวณ")
@@ -159,6 +217,13 @@ class Simulation(models.Model):
 
     class Meta:
         ordering = ("-created_at",)
+        constraints = (
+            models.UniqueConstraint(
+                fields=("scan", "idempotency_key"), condition=~models.Q(idempotency_key=""),
+                name="unique_simulation_idempotency_key",
+            ),
+        )
+        indexes = (models.Index(fields=("status", "created_at"), name="doodee_sim_status_created_idx"),)
         verbose_name = "การจำลองผล"
         verbose_name_plural = "การจำลองผล"
 
@@ -321,6 +386,31 @@ class ChatUsage(models.Model):
         constraints = (models.UniqueConstraint(fields=("user", "period"), name="unique_chat_usage_period"),)
         verbose_name = "โควตาแชท"
         verbose_name_plural = "โควตาแชท"
+
+
+class AIUsageLedger(models.Model):
+    class Status(models.TextChoices):
+        RESERVED = "reserved", "กันงบแล้ว"
+        SETTLED = "settled", "คิดเงินจริงแล้ว"
+        REFUNDED = "refunded", "คืนงบแล้ว"
+        UNCERTAIN = "uncertain", "รอตรวจสอบ"
+
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="ai_usage_ledger")
+    idempotency_key = models.CharField(max_length=128)
+    provider = models.CharField(max_length=16)
+    model = models.CharField(max_length=96)
+    status = models.CharField(max_length=12, choices=Status.choices, default=Status.RESERVED, db_index=True)
+    reserved_satang = models.PositiveIntegerField(default=0)
+    actual_satang = models.PositiveIntegerField(default=0)
+    input_tokens = models.PositiveIntegerField(default=0)
+    cached_input_tokens = models.PositiveIntegerField(default=0)
+    output_tokens = models.PositiveIntegerField(default=0)
+    created_at = models.DateTimeField(auto_now_add=True)
+    settled_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        constraints = (models.UniqueConstraint(fields=("user", "idempotency_key"), name="unique_ai_usage_request"),)
+        indexes = (models.Index(fields=("status", "created_at"), name="doodee_aiu_status_created_idx"),)
 
 
 class Plan(models.Model):
@@ -1081,10 +1171,13 @@ class ChatSetting(models.Model):
     """
 
     class Provider(models.TextChoices):
+        GEMINI = "gemini", "Google Gemini — เร็ว ประหยัด และฉลาด"
         ANTHROPIC = "anthropic", "Anthropic (Claude) — สำหรับใช้งานจริง"
-        OPENAI = "openai", "OpenAI-compatible (Groq / OpenRouter / Ollama) — สำหรับทดสอบ"
+        OPENAI = "openai", "OpenAI / OpenAI-compatible"
 
     class Model(models.TextChoices):
+        GEMINI_2_5_FLASH = "gemini-2.5-flash", "Gemini 2.5 Flash — แนะนำ รวดเร็วและแม่นยำ"
+        GEMINI_2_0_FLASH = "gemini-2.0-flash", "Gemini 2.0 Flash — ความเร็วสูง"
         OPUS = "claude-opus-5", "Opus 5 — ฉลาดที่สุด แพงที่สุด"
         SONNET = "claude-sonnet-5", "Sonnet 5 — สมดุล"
         HAIKU = "claude-haiku-4-5-20251001", "Haiku 4.5 — เร็วและถูกที่สุด"
@@ -1101,28 +1194,29 @@ class ChatSetting(models.Model):
                   "ระบบต่อท้ายให้เสมอและลบไม่ได้ · เว้นว่างได้",
     )
     provider = models.CharField(
-        max_length=16, choices=Provider.choices, default=Provider.ANTHROPIC, verbose_name="ผู้ให้บริการ",
+        max_length=16, choices=Provider.choices, default=Provider.GEMINI, verbose_name="ผู้ให้บริการ",
         help_text="คีย์ของแต่ละเจ้าเก็บใน .env ไม่ได้เก็บในฐานข้อมูล — "
-                  "Anthropic ใช้ ANTHROPIC_API_KEY · เจ้าอื่นใช้ CHAT_API_KEY (Ollama ไม่ต้องใช้คีย์)",
+                  "Gemini ใช้ GEMINI_API_KEY (หรือ GOOGLE_API_KEY) · Anthropic ใช้ ANTHROPIC_API_KEY · เจ้าอื่นใช้ CHAT_API_KEY",
     )
     model = models.CharField(
-        max_length=96, default=Model.OPUS, verbose_name="โมเดล",
-        help_text="Anthropic: claude-opus-5 · claude-sonnet-5 · claude-haiku-4-5-20251001 — "
-                  "Groq: llama-3.3-70b-versatile — OpenRouter: ใส่ชื่อที่ลงท้าย :free — "
+        max_length=96, default="gemini-2.5-flash", verbose_name="โมเดล",
+        help_text="Gemini: gemini-2.5-flash · gemini-2.0-flash — "
+                  "Anthropic: claude-opus-5 · claude-sonnet-5 · claude-haiku-4-5-20251001 — "
+                  "Groq: openai/gpt-oss-120b — OpenRouter: ใส่ชื่อที่ลงท้าย :free — "
                   "Ollama: llama3.2 · เปลี่ยนแล้วมีผลกับข้อความถัดไปทันที ไม่ต้อง deploy",
     )
     base_url = models.CharField(
-        max_length=200, blank=True, verbose_name="ที่อยู่ API (เฉพาะ OpenAI-compatible)",
+        max_length=200, blank=True, default="", verbose_name="ที่อยู่ API (เฉพาะ OpenAI-compatible)",
         help_text="Groq: https://api.groq.com/openai/v1 — "
                   "OpenRouter: https://openrouter.ai/api/v1 — "
                   "Ollama บนเครื่องเดียวกัน: http://host.docker.internal:11434/v1 · "
-                  "เว้นว่างเมื่อใช้ Anthropic",
+                  "เว้นว่างเมื่อใช้ Gemini หรือ Anthropic",
     )
     effort = models.CharField(
         max_length=8, choices=Effort.choices, default=Effort.LOW, verbose_name="ระดับการคิด",
     )
     max_tokens = models.PositiveIntegerField(
-        default=1500, verbose_name="ความยาวคำตอบสูงสุด (โทเค็น)",
+        default=1000, verbose_name="ความยาวคำตอบสูงสุด (โทเค็น)",
         help_text="ประมาณ 1,500 โทเค็น ≈ 3-4 ย่อหน้า · ยิ่งมากยิ่งจ่ายแพงต่อคำตอบ",
     )
     # `free_turns` and `paid_turns` used to live here. They could express exactly two allowances

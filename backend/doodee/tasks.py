@@ -1,11 +1,15 @@
 import logging
+from datetime import timedelta
 
 from celery import shared_task
 from django.contrib.auth.models import User
 from django.db import transaction
+from django.db.models import F
+from django.utils import timezone
 
+from . import ai_budget, consent, skin_vision
 from .analysis_engine import analyze_images
-from .models import Scan, Simulation
+from .models import ConsentEvent, Scan, Simulation, SimulationPreviewUsage
 from .simulation_engine import has_profile_images, related_union, simulate, source_for_scan, validate_selections
 from .storage import delete_image, download_image, upload_image
 
@@ -21,14 +25,17 @@ def _image_type(data):
     return "image/jpeg", "jpg"
 
 
-@shared_task
+@shared_task(acks_late=True, reject_on_worker_lost=True)
 def process_scan(scan_id):
-    scan = Scan.objects.filter(pk=scan_id).first()
-    if not scan or scan.status == Scan.Status.DELETION_PENDING:
-        return
+    with transaction.atomic():
+        scan = Scan.objects.select_for_update().filter(pk=scan_id, status=Scan.Status.QUEUED).first()
+        if not scan:
+            return
+        scan.status, scan.progress, scan.started_at = Scan.Status.PROCESSING, 10, timezone.now()
+        scan.attempt_count = F("attempt_count") + 1
+        scan.save(update_fields=("status", "progress", "started_at", "attempt_count", "updated_at"))
+        scan.refresh_from_db()
     try:
-        scan.status, scan.progress = Scan.Status.PROCESSING, 10
-        scan.save(update_fields=("status", "progress", "updated_at"))
         images = {view: download_image(name) for view, name in scan.image_objects.items()}
         scan.progress = 35
         scan.save(update_fields=("progress", "updated_at"))
@@ -47,17 +54,144 @@ def process_scan(scan_id):
         scan.error_code = "analysis_failed"
         scan.error_message = "Analysis failed. Please try again."
         logger.exception("scan %s raised an unexpected error", scan_id)
+    scan.finished_at = timezone.now()
     scan.save()
+    # After the save, so the task that follows reads a row that exists and is COMPLETED. A
+    # failure here must never reach the caller: the scan is already finished and the model's
+    # description is an addition to it, never the analysis itself.
+    transaction.on_commit(lambda: queue_skin_vision(scan))
 
 
-@shared_task
-def process_simulation(simulation_id):
-    simulation = Simulation.objects.select_related("scan").filter(pk=simulation_id).first()
-    if not simulation or simulation.status == Simulation.Status.DELETION_PENDING:
-        return
+# Roughly what one front photograph costs to send. Anthropic bills an image at about
+# width*height/750 tokens, and `skin_vision._encode` caps the long edge at 2,576px, so a portrait
+# frame lands near 6,600 — call it 8,000 with the prompt and the measurement block. Deliberately
+# generous: an under-estimate is admitted against the monthly ceiling and then spends more than it
+# held, which is the direction that overruns a budget rather than the direction that protects it.
+SKIN_VISION_RESERVE_INPUT_TOKENS = 8000
+
+
+def queue_skin_vision(scan):
+    """Send this scan's front photograph for a model-written description, if it should be.
+
+    Every condition here is a reason *not* to spend money or disclose a photograph, so the
+    default is no. Consent is checked again inside `skin_vision.analyze`, immediately before the
+    request goes out — this check is an optimisation that keeps the queue clear, not the
+    safeguard. A user who withdraws while the task waits is protected by the later check.
+    """
+    if scan.status != Scan.Status.COMPLETED or scan.is_demo:
+        return False
+    if scan.age_band != Scan.AgeBand.ADULT:
+        return False
+    if not scan.image_objects.get("front"):
+        return False
+    if not skin_vision.configured():
+        return False
+    if (scan.analysis_data or {}).get("skin_vision"):
+        return False
+
+    skin = (scan.analysis_data or {}).get("skin_analysis") or {}
+    if not skin.get("readable"):
+        # Nothing to describe. `skin_vision` asks the model to say what the *measured* values
+        # look like on this face; with no readable measurement it would be describing a face
+        # freehand, which its own system prompt is written to prevent. Sending the photograph
+        # anyway would be a disclosure bought for an answer with nothing under it.
+        return False
+    if not consent.granted(scan.user, ConsentEvent.Purpose.SKIN_VISION):
+        return False
+
     try:
-        simulation.status, simulation.progress = Simulation.Status.PROCESSING, 10
-        simulation.save(update_fields=("status", "progress", "updated_at"))
+        process_skin_vision.delay(str(scan.id))
+    except Exception:  # noqa: BLE001 - a dead broker must not fail a finished scan
+        logger.exception("could not queue skin vision for scan %s", scan.id)
+        return False
+    return True
+
+
+@shared_task(acks_late=True, reject_on_worker_lost=True)
+def process_skin_vision(scan_id):
+    """Describe one scan's front photograph, and charge it to the same monthly ceiling as chat.
+
+    Separate from `process_scan` on purpose. That task marks a scan FAILED on any exception, and
+    an unreachable provider must not undo measurements that succeeded. It is also the only place
+    in the product where a face photograph leaves the system, so it is worth being able to read
+    the whole path in one function.
+    """
+    from django.conf import settings
+
+    scan = Scan.objects.filter(pk=scan_id, status=Scan.Status.COMPLETED).first()
+    if not scan or (scan.analysis_data or {}).get("skin_vision"):
+        return
+    name = (scan.image_objects or {}).get("front")
+    if not name:
+        # The 30-day purge has already run. There is nothing left to send and never will be.
+        return
+
+    ledger = ai_budget.reserve(
+        scan.user, f"skin_vision:{scan.id}",
+        provider="anthropic", model=skin_vision.MODEL,
+        input_tokens=SKIN_VISION_RESERVE_INPUT_TOKENS, output_tokens=skin_vision.MAX_TOKENS,
+        price_in=settings.SKIN_VISION_PRICE_IN_USD_PER_MTOK,
+        price_out=settings.SKIN_VISION_PRICE_OUT_USD_PER_MTOK,
+    )
+    if ledger is None:
+        logger.info("skin vision skipped for scan %s: monthly budget reached", scan_id)
+        return
+    if ledger is False:
+        # Already reserved under this key, so this is a retry of a task that got as far as
+        # paying. Retrying the call would bill a second time for one photograph.
+        logger.info("skin vision already attempted for scan %s", scan_id)
+        return
+
+    try:
+        import cv2
+        import numpy as np
+
+        image = cv2.imdecode(np.frombuffer(download_image(name), np.uint8), cv2.IMREAD_COLOR)
+        if image is None:
+            raise skin_vision.SkinVisionUnavailable("front_image_unreadable")
+        payload = skin_vision.analyze(scan.user, image, scan.analysis_data.get("skin_analysis"))
+    except skin_vision.SkinVisionNotConsented:
+        # Withdrawn between the queue check and now. Correct outcome, not an error.
+        ai_budget.refund(ledger)
+        return
+    except skin_vision.SkinVisionUnavailable as exc:
+        logger.warning("skin vision unavailable for scan %s: %s", scan_id, exc)
+        ai_budget.refund(ledger)
+        return
+    except Exception:
+        logger.exception("skin vision raised an unexpected error for scan %s", scan_id)
+        ai_budget.refund(ledger)
+        return
+
+    usage = payload.pop("usage", {"input_tokens": 0, "output_tokens": 0})
+    with transaction.atomic():
+        fresh = Scan.objects.select_for_update().filter(pk=scan_id).first()
+        if not fresh or (fresh.analysis_data or {}).get("skin_vision"):
+            ai_budget.refund(ledger)
+            return
+        fresh.analysis_data = dict(fresh.analysis_data or {}, skin_vision=payload)
+        fresh.save(update_fields=("analysis_data", "updated_at"))
+    ai_budget.settle(
+        ledger, usage,
+        price_in=settings.SKIN_VISION_PRICE_IN_USD_PER_MTOK,
+        price_cached_in=settings.SKIN_VISION_PRICE_CACHED_IN_USD_PER_MTOK,
+        price_out=settings.SKIN_VISION_PRICE_OUT_USD_PER_MTOK,
+    )
+
+
+@shared_task(acks_late=True, reject_on_worker_lost=True)
+def process_simulation(simulation_id):
+    with transaction.atomic():
+        simulation = Simulation.objects.select_for_update().select_related("scan").filter(
+            pk=simulation_id, status=Simulation.Status.QUEUED,
+        ).first()
+        if not simulation:
+            return
+        simulation.status, simulation.progress, simulation.started_at = Simulation.Status.PROCESSING, 10, timezone.now()
+        simulation.attempt_count = F("attempt_count") + 1
+        simulation.save(update_fields=("status", "progress", "started_at", "attempt_count", "updated_at"))
+        simulation.refresh_from_db()
+    try:
         # Rows saved before stacking have no `selections`, so the old columns stand in for one.
         selections = simulation.selections or [{"region": simulation.region, "preset_id": simulation.preset_id}]
         presets, _targets = validate_selections(simulation.scan, selections, has_profile_images(simulation.scan))
@@ -65,13 +199,15 @@ def process_simulation(simulation_id):
         source_type, source_extension = _image_type(source)
         # The focus boxes are a viewer hint for the live preview; a stored simulation is served
         # as a plain pair of images, so nothing here would read them.
-        output, measurements, _focus = simulate(source, presets)
+        output_format = ".webp" if simulation.kind == Simulation.Kind.PREVIEW else ".png"
+        output, measurements, _focus = simulate(source, presets, output_format=output_format)
         base = f"users/{simulation.scan.user_id}/simulations/{simulation.id}"
         before_object = f"{base}/before.{source_extension}"
-        after_object = f"{base}/after.png"
+        after_extension = "webp" if simulation.kind == Simulation.Kind.PREVIEW else "png"
+        after_object = f"{base}/after.{after_extension}"
         upload_image(before_object, source, source_type)
         try:
-            upload_image(after_object, output, "image/png")
+            upload_image(after_object, output, f"image/{after_extension}")
         except Exception:
             delete_image(before_object)
             raise
@@ -90,7 +226,36 @@ def process_simulation(simulation_id):
         simulation.status, simulation.progress = Simulation.Status.FAILED, 100
         simulation.error_code = "simulation_failed"
         simulation.error_message = "Simulation failed. Your quota was restored."
+    simulation.finished_at = timezone.now()
     simulation.save()
+    if simulation.kind == Simulation.Kind.PREVIEW and simulation.status == Simulation.Status.FAILED:
+        SimulationPreviewUsage.objects.filter(
+            user_id=simulation.scan.user_id,
+            period=timezone.localdate().replace(day=1),
+            count__gt=0,
+        ).update(count=F("count") - 1)
+
+
+@shared_task
+def reconcile_heavy_jobs():
+    """Re-enqueue DB-authoritative work after a broker or worker restart."""
+    abandoned_uploads = list(Scan.objects.filter(
+        status=Scan.Status.UPLOADING, created_at__lt=timezone.now() - timedelta(hours=1),
+    ).values_list("id", flat=True)[:100])
+    Scan.objects.filter(id__in=abandoned_uploads).update(status=Scan.Status.DELETION_PENDING)
+    for scan_id in abandoned_uploads:
+        cleanup_scan.delay(str(scan_id))
+    stale = timezone.now() - timedelta(minutes=5)
+    Scan.objects.filter(status=Scan.Status.PROCESSING, started_at__lt=stale).update(
+        status=Scan.Status.QUEUED, progress=0, started_at=None,
+    )
+    Simulation.objects.filter(status=Simulation.Status.PROCESSING, started_at__lt=stale).update(
+        status=Simulation.Status.QUEUED, progress=0, started_at=None,
+    )
+    for scan_id in Scan.objects.filter(status=Scan.Status.QUEUED).order_by("created_at").values_list("id", flat=True)[:100]:
+        process_scan.delay(str(scan_id))
+    for simulation_id in Simulation.objects.filter(status=Simulation.Status.QUEUED).order_by("created_at").values_list("id", flat=True)[:100]:
+        process_simulation.delay(str(simulation_id))
 
 
 def _delete_objects(objects):

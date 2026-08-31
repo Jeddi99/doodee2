@@ -38,11 +38,14 @@ export default function SimulationScreen() {
   const hasProfiles = Boolean(scan?.has_profile_images);
   const blocked = active?.source_view === 'profile' && !hasProfiles;
   const before = saved?.before_url || preview?.before_url;
-  const after = saved?.after_url || preview?.after_data_url;
+  const after = saved?.after_url || preview?.after_url || preview?.after_data_url;
 
   const generate = async () => {
     setBusy(true); setError('');
-    try { setPreview(await api.previewSimulation(scan_id, region, presetId)); }
+    try {
+      const created: any = await api.previewSimulation(scan_id, region, presetId);
+      setPreview(created.already_near_reference ? created : await pollUntilSettled(created, () => api.getSimulation(created.id)));
+    }
     catch (cause: any) { setError(cause.message); }
     finally { setBusy(false); }
   };

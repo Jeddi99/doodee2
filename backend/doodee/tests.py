@@ -39,7 +39,7 @@ from .billing import (
     CouponError, activate, claw_back, create_order, discount_for, quote, sync_entitlement,
     validate_coupon,
 )
-from . import entitlement, payout, referral
+from . import consent, entitlement, payout, referral
 from .development_plan import build as build_development_plan
 from .notifications import notify
 from .tasks import send_renewal_reminders
@@ -108,6 +108,29 @@ class ScanApiTest(TestCase):
         self.user = User.objects.create_user("tester")
         self.client = APIClient()
         self.client.force_authenticate(self.user)
+        cache.clear()
+
+    @patch("doodee.views.process_scan.delay")
+    @patch("doodee.views.download_image")
+    @patch("doodee.views.signed_upload_url", side_effect=lambda name: f"https://storage.test/{name}")
+    def test_direct_upload_is_idempotent_and_only_queues_after_commit(self, signed, download, delay):
+        download.return_value = image_file("direct").read()
+        payload = {
+            "age_band": "adult", "reference_age_band": "18_35", "reference_profile": "neutral",
+            "reference_population": "TH", "analysis_consent_version": "2026.3", "scan_mode": "fast",
+            "capture_method": "web_camera",
+            "files": {view: "image/jpeg" for view in SCAN_VIEW_MODES["fast"]},
+        }
+        headers = {"HTTP_IDEMPOTENCY_KEY": "one-capture"}
+        first = self.client.post("/api/v1/scans/uploads/", payload, format="json", **headers)
+        second = self.client.post("/api/v1/scans/uploads/", payload, format="json", **headers)
+        self.assertEqual(first.status_code, 201, first.data)
+        self.assertEqual(first.data["id"], second.data["id"])
+        self.assertEqual(Scan.objects.count(), 1)
+        self.assertFalse(delay.called)
+        committed = self.client.post(f"/api/v1/scans/{first.data['id']}/commit/", {}, format="json")
+        self.assertEqual(committed.status_code, 202, committed.data)
+        delay.assert_called_once()
 
     @patch("doodee.views.process_scan.delay")
     @patch("doodee.views.upload_image", side_effect=lambda name, data, content_type: name)
@@ -560,6 +583,7 @@ class SimulationApiTest(TestCase):
         self.user.groups.add(Group.objects.get_or_create(name="pro_member")[0])
         self.client = APIClient()
         self.client.force_authenticate(self.user)
+        cache.clear()
 
     def scan(self, mode="full", analysis_data=None):
         images = {"front": "private/front"}
@@ -574,12 +598,26 @@ class SimulationApiTest(TestCase):
     def post(self, scan, **changes):
         payload = {"scan_id": str(scan.id), "region": "nose", "preset_id": "nose-narrow", "simulation_consent_version": "2026.2-local"}
         payload.update(changes)
-        return self.client.post("/api/v1/simulations/", payload, format="json")
+        return self.client.post("/api/v1/simulations/", payload, format="json", HTTP_IDEMPOTENCY_KEY=os.urandom(8).hex())
 
     def preview(self, scan, **changes):
         payload = {"scan_id": str(scan.id), "region": "nose", "preset_id": "nose-narrow", "simulation_consent_version": "2026.3-local"}
         payload.update(changes)
-        return self.client.post("/api/v1/simulations/preview/", payload, format="json")
+        return self.client.post("/api/v1/simulations/preview/", payload, format="json", HTTP_IDEMPOTENCY_KEY=os.urandom(8).hex())
+
+    @patch("doodee.views.process_simulation.delay")
+    def test_preview_with_idempotency_header_is_an_async_short_lived_job(self, delay):
+        response = self.client.post(
+            "/api/v1/simulations/preview/",
+            {"scan_id": str(self.scan().id), "region": "nose", "preset_id": "nose-narrow",
+             "simulation_consent_version": "2026.3-local"},
+            format="json", HTTP_IDEMPOTENCY_KEY="preview-1",
+        )
+        self.assertEqual(response.status_code, 202, response.data)
+        simulation = Simulation.objects.get(id=response.data["id"])
+        self.assertEqual(simulation.kind, Simulation.Kind.PREVIEW)
+        self.assertLessEqual(simulation.expires_at, timezone.now() + timedelta(hours=1, seconds=5))
+        delay.assert_called_once()
 
     @patch("doodee.views.process_simulation.delay")
     def test_accepts_one_closed_preset_and_records_consent(self, delay):
@@ -612,18 +650,15 @@ class SimulationApiTest(TestCase):
         self.assertTrue(ScanSerializer(self.scan("standard")).data["has_profile_images"])
         self.assertFalse(ScanSerializer(self.scan("fast")).data["has_profile_images"])
 
-    @patch("doodee.views.signed_url", return_value="https://signed.test/front")
-    @patch("doodee.views.simulate", return_value=rendered({"key": "alar_width", "unit": "ratio"}))
-    @patch("doodee.views.source_for_scan", return_value=(b"source", "private/front", "front"))
-    def test_reference_target_runs_through_the_same_preview_path(self, source, simulate_preview, signed):
+    @patch("doodee.views.process_simulation.delay")
+    def test_reference_target_runs_through_the_same_preview_path(self, delay):
         response = self.preview(self.scan(), preset_id="reference:nose")
-        self.assertEqual(response.status_code, 200, response.data)
-        self.assertFalse(response.data["already_near_reference"])
+        self.assertEqual(response.status_code, 202, response.data)
+        self.assertEqual(response.data["kind"], "preview")
         self.assertEqual(response.data["cohort_match"], "within_reference_age_range")
         # Entitled accounts are unmetered, so there is no countdown to report.
         self.assertIsNone(response.data["entitlement"]["preview_remaining"])
-        # The client cannot compute this itself: it has no landmarks for the stored scan.
-        self.assertEqual(response.data["focus_box"], FOCUS_BOX)
+        delay.assert_called_once()
 
     def test_a_face_already_at_the_mean_costs_no_quota(self):
         response = self.preview(self.scan(), region="chin", preset_id="reference:chin")
@@ -657,10 +692,8 @@ class SimulationApiTest(TestCase):
             Simulation.objects.create(scan=scan, region="nose", preset_id="nose-narrow", status="completed", model_version="local", expires_at=timezone.now() + timedelta(days=1))
         self.assertEqual(self.post(scan).status_code, 429)
 
-    @patch("doodee.views.signed_url", return_value="https://signed.test/front")
-    @patch("doodee.views.simulate", return_value=rendered({"key": "alar_width_ratio"}))
-    @patch("doodee.views.source_for_scan", return_value=(b"source", "private/front", "front"))
-    def test_an_unlimited_plan_still_records_previews_but_never_refuses_one(self, source, simulate_preview, signed):
+    @patch("doodee.views.process_simulation.delay")
+    def test_an_unlimited_plan_still_records_previews_but_never_refuses_one(self, delay):
         """Every plan is metered now, and one of them has no ceiling.
 
         Previews used to be counted only for free accounts, which the lock made unreachable — so
@@ -673,21 +706,21 @@ class SimulationApiTest(TestCase):
         payload = {"scan_id": str(scan.id), "region": "nose", "preset_id": "nose-narrow", "simulation_consent_version": "2026.3-local"}
         Plan.objects.filter(code="member").update(simulation_previews_per_month=-1)
         for _ in range(6):
-            self.assertEqual(self.client.post("/api/v1/simulations/preview/", payload, format="json").status_code, 200)
+            self.assertEqual(self.client.post("/api/v1/simulations/preview/", payload, format="json", HTTP_IDEMPOTENCY_KEY=os.urandom(8).hex()).status_code, 202)
+            Simulation.objects.filter(status=Simulation.Status.QUEUED).update(status=Simulation.Status.PROCESSING)
         self.assertEqual(SimulationPreviewUsage.objects.get(user=self.user).count, 6)
         # null, never a number: a plan sold as unlimited must not show the user a countdown.
         self.assertIsNone(self.client.get("/api/v1/session/").data["preview_remaining"])
 
-    @patch("doodee.views.signed_url", return_value="https://signed.test/front")
-    @patch("doodee.views.simulate", return_value=rendered({"key": "alar_width_ratio"}))
-    @patch("doodee.views.source_for_scan", return_value=(b"source", "private/front", "front"))
-    def test_a_metered_plan_is_refused_once_its_monthly_previews_are_gone(self, source, simulate_preview, signed):
+    @patch("doodee.views.process_simulation.delay")
+    def test_a_metered_plan_is_refused_once_its_monthly_previews_are_gone(self, delay):
         scan = self.scan()
         payload = {"scan_id": str(scan.id), "region": "nose", "preset_id": "nose-narrow", "simulation_consent_version": "2026.3-local"}
         Plan.objects.filter(code="member").update(simulation_previews_per_month=2)
         for _ in range(2):
-            self.assertEqual(self.client.post("/api/v1/simulations/preview/", payload, format="json").status_code, 200)
-        blocked = self.client.post("/api/v1/simulations/preview/", payload, format="json")
+            self.assertEqual(self.client.post("/api/v1/simulations/preview/", payload, format="json", HTTP_IDEMPOTENCY_KEY=os.urandom(8).hex()).status_code, 202)
+            Simulation.objects.filter(status=Simulation.Status.QUEUED).update(status=Simulation.Status.PROCESSING)
+        blocked = self.client.post("/api/v1/simulations/preview/", payload, format="json", HTTP_IDEMPOTENCY_KEY=os.urandom(8).hex())
         self.assertEqual(blocked.status_code, 429)
         self.assertEqual(blocked.data["detail"], "monthly_preview_quota_reached")
         # 429 rather than 403: the plan does grant simulations, this month\'s are spent. The
@@ -708,6 +741,7 @@ class StackedSimulationTest(TestCase):
         self.user.groups.add(Group.objects.get_or_create(name="pro_member")[0])
         self.client = APIClient()
         self.client.force_authenticate(self.user)
+        cache.clear()
         self.scan = Scan.objects.create(
             user=self.user, age_band="adult", scan_mode="standard", status="completed",
             image_objects={"front": "private/front", "left_profile": "private/left", "right_profile": "private/right"},
@@ -722,7 +756,7 @@ class StackedSimulationTest(TestCase):
     def preview(self, scan=None, **changes):
         payload = {"scan_id": str((scan or self.scan).id), "simulation_consent_version": "2026.3-local"}
         payload.update(changes)
-        return self.client.post("/api/v1/simulations/preview/", payload, format="json")
+        return self.client.post("/api/v1/simulations/preview/", payload, format="json", HTTP_IDEMPOTENCY_KEY=os.urandom(8).hex())
 
     STACK = [{"region": "jaw", "preset_id": "jaw-narrow"}, {"region": "chin", "preset_id": "chin-long"}]
 
@@ -732,29 +766,21 @@ class StackedSimulationTest(TestCase):
                  {"key": "chin_height_ratio", "region": "chin", "capped": True}],
                 {"jaw": FOCUS_BOX, "chin": FOCUS_BOX})
 
-    @patch("doodee.views.signed_url", return_value="https://signed.test/front")
-    @patch("doodee.views.simulate")
-    @patch("doodee.views.source_for_scan", return_value=(b"source", "private/front", "front"))
-    def test_a_stack_renders_every_region_in_one_response(self, source, render, signed):
-        render.return_value = self.stacked_render()
+    @patch("doodee.views.process_simulation.delay")
+    def test_a_stack_queues_every_region_in_one_job(self, delay):
         response = self.preview(selections=self.STACK)
-        self.assertEqual(response.status_code, 200, response.data)
-        self.assertEqual([p["id"] for p in render.call_args.args[1]], ["jaw-narrow", "chin-long"])
-        self.assertEqual([m["region"] for m in response.data["measurements"]], ["jaw", "chin"])
-        self.assertEqual(sorted(response.data["focus_boxes"]), ["chin", "jaw"])
+        self.assertEqual(response.status_code, 202, response.data)
+        self.assertEqual(response.data["selections"], self.STACK)
         self.assertEqual(response.data["related_procedures"],
                          ["Jaw contouring", "Mandibular angle reduction", "Chin filler", "Chin implant", "Genioplasty"])
 
-    @patch("doodee.views.signed_url", return_value="https://signed.test/front")
-    @patch("doodee.views.simulate", return_value=rendered({"key": "alar_width_ratio"}))
-    @patch("doodee.views.source_for_scan", return_value=(b"source", "private/front", "front"))
-    def test_the_old_single_preset_request_is_unchanged(self, source, render, signed):
+    @patch("doodee.views.process_simulation.delay")
+    def test_the_old_single_preset_request_still_queues(self, delay):
         """`apps/mobile` sends this shape and reads `preset` and `focus_box`, not the plurals."""
         response = self.preview(region="nose", preset_id="nose-narrow")
-        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(response.status_code, 202, response.data)
         self.assertEqual(response.data["preset"]["id"], "nose-narrow")
-        self.assertEqual(response.data["focus_box"], FOCUS_BOX)
-        self.assertEqual(len(response.data["measurements"]), 1)
+        self.assertEqual(response.data["selections"], [{"region": "nose", "preset_id": "nose-narrow"}])
 
     def test_sending_both_request_shapes_is_refused(self):
         response = self.preview(selections=self.STACK, region="nose", preset_id="nose-narrow")
@@ -792,7 +818,7 @@ class StackedSimulationTest(TestCase):
     @patch("doodee.views.process_simulation.delay")
     def test_saving_a_stack_keeps_the_old_columns_populated(self, delay):
         payload = {"scan_id": str(self.scan.id), "selections": self.STACK, "simulation_consent_version": "2026.2-local"}
-        response = self.client.post("/api/v1/simulations/", payload, format="json")
+        response = self.client.post("/api/v1/simulations/", payload, format="json", HTTP_IDEMPOTENCY_KEY="stack-save")
         self.assertEqual(response.status_code, 202, response.data)
         simulation = Simulation.objects.get()
         self.assertEqual(simulation.selections, self.STACK)
@@ -821,7 +847,7 @@ class SimulationLockTest(TestCase):
         cache.clear()
 
     def preview(self):
-        return self.client.post("/api/v1/simulations/preview/", self.payload, format="json")
+        return self.client.post("/api/v1/simulations/preview/", self.payload, format="json", HTTP_IDEMPOTENCY_KEY=os.urandom(8).hex())
 
     def create(self):
         return self.client.post("/api/v1/simulations/", self.payload, format="json")
@@ -838,7 +864,7 @@ class SimulationLockTest(TestCase):
         code = PromoCode.objects.create(code="UNLOCKME1", days=7)
         self.client.post("/api/v1/redeem/", {"code": code.code}, format="json")
         self.assertIs(self.client.get("/api/v1/session/").data["simulation_locked"], False)
-        self.assertEqual(self.preview().status_code, 200)
+        self.assertEqual(self.preview().status_code, 202)
 
         # Same account once the window has passed: no scheduled job, just an elapsed date.
         PromoRedemption.objects.filter(user=self.user).update(expires_at=timezone.now() - timedelta(seconds=1))
@@ -1089,7 +1115,7 @@ class AnalyzeImagesModeTest(TestCase):
         with patch("doodee.analysis_engine._decode", return_value=image), patch(
             "doodee.analysis_engine._landmarks",
             side_effect=lambda _image: (points, next(poses)),
-        ), patch("doodee.analysis_engine._skin_metrics", return_value=[]):
+        ), patch("doodee.analysis_engine.analyze_skin", return_value={}):
             result = analyze_images(images, scan_mode="fast")
 
         self.assertEqual(result["analysis_tier"], "fast")
@@ -1710,6 +1736,72 @@ class ChatProviderRoutingTest(TestCase):
         with self.assertRaises(DjangoValidationError):
             config.full_clean()
 
+    def test_choosing_gemini_calls_gemini_endpoint_and_tracks_usage(self):
+        config = ChatSetting.current()
+        config.provider = ChatSetting.Provider.GEMINI
+        config.model = "gemini-2.5-flash"
+        config.save()
+        body = {
+            "candidates": [{
+                "content": {"parts": [{"text": "คำตอบจาก Gemini 2.5 Flash"}], "role": "model"},
+                "finishReason": "STOP"
+            }],
+            "usageMetadata": {
+                "promptTokenCount": 120,
+                "candidatesTokenCount": 45,
+                "totalTokenCount": 165,
+                "cachedContentTokenCount": 30,
+            }
+        }
+        response = MagicMock()
+        response.read.return_value = json.dumps(body).encode()
+        response.__enter__ = lambda s: s
+        response.__exit__ = lambda *a: False
+        with patch("doodee.chat._client") as anthropic_client, \
+             patch("doodee.chat.urlopen", return_value=response) as mock_urlopen, \
+             patch.dict(os.environ, {"GEMINI_API_KEY": "gemini-test-key"}):
+            text, usage = chat_reply("sys prompt", [{"role": "user", "content": "hi"}],
+                                     model=config.model, provider=config.provider)
+        self.assertEqual(text, "คำตอบจาก Gemini 2.5 Flash")
+        self.assertEqual(usage["input_tokens"], 120)
+        self.assertEqual(usage["output_tokens"], 45)
+        self.assertEqual(usage["cached_input_tokens"], 30)
+        anthropic_client.assert_not_called()
+        self.assertTrue(mock_urlopen.called)
+
+    @override_settings(CHAT_ENABLED=True)
+    def test_gemini_enabled_with_key(self):
+        config = ChatSetting.current()
+        config.provider = ChatSetting.Provider.GEMINI
+        config.save()
+        with patch.dict(os.environ, {"GEMINI_API_KEY": ""}, clear=True):
+            self.assertFalse(chat_enabled())
+        with patch.dict(os.environ, {"GEMINI_API_KEY": "AIzaSy..."}):
+            self.assertTrue(chat_enabled())
+
+    @override_settings(CHAT_ENABLED=True)
+    def test_a_key_meant_for_another_provider_does_not_enable_gemini(self):
+        """The failure this is a regression test for, which cost an afternoon to find.
+
+        `CHAT_API_KEY` is where the OpenAI-compatible providers keep their key. It counted here
+        as a third fallback, so a Groq key left in it reported chat as available, the client
+        showed a working chat box, and every message came back 502 from Google saying the key
+        was not valid. Nothing on the way through said "wrong variable".
+
+        The existing test above misses it because `clear=True` empties `CHAT_API_KEY` along with
+        everything else, which is the one arrangement in which the fallback cannot fire.
+        """
+        config = ChatSetting.current()
+        config.provider = ChatSetting.Provider.GEMINI
+        config.save()
+        with patch.dict(os.environ, {"CHAT_API_KEY": "gsk_a_groq_key", "GEMINI_API_KEY": "", "GOOGLE_API_KEY": ""}):
+            self.assertFalse(chat_enabled())
+            with self.assertRaises(ChatUnavailable) as caught:
+                chat_reply("sys", [{"role": "user", "content": "hi"}], provider="gemini")
+            # The two lookups have to agree: a deployment told the feature is off must not find
+            # it answering anyway.
+            self.assertEqual(str(caught.exception), "gemini_api_key_missing")
+
 
 class ChatRoleTest(TestCase):
     """Three voices, one set of rules. The rules are the point of the tests."""
@@ -1791,13 +1883,17 @@ class ChatRoleRoutingTest(TestCase):
         self.user = User.objects.create_user("roleuser")
         self.client = APIClient()
         self.client.force_authenticate(self.user)
+        cache.clear()
         self.env = patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-key"})
         self.env.start()
         self.addCleanup(self.env.stop)
+        config = ChatSetting.current()
+        config.provider, config.model, config.base_url = "anthropic", "claude-opus-5", ""
+        config.save()
 
     def post(self, **body):
         body.setdefault("chat_consent_version", "2026.3-chat")
-        return self.client.post("/api/v1/chat/", body, format="json")
+        return self.client.post("/api/v1/chat/", body, format="json", HTTP_IDEMPOTENCY_KEY=os.urandom(8).hex())
 
     def _system_text(self, client):
         return client.return_value.messages.create.call_args.kwargs["system"][0]["text"]
@@ -1806,6 +1902,12 @@ class ChatRoleRoutingTest(TestCase):
         """The privacy line under the composer names this recipient. Naming the wrong one is a
         false statement about where a user's measurements went."""
         config = ChatSetting.current()
+        config.provider = ChatSetting.Provider.GEMINI
+        config.save()
+        self.assertEqual(self.client.get("/api/v1/session/").data["chat_provider"], "Google Gemini")
+
+        config.provider = ChatSetting.Provider.ANTHROPIC
+        config.save()
         self.assertEqual(self.client.get("/api/v1/session/").data["chat_provider"], "Anthropic")
 
         config.provider = ChatSetting.Provider.OPENAI
@@ -2027,6 +2129,7 @@ class ChatApiTest(TestCase):
         self.user = User.objects.create_user("chatuser")
         self.client = APIClient()
         self.client.force_authenticate(self.user)
+        cache.clear()
         # Small allowances so a quota test is three requests rather than fifty. These used to be
         # CHAT_FREE_TURNS / CHAT_PAID_TURNS overrides; the ceiling is a per-plan column now, so
         # the test sets the same thing an operator would edit in the admin. `member` is the plan
@@ -2041,12 +2144,15 @@ class ChatApiTest(TestCase):
         self.env = patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-key"})
         self.env.start()
         self.addCleanup(self.env.stop)
+        config = ChatSetting.current()
+        config.provider, config.model, config.base_url = "anthropic", "claude-opus-5", ""
+        config.save()
 
     def post(self, **body):
         # Free text requires chat consent; the tests below are about everything else, so it
         # is supplied by default and withheld only where that is the point.
         body.setdefault("chat_consent_version", "2026.3-chat")
-        return self.client.post("/api/v1/chat/", body, format="json")
+        return self.client.post("/api/v1/chat/", body, format="json", HTTP_IDEMPOTENCY_KEY=os.urandom(8).hex())
 
     def test_a_typed_question_without_consent_is_refused_before_anything_is_sent(self):
         with patch("doodee.chat._client") as client:
@@ -2447,8 +2553,8 @@ class EntitlementTest(TestCase):
     def test_the_paid_tiers_match_what_requirement_md_asks_for(self):
         plus, pro = self.plan("plus"), self.plan("pro")
         self.assertEqual(plus.price_satang, 49900)
-        self.assertEqual(plus.simulation_previews_per_month, 20)
-        self.assertEqual(plus.chat_turns_per_month, 50)
+        self.assertEqual(plus.simulation_previews_per_month, 10)
+        self.assertEqual(plus.chat_turns_per_month, 100)
         self.assertEqual(pro.price_satang, 79900)
         self.assertEqual(pro.simulation_previews_per_month, Plan.UNLIMITED)
         self.assertEqual(pro.chat_turns_per_month, Plan.UNLIMITED)
@@ -3538,7 +3644,7 @@ class ProfileApiTest(TestCase):
 
     def test_metered_quotas_report_what_is_left(self):
         activate(create_order(self.user, Plan.objects.get(code="plus")))
-        self.assertEqual(self.get()["quotas"]["preview_remaining"], 20)
+        self.assertEqual(self.get()["quotas"]["preview_remaining"], 10)
 
     def test_an_unspent_grant_appears_as_a_benefit_with_enough_to_describe_it(self):
         CouponGrant.objects.create(user=self.user, coupon=Coupon.objects.get(code="FRIEND10"))
@@ -4033,7 +4139,7 @@ class BillingApiTest(TestCase):
         self.assertIs(session["score_card_redacted"], False)
         self.assertIs(session["simulation_locked"], False)
         self.assertIs(session["development_plan_enabled"], True)
-        self.assertEqual(session["preview_remaining"], 20)
+        self.assertEqual(session["preview_remaining"], 10)
 
     def test_session_revokes_a_lapsed_plan_without_waiting_for_a_cron(self):
         subscription = activate(create_order(self.user, Plan.objects.get(code="member")))
@@ -4443,6 +4549,10 @@ class ChatFactsTest(TestCase):
         self.user = User.objects.create_user("factuser")
         self.client = APIClient()
         self.client.force_authenticate(self.user)
+        cache.clear()
+        config = ChatSetting.current()
+        config.provider, config.model, config.base_url = "anthropic", "claude-opus-5", ""
+        config.save()
         self.scan = create_demo_scan(self.user)
         env = patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-key"})
         env.start()
@@ -4466,7 +4576,7 @@ class ChatFactsTest(TestCase):
         # Harmless on topic posts, which never reach the consent check; needed by the one
         # test here that types a follow-up.
         body.setdefault("chat_consent_version", "2026.3-chat")
-        return self.client.post("/api/v1/chat/", body, format="json")
+        return self.client.post("/api/v1/chat/", body, format="json", HTTP_IDEMPOTENCY_KEY=os.urandom(8).hex())
 
     def test_every_topic_answers_from_the_scan(self):
         topics = [t["topic"] for t in self.client.get("/api/v1/chat/facts/").data["topics"]]
@@ -5542,3 +5652,935 @@ class SingletonSettingQueryCountTest(TestCase):
         config.chat_hourly_ceiling = original + 7
         config.save()
         self.assertEqual(SiteSetting.current().chat_hourly_ceiling, original + 7)
+
+
+class SkinEngineTest(SimpleTestCase):
+    """The engine's defining property is that a change of light is not a change of skin.
+
+    Its predecessor failed exactly here: `gray.std()/64` and a Laplacian variance both moved
+    with the room, which is why those three metrics were computed on every scan and shown on
+    none. `test_signals_survive_an_exposure_change` is the regression test for that failure and
+    the reason this module was written; the rest guard the honesty rails around it.
+    """
+
+    # Where each region is painted, as (x0, y0, x1, y1) in a 600x600 frame. Laid out like a
+    # face so the T-zone and cheek comparisons mean what their names say.
+    LAYOUT = {
+        "forehead": (200, 60, 400, 150),
+        "left_cheek": (120, 300, 250, 400),
+        "right_cheek": (350, 300, 480, 400),
+        "nose": (270, 200, 330, 330),
+        "left_undereye": (150, 230, 260, 280),
+        "right_undereye": (340, 230, 450, 280),
+        "chin": (250, 450, 350, 540),
+        "perioral": (240, 390, 360, 445),
+        "_sclera_left": (170, 180, 240, 215),
+        "_sclera_right": (360, 180, 430, 215),
+    }
+    # BGR, a warm mid tone chosen low enough that +30% exposure still fits in 8 bits. At a
+    # brighter base the blue channel clips and the "brighter" frame is a damaged image rather
+    # than the same face in more light, which would test clipping instead of exposure.
+    BASE_SKIN = (120, 140, 165)
+
+    def _landmarks(self):
+        """A 468-point mesh whose region indices bound the rectangles above."""
+        from doodee.skin_engine import REGIONS, SCLERA_REGIONS
+
+        points = np.full((468, 3), 0.5, dtype=np.float64)
+        groups = dict(REGIONS)
+        groups["_sclera_left"] = SCLERA_REGIONS["left"]
+        groups["_sclera_right"] = SCLERA_REGIONS["right"]
+
+        for name, indices in groups.items():
+            x0, y0, x1, y1 = self.LAYOUT[name]
+            # Spread the indices around the rectangle's border so the convex hull fills it.
+            for position, index in enumerate(indices):
+                fraction = position / max(len(indices) - 1, 1)
+                if position % 2 == 0:
+                    x, y = x0 + (x1 - x0) * fraction, y0
+                else:
+                    x, y = x0 + (x1 - x0) * (1 - fraction), y1
+                points[index] = (x / 600, y / 600, 0.0)
+
+        # Face width, read by the texture band-pass.
+        points[234] = (100 / 600, 0.5, 0.0)
+        points[454] = (500 / 600, 0.5, 0.0)
+        return points
+
+    def _image(self, undereye_delta=0, cheek_red=0, tzone_shine=0, cast=(1.0, 1.0, 1.0)):
+        image = np.zeros((600, 600, 3), dtype=np.uint8)
+        image[:, :] = self.BASE_SKIN
+
+        for name, (x0, y0, x1, y1) in self.LAYOUT.items():
+            colour = np.array(self.BASE_SKIN, dtype=np.float32)
+            if name.startswith("_sclera"):
+                colour = np.array([190.0, 190.0, 190.0], dtype=np.float32)
+            elif "undereye" in name:
+                colour -= undereye_delta
+            elif "cheek" in name:
+                colour += np.array([-cheek_red, -cheek_red, cheek_red], dtype=np.float32)
+            elif name in ("forehead", "nose"):
+                colour += tzone_shine
+            image[y0:y1, x0:x1] = np.clip(colour, 0, 255).astype(np.uint8)
+
+        # A little noise so texture has something to measure and the patches are not perfectly
+        # flat in a way no camera produces.
+        rng = np.random.default_rng(7)
+        image = np.clip(image.astype(np.float32) + rng.normal(0, 2.0, image.shape), 0, 255)
+        return np.clip(image * np.array(cast, dtype=np.float32), 0, 255).astype(np.uint8)
+
+    def test_signals_survive_an_exposure_change(self):
+        """The same face under brighter and dimmer light reads the same.
+
+        Also asserts what the old engine did instead: an absolute whole-face statistic moves a
+        great deal across the very same pair of frames. Without that half, a tight tolerance
+        here could pass simply because the test images barely differ.
+        """
+        from doodee.skin_engine import analyze_skin
+
+        points = self._landmarks()
+        base = self._image(undereye_delta=22, cheek_red=10, tzone_shine=18)
+        darker = np.clip(base.astype(np.float32) * 0.7, 0, 255).astype(np.uint8)
+        brighter = np.clip(base.astype(np.float32) * 1.3, 0, 255).astype(np.uint8)
+
+        dim = analyze_skin(darker, points)["signals"]
+        bright = analyze_skin(brighter, points)["signals"]
+
+        def drift(first, second):
+            """Movement as a share of the larger reading.
+
+            Relative rather than absolute because these quantities have different natural
+            sizes, and because the measurement being compared against — a standard deviation —
+            scales linearly with brightness, so an absolute threshold would flatter whichever
+            of the two happened to sit on a smaller scale.
+            """
+            return abs(first - second) / max(abs(first), abs(second), 1e-9) * 100
+
+        for key in ("undereye_shadow", "cheek_redness", "tone_spread"):
+            self.assertIsNotNone(dim[key], key)
+            self.assertLess(
+                drift(dim[key], bright[key]), 8.0,
+                f"{key} moved with the light: {dim[key]} vs {bright[key]}",
+            )
+
+        # The measurement this replaces, over the identical pair. A standard deviation of grey
+        # is proportional to exposure, so this moves by roughly the ratio of the two gains.
+        old_style = [
+            float(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY).std())
+            for frame in (darker, brighter)
+        ]
+        self.assertGreater(
+            drift(*old_style), 25.0,
+            "the frames are too similar for this test to prove anything",
+        )
+
+    def test_undereye_shadow_tracks_the_face_not_the_frame(self):
+        from doodee.skin_engine import analyze_skin
+
+        points = self._landmarks()
+        flat = analyze_skin(self._image(undereye_delta=0), points)["signals"]["undereye_shadow"]
+        shadowed = analyze_skin(self._image(undereye_delta=30), points)["signals"]["undereye_shadow"]
+        self.assertGreater(shadowed, flat + 3)
+
+    def test_redness_is_measured_against_the_forehead(self):
+        from doodee.skin_engine import analyze_skin
+
+        points = self._landmarks()
+        plain = analyze_skin(self._image(cheek_red=0), points)["signals"]["cheek_redness"]
+        flushed = analyze_skin(self._image(cheek_red=22), points)["signals"]["cheek_redness"]
+        self.assertGreater(flushed, plain + 2)
+
+    def test_a_colour_cast_is_reported_rather_than_measured_through(self):
+        from doodee.skin_engine import analyze_skin
+
+        result = analyze_skin(self._image(cast=(1.6, 0.9, 0.75)), self._landmarks())
+        self.assertFalse(result["readable"])
+        self.assertTrue(
+            any(advisory.startswith("skin_colour_cast") for advisory in result["advisories"]),
+            result["advisories"],
+        )
+
+    def test_side_lighting_is_reported(self):
+        from doodee.skin_engine import analyze_skin
+
+        image = self._image()
+        image[:, :300] = np.clip(image[:, :300].astype(np.float32) * 0.5, 0, 255).astype(np.uint8)
+        result = analyze_skin(image, self._landmarks())
+        self.assertTrue(
+            any(advisory.startswith("skin_uneven_lighting") for advisory in result["advisories"]),
+            result["advisories"],
+        )
+
+    def test_an_unreadable_frame_returns_advisories_instead_of_raising(self):
+        """A scan that measured the face well must not fail because the light was wrong."""
+        from doodee.skin_engine import analyze_skin
+
+        result = analyze_skin(np.zeros((600, 600, 3), dtype=np.uint8), self._landmarks())
+        self.assertFalse(result["readable"])
+        self.assertTrue(result["advisories"])
+        self.assertIn("signals", result)
+
+    def test_trends_refuse_to_span_different_capture_conditions(self):
+        from doodee.skin_engine import analyze_skin, comparable
+
+        points = self._landmarks()
+        base = self._image(undereye_delta=20)
+        same = analyze_skin(base, points)
+        again = analyze_skin(self._image(undereye_delta=20), points)
+        self.assertTrue(comparable(same, again))
+
+        much_brighter = analyze_skin(
+            np.clip(base.astype(np.float32) * 1.6, 0, 255).astype(np.uint8), points,
+        )
+        self.assertFalse(comparable(same, much_brighter))
+
+    def test_a_version_bump_breaks_the_trend_line(self):
+        from doodee.skin_engine import analyze_skin, comparable
+
+        points = self._landmarks()
+        current = analyze_skin(self._image(), points)
+        older = dict(current, engine_version="2025.0-old")
+        self.assertFalse(comparable(older, current))
+
+    def test_one_saturated_channel_is_caught_even_when_the_grey_looks_fine(self):
+        """The defect `_clipped_fraction` exists to close, on synthetic pixels.
+
+        A patch painted with red pinned at 254 and the other two channels mid-range has a
+        greyscale nowhere near the top of the scale — the old test measured exactly that grey
+        and counted nothing, while the a* signals it feeds were being computed from a channel
+        that had already thrown its information away.
+
+        Painted only over the cheeks, so the check has to be per region rather than per frame.
+        """
+        from doodee.skin_engine import MAX_CLIPPED_FRACTION, analyze_skin
+
+        image = self._image()
+        for name in ("left_cheek", "right_cheek"):
+            x0, y0, x1, y1 = self.LAYOUT[name]
+            image[y0:y1, x0:x1] = (110, 150, 254)  # BGR: red pinned, grey ~175
+
+        result = analyze_skin(image, self._landmarks())
+        self.assertGreater(result["capture"]["max_clipped_fraction"], MAX_CLIPPED_FRACTION)
+        self.assertTrue(
+            any(a.startswith("skin_clipped_highlights") for a in result["advisories"]),
+            result["advisories"],
+        )
+        self.assertFalse(result["readable"])
+
+    def test_the_clipping_guard_does_not_fire_on_an_ordinary_bright_frame(self):
+        """The other half of the fix: it must not start refusing photographs that were fine.
+
+        `BASE_SKIN` at 1.3x reaches 214 at its highest channel, well short of the range end, so
+        every frame this class builds stays readable. Pinned as a test because the failure mode
+        of an over-eager clipping check is invisible — it looks like the light was bad.
+        """
+        from doodee.skin_engine import analyze_skin
+
+        base = self._image(undereye_delta=22, cheek_red=10, tzone_shine=18)
+        for label, frame in (
+            ("base", base),
+            ("dimmer", np.clip(base.astype(np.float32) * 0.7, 0, 255).astype(np.uint8)),
+            ("brighter", np.clip(base.astype(np.float32) * 1.3, 0, 255).astype(np.uint8)),
+        ):
+            with self.subTest(frame=label):
+                result = analyze_skin(frame, self._landmarks())
+                self.assertEqual(result["capture"]["max_clipped_fraction"], 0.0)
+
+    def test_a_broken_trend_says_which_check_stopped_it(self):
+        """`comparable` answers yes or no; the screen has to say why the line stopped."""
+        from doodee.skin_engine import BREAK_ENGINE_VERSION, analyze_skin, comparison_break
+
+        points = self._landmarks()
+        current = analyze_skin(self._image(), points)
+        self.assertIsNone(comparison_break(current, current))
+        self.assertEqual(
+            comparison_break(dict(current, engine_version="2025.0-old"), current),
+            BREAK_ENGINE_VERSION,
+        )
+
+
+
+
+
+class SkinTrendEndpointTest(TestCase):
+    """A line drawn between two scans is a claim that they can be compared.
+
+    `comparison_break` decides when that claim holds, and this route is the first thing in the
+    product to call it. The tests are all about the negative cases, because the failure mode is
+    silent: a chart that joins two photographs taken in different rooms looks exactly like a
+    chart that means something.
+    """
+
+    def setUp(self):
+        self.user = User.objects.create_user("skin-trend")
+        FirebaseIdentity.objects.create(user=self.user, firebase_uid="skin-trend-uid")
+        self.client = APIClient()
+        self.client.force_authenticate(self.user)
+
+    def _scan(self, *, brightness=140.0, version="2026.2-clipping", readable=True, is_demo=False, **kwargs):
+        return Scan.objects.create(
+            user=self.user,
+            status=Scan.Status.COMPLETED,
+            progress=100,
+            age_band=Scan.AgeBand.ADULT,
+            reference_age_band="18_35",
+            reference_profile="neutral",
+            reference_population="TH",
+            scan_mode=Scan.ScanMode.SKIN,
+            image_objects={},
+            is_demo=is_demo,
+            analysis_data={"skin_analysis": {
+                "engine_version": version,
+                "readable": readable,
+                "signals": {
+                    "undereye_shadow": 11.0, "tone_spread": 14.0, "cheek_redness": -2.0,
+                    "nose_redness": -0.5, "tzone_shine": -0.2, "texture": 0.017,
+                },
+                "confidence": {
+                    "undereye_shadow": 0.7, "tone_spread": 0.6, "cheek_redness": 0.6,
+                    "nose_redness": 0.55, "tzone_shine": 0.5, "texture": 0.4,
+                },
+                "advisories": [] if readable else ["skin_uneven_lighting:1.72"],
+                "capture": {"brightness": brightness, "colour_cast": 0.05, "white_balanced": True},
+            }},
+            expires_at=timezone.now() + timedelta(days=30),
+            **kwargs,
+        )
+
+    def _get(self):
+        return self.client.get("/api/v1/scans/skin-trend/")
+
+    def test_two_scans_under_the_same_light_form_one_run(self):
+        self._scan(brightness=140.0)
+        self._scan(brightness=150.0)
+        series = self._get().data["series"]
+        self.assertEqual(len(series), 1)
+        self.assertEqual(len(series[0]["points"]), 2)
+        self.assertIsNone(series[0]["break_reason"])
+
+    def test_a_change_of_light_breaks_the_line_and_says_so(self):
+        """Not dropped, not joined — a second run, with the reason attached."""
+        self._scan(brightness=110.0)
+        self._scan(brightness=200.0)
+        series = self._get().data["series"]
+        self.assertEqual([len(run["points"]) for run in series], [1, 1])
+        self.assertEqual(series[1]["break_reason"], "brightness")
+
+    def test_a_measurement_change_breaks_it_too(self):
+        """The protection the ENGINE_VERSION bump buys: old numbers are not trended as new ones."""
+        self._scan(version="2026.1-regional")
+        self._scan(version="2026.2-clipping")
+        series = self._get().data["series"]
+        self.assertEqual(series[1]["break_reason"], "engine_version")
+
+    def test_an_unreadable_scan_appears_with_its_reason_and_no_values(self):
+        """It stays in history — the user should see the attempt — but plots nothing."""
+        self._scan()
+        self._scan(readable=False)
+        series = self._get().data["series"]
+        unreadable = series[-1]["points"][-1]
+        self.assertFalse(unreadable["readable"])
+        self.assertEqual(unreadable["signals"], {})
+        self.assertTrue(unreadable["advisories"])
+
+    def test_points_come_back_oldest_first(self):
+        """A chart is read left to right; reversing it in the client is a bug waiting to happen."""
+        first = self._scan()
+        second = self._scan()
+        points = [point["scan_id"] for run in self._get().data["series"] for point in run["points"]]
+        self.assertEqual(points, [str(first.id), str(second.id)])
+
+    def test_demo_scans_are_left_out(self):
+        """Their numbers are a hand-written fixture. Plotted beside real ones they are a lie."""
+        self._scan(is_demo=True)
+        self.assertEqual(self._get().data["series"], [])
+
+    def test_a_free_plan_gets_the_same_two_signals_it_gets_elsewhere(self):
+        """A locked feature that answers in full on a second route is not locked."""
+        self._scan()
+        body = self._get().data
+        self.assertTrue(body["redacted"])
+        self.assertEqual(len(body["series"][0]["points"][0]["signals"]), 2)
+
+    def test_no_history_is_an_empty_series_not_an_error(self):
+        body = self._get().data
+        self.assertEqual(body["series"], [])
+        self.assertEqual(self._get().status_code, 200)
+
+
+class SkinVisionPipelineTest(TestCase):
+    """The wiring that turns `skin_vision.analyze` from dead code into a thing that runs.
+
+    Until this landed, `analysis_data["skin_vision"]` was read by the endpoint, gated on consent,
+    and written by nothing at all — a consenting, paying user got `vision: null` forever. These
+    tests are about the gate in front of the call rather than the call itself, which
+    `SkinVisionConsentTest` already covers: every condition here is a reason not to spend money
+    or disclose a photograph, so what matters is that each one actually stops it.
+    """
+
+    def setUp(self):
+        from doodee.models import AIUsageLedger
+        from doodee.skin_vision import SKIN_VISION_CONSENT_VERSION
+
+        self.ledgers = AIUsageLedger
+        self.version = SKIN_VISION_CONSENT_VERSION
+        self.user = User.objects.create_user("skin-vision-pipeline")
+        FirebaseIdentity.objects.create(user=self.user, firebase_uid="svp-uid")
+        self.scan = Scan.objects.create(
+            user=self.user,
+            status=Scan.Status.COMPLETED,
+            progress=100,
+            age_band=Scan.AgeBand.ADULT,
+            reference_age_band="18_35",
+            reference_profile="neutral",
+            reference_population="TH",
+            scan_mode=Scan.ScanMode.SKIN,
+            image_objects={"front": "scans/front.jpg"},
+            analysis_data={"skin_analysis": {"readable": True, "signals": {"texture": 0.02}, "advisories": []}},
+            expires_at=timezone.now() + timedelta(days=30),
+        )
+        consent.record(self.user, ConsentEvent.Purpose.SKIN_VISION, self.version)
+
+    def _queue(self):
+        from doodee.tasks import queue_skin_vision
+
+        with patch("doodee.skin_vision.configured", return_value=True), \
+             patch("doodee.tasks.process_skin_vision.delay") as delay:
+            return queue_skin_vision(self.scan), delay
+
+    def test_a_consenting_user_with_a_readable_scan_gets_one_queued(self):
+        queued, delay = self._queue()
+        self.assertTrue(queued)
+        delay.assert_called_once_with(str(self.scan.id))
+
+    def test_without_consent_nothing_is_queued(self):
+        consent.record(self.user, ConsentEvent.Purpose.SKIN_VISION, self.version, accepted=False)
+        queued, delay = self._queue()
+        self.assertFalse(queued)
+        delay.assert_not_called()
+
+    def test_an_unreadable_photograph_is_not_sent(self):
+        """The guard that is about honesty rather than cost.
+
+        `skin_vision` asks the model to say what the *measured* values look like on this face.
+        With no readable measurement there is nothing to ground it and the model would be
+        describing a face freehand — which its own system prompt exists to prevent. Sending it
+        anyway would buy that with a disclosure of the user's photograph.
+        """
+        self.scan.analysis_data = {"skin_analysis": {"readable": False, "advisories": ["skin_uneven_lighting:1.7"]}}
+        self.scan.save(update_fields=["analysis_data"])
+        queued, delay = self._queue()
+        self.assertFalse(queued)
+        delay.assert_not_called()
+
+    def test_a_purged_scan_is_not_queued(self):
+        """Thirty days on there is no photograph left, and there never will be again."""
+        self.scan.image_objects = {}
+        self.scan.save(update_fields=["image_objects"])
+        queued, _ = self._queue()
+        self.assertFalse(queued)
+
+    def test_a_demo_scan_is_not_queued(self):
+        self.scan.is_demo = True
+        self.scan.save(update_fields=["is_demo"])
+        queued, _ = self._queue()
+        self.assertFalse(queued)
+
+    def test_a_minor_is_never_queued(self):
+        self.scan.age_band = Scan.AgeBand.MINOR
+        self.scan.save(update_fields=["age_band"])
+        queued, _ = self._queue()
+        self.assertFalse(queued)
+
+    def test_nothing_is_queued_twice(self):
+        self.scan.analysis_data = dict(self.scan.analysis_data, skin_vision={"summary": "already"})
+        self.scan.save(update_fields=["analysis_data"])
+        queued, delay = self._queue()
+        self.assertFalse(queued)
+        delay.assert_not_called()
+
+    def test_the_task_writes_the_description_and_settles_the_ledger(self):
+        from doodee.tasks import process_skin_vision
+
+        described = {
+            "summary": "ผิวสม่ำเสมอ", "observations": [], "limits": "",
+            "usage": {"input_tokens": 7000, "cached_input_tokens": 0, "output_tokens": 200},
+        }
+        with patch("doodee.tasks.download_image", return_value=image_file("front").read()), \
+             patch("doodee.skin_vision.analyze", return_value=described) as analyze:
+            process_skin_vision(str(self.scan.id))
+
+        analyze.assert_called_once()
+        self.scan.refresh_from_db()
+        self.assertEqual(self.scan.analysis_data["skin_vision"]["summary"], "ผิวสม่ำเสมอ")
+        # The token counts are ledger data, not something to hand back to the client.
+        self.assertNotIn("usage", self.scan.analysis_data["skin_vision"])
+        ledger = self.ledgers.objects.get(user=self.user, idempotency_key=f"skin_vision:{self.scan.id}")
+        self.assertEqual(ledger.status, self.ledgers.Status.SETTLED)
+        self.assertGreater(ledger.actual_satang, 0)
+
+    def test_an_upstream_failure_leaves_the_scan_alone_and_refunds(self):
+        """A completed scan must not be damaged by a provider that would not answer."""
+        from doodee import skin_vision as sv
+        from doodee.tasks import process_skin_vision
+
+        with patch("doodee.tasks.download_image", return_value=image_file("front").read()), \
+             patch("doodee.skin_vision.analyze", side_effect=sv.SkinVisionUnavailable("http_500")):
+            process_skin_vision(str(self.scan.id))
+
+        self.scan.refresh_from_db()
+        self.assertEqual(self.scan.status, Scan.Status.COMPLETED)
+        self.assertNotIn("skin_vision", self.scan.analysis_data)
+        ledger = self.ledgers.objects.get(user=self.user, idempotency_key=f"skin_vision:{self.scan.id}")
+        self.assertEqual(ledger.status, self.ledgers.Status.REFUNDED)
+        self.assertEqual(ledger.reserved_satang, 0)
+
+    def test_a_retry_does_not_bill_a_second_time(self):
+        """`acks_late` means this task can run twice for one photograph."""
+        from doodee.tasks import process_skin_vision
+
+        described = {"summary": "ok", "observations": [], "limits": "",
+                     "usage": {"input_tokens": 7000, "cached_input_tokens": 0, "output_tokens": 200}}
+        with patch("doodee.tasks.download_image", return_value=image_file("front").read()), \
+             patch("doodee.skin_vision.analyze", return_value=described) as analyze:
+            process_skin_vision(str(self.scan.id))
+            process_skin_vision(str(self.scan.id))
+
+        self.assertEqual(analyze.call_count, 1)
+        self.assertEqual(
+            self.ledgers.objects.filter(user=self.user, idempotency_key=f"skin_vision:{self.scan.id}").count(), 1,
+        )
+
+    def test_withdrawing_between_the_queue_and_the_call_stops_the_photograph(self):
+        """The race the live consent check inside `analyze()` exists to close."""
+        from doodee import skin_vision as sv
+        from doodee.tasks import process_skin_vision
+
+        with patch("doodee.tasks.download_image", return_value=image_file("front").read()), \
+             patch("doodee.skin_vision.analyze", side_effect=sv.SkinVisionNotConsented("withdrawn")):
+            process_skin_vision(str(self.scan.id))
+
+        self.scan.refresh_from_db()
+        self.assertNotIn("skin_vision", self.scan.analysis_data)
+        ledger = self.ledgers.objects.get(user=self.user, idempotency_key=f"skin_vision:{self.scan.id}")
+        self.assertEqual(ledger.status, self.ledgers.Status.REFUNDED)
+
+
+class SkinScanDoesNotDisplaceTheFaceScanTest(TestCase):
+    """A skin scan is a new row, and six screens used to mean "the newest row".
+
+    `analyze_images` returns an empty metric catalogue and no `reference_scores` for
+    `scan_mode="skin"`, so before this the newest skin scan silently became the scan behind the
+    analysis page, the development plan, the score card, the simulation studio, the try-on view
+    and the chat's context — each of them showing nothing while the user's real face scan sat
+    one row further down. Nothing threw, which is why it needs tests rather than a comment.
+
+    The client half lives in `apps/web/src/lib/latestScan.test.js`; this is the server half.
+    """
+
+    def setUp(self):
+        from doodee.demo_data import create_demo_scan
+
+        self.user = User.objects.create_user("skin-displacement")
+        FirebaseIdentity.objects.create(user=self.user, firebase_uid="skin-displacement-uid")
+        self.client = APIClient()
+        self.client.force_authenticate(self.user)
+        self.face = create_demo_scan(self.user)
+        # Newer than the face scan, and carrying only what a skin scan carries.
+        self.skin = Scan.objects.create(
+            user=self.user,
+            status=Scan.Status.COMPLETED,
+            progress=100,
+            age_band=Scan.AgeBand.ADULT,
+            reference_age_band="18_35",
+            reference_profile="neutral",
+            reference_population="TH",
+            scan_mode=Scan.ScanMode.SKIN,
+            image_objects={},
+            analysis_data={
+                "metrics": [], "metric_count": 0, "analysis_tier": "skin",
+                "reference_scores": None,
+                "skin_analysis": {"signals": {}, "confidence": {}, "readable": False, "advisories": []},
+            },
+            expires_at=timezone.now() + timedelta(days=30),
+        )
+
+    def test_the_scan_list_still_carries_both_and_says_which_is_which(self):
+        """Not hidden from history — the client needs the mode to choose, not a shorter list."""
+        modes = [row["scan_mode"] for row in self.client.get("/api/v1/scans/").data]
+        self.assertEqual(modes, ["skin", "standard"])
+
+    def test_chat_still_answers_from_the_face_scan(self):
+        """The failure that would be hardest to spot: chat quietly losing its numbers."""
+        topics = self.client.get("/api/v1/chat/facts/?lang=th").data
+        self.assertEqual(topics["scan_id"], str(self.face.id))
+        self.assertTrue(topics["topics"], "the skin scan displaced the numbers chat reads")
+
+    def test_a_skin_scan_has_no_score_card_and_says_so(self):
+        response = self.client.get(f"/api/v1/scans/{self.skin.id}/score-card/")
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.data["detail"], "score_card_unavailable")
+
+    def test_the_skin_reading_does_come_from_the_skin_scan(self):
+        """The opposite rule, on purpose: this is the one screen where newest-of-any-mode wins."""
+        response = self.client.get(f"/api/v1/scans/{self.skin.id}/skin/")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["scan_id"], str(self.skin.id))
+
+
+class SkinVisionConsentTest(TestCase):
+    """A photograph must not leave without a current consent row.
+
+    Every other test in this class is about degrading gracefully; this first one is about not
+    doing the thing at all. It asserts on the SDK never being constructed, rather than on the
+    exception, because an exception raised after the upload has already happened would still
+    pass a test that only checked the exception.
+    """
+
+    def setUp(self):
+        self.user = User.objects.create_user("skin-consent")
+        self.image = np.full((80, 80, 3), 128, dtype=np.uint8)
+
+    def _grant(self, accepted=True):
+        from doodee import consent
+        from doodee.models import ConsentEvent
+        from doodee.skin_vision import SKIN_VISION_CONSENT_VERSION
+
+        consent.record(
+            self.user, ConsentEvent.Purpose.SKIN_VISION,
+            SKIN_VISION_CONSENT_VERSION, accepted=accepted,
+        )
+
+    def test_no_consent_sends_nothing(self):
+        from doodee import skin_vision
+
+        with patch("doodee.skin_vision._client") as client:
+            with self.assertRaises(skin_vision.SkinVisionNotConsented):
+                skin_vision.analyze(self.user, self.image, {"signals": {}})
+        client.assert_not_called()
+
+    def test_withdrawn_consent_sends_nothing(self):
+        """The failure `filter(accepted=True).exists()` would have: a grant then a withdrawal."""
+        from doodee import skin_vision
+
+        self._grant(accepted=True)
+        self._grant(accepted=False)
+
+        with patch("doodee.skin_vision._client") as client:
+            with self.assertRaises(skin_vision.SkinVisionNotConsented):
+                skin_vision.analyze(self.user, self.image, {"signals": {}})
+        client.assert_not_called()
+
+    def test_regranting_after_a_withdrawal_works_again(self):
+        from doodee import consent
+        from doodee.models import ConsentEvent
+
+        self._grant(True)
+        self._grant(False)
+        self.assertFalse(consent.granted(self.user, ConsentEvent.Purpose.SKIN_VISION))
+        self._grant(True)
+        self.assertTrue(consent.granted(self.user, ConsentEvent.Purpose.SKIN_VISION))
+
+    def _reply(self, payload, stop_reason="end_turn"):
+        message = MagicMock()
+        message.stop_reason = stop_reason
+        block = MagicMock()
+        block.type = "text"
+        block.text = json.dumps(payload)
+        message.content = [block]
+        message.usage.input_tokens = 4000
+        message.usage.output_tokens = 300
+        return message
+
+    def test_a_consented_scan_sends_the_image_once(self):
+        from doodee import skin_vision
+
+        self._grant()
+        payload = {
+            "summary": "ภาพนี้มีเงาใต้ตาเล็กน้อย",
+            "observations": [{"signal": "undereye_shadow", "reading": "เห็นเงาบาง", "care": "นอนให้พอ"}],
+            "limits": "ภาพเดียวบอกการเปลี่ยนแปลงตามเวลาไม่ได้",
+        }
+        client = MagicMock()
+        client.messages.create.return_value = self._reply(payload)
+
+        with patch("doodee.skin_vision._client", return_value=client):
+            result = skin_vision.analyze(self.user, self.image, {"signals": {"undereye_shadow": 6.4}})
+
+        self.assertEqual(result["summary"], payload["summary"])
+        self.assertEqual(result["model"], skin_vision.MODEL)
+        self.assertEqual(result["usage"]["input_tokens"], 4000)
+
+        sent = client.messages.create.call_args.kwargs
+        image_blocks = [b for b in sent["messages"][0]["content"] if b["type"] == "image"]
+        self.assertEqual(len(image_blocks), 1)
+        # The measurements travel with the image so the model describes them rather than
+        # inventing its own.
+        text = "".join(b["text"] for b in sent["messages"][0]["content"] if b["type"] == "text")
+        self.assertIn("undereye_shadow", text)
+
+    def test_a_refusal_degrades_instead_of_raising_an_index_error(self):
+        """Refusals come back as HTTP 200 with empty content — the trap this guards."""
+        from doodee import skin_vision
+
+        self._grant()
+        refused = MagicMock()
+        refused.stop_reason = "refusal"
+        refused.content = []
+        client = MagicMock()
+        client.messages.create.return_value = refused
+
+        with patch("doodee.skin_vision._client", return_value=client):
+            with self.assertRaises(skin_vision.SkinVisionUnavailable) as caught:
+                skin_vision.analyze(self.user, self.image, {"signals": {}})
+        self.assertIn("refused", str(caught.exception))
+
+    def test_an_off_schema_reply_is_rejected(self):
+        from doodee import skin_vision
+
+        self._grant()
+        client = MagicMock()
+        client.messages.create.return_value = self._reply({"unexpected": True})
+
+        with patch("doodee.skin_vision._client", return_value=client):
+            with self.assertRaises(skin_vision.SkinVisionUnavailable):
+                skin_vision.analyze(self.user, self.image, {"signals": {}})
+
+    def test_a_transport_failure_is_wrapped(self):
+        from doodee import skin_vision
+
+        self._grant()
+        client = MagicMock()
+        client.messages.create.side_effect = RuntimeError("connection reset")
+
+        with patch("doodee.skin_vision._client", return_value=client):
+            with self.assertRaises(skin_vision.SkinVisionUnavailable):
+                skin_vision.analyze(self.user, self.image, {"signals": {}})
+
+    def test_large_images_are_downscaled_before_upload(self):
+        """Pixels past the model's ceiling buy no detail and are billed as though they did."""
+        from doodee import skin_vision
+
+        big = np.full((4000, 3000, 3), 128, dtype=np.uint8)
+        encoded = skin_vision._encode(big)
+        decoded = cv2.imdecode(
+            np.frombuffer(base64.b64decode(encoded), np.uint8), cv2.IMREAD_COLOR,
+        )
+        self.assertEqual(max(decoded.shape[:2]), skin_vision.MAX_EDGE_PX)
+
+    def test_the_prompt_forbids_diagnosis_and_ranking(self):
+        """These two rules are the product's position, not stylistic preference."""
+        from doodee import skin_vision
+
+        prompt = skin_vision.SYSTEM_PROMPT.lower()
+        self.assertIn("never name a condition", prompt)
+        self.assertIn("never judge attractiveness", prompt)
+
+
+class SkinEndpointTest(TestCase):
+    """The route's two jobs: withhold what the plan does not pay for, and hide the
+    model-written description from anyone who has not consented to producing it."""
+
+    def setUp(self):
+        from doodee.demo_data import create_demo_scan
+
+        self.user = User.objects.create_user("skin-endpoint")
+        self.client = APIClient()
+        self.client.force_authenticate(self.user)
+        # The real helper rather than a hand-built row: it fills expires_at and every other
+        # column the model requires, and a fixture that drifts from it would test a shape
+        # production never produces.
+        self.scan = create_demo_scan(self.user)
+        self.scan.analysis_data["skin_vision"] = {
+            "summary": "คำอธิบายจากโมเดล", "observations": [], "limits": "",
+        }
+        self.scan.save(update_fields=["analysis_data"])
+
+    def _get(self):
+        return self.client.get(f"/api/v1/scans/{self.scan.id}/skin/")
+
+    def _paid(self):
+        Plan.objects.update_or_create(
+            code="member",
+            defaults={
+                "name_th": "สมาชิก", "name_en": "Member", "price_satang": 14900,
+                "analysis_depth": Plan.AnalysisDepth.FULL, "tier_rank": 5,
+                "grants_group": "member",
+            },
+        )
+        group, _ = Group.objects.get_or_create(name="member")
+        self.user.groups.add(group)
+
+    def test_a_free_plan_gets_a_partial_reading_not_a_wall(self):
+        response = self._get()
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.data["redacted"])
+        self.assertEqual(len(response.data["signals"]), 2)
+
+    def test_a_paid_plan_gets_every_signal(self):
+        self._paid()
+        response = self._get()
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(response.data["redacted"])
+        self.assertEqual(len(response.data["signals"]), 6)
+
+    def test_the_model_description_is_hidden_without_consent(self):
+        self._paid()
+        response = self._get()
+        self.assertIsNone(response.data["vision"])
+        self.assertFalse(response.data["vision_consented"])
+
+    def test_consent_reveals_it_and_withdrawal_hides_it_again(self):
+        from doodee import consent
+        from doodee.models import ConsentEvent
+        from doodee.skin_vision import SKIN_VISION_CONSENT_VERSION
+
+        self._paid()
+        consent.record(self.user, ConsentEvent.Purpose.SKIN_VISION, SKIN_VISION_CONSENT_VERSION)
+        self.assertEqual(self._get().data["vision"]["summary"], "คำอธิบายจากโมเดล")
+
+        consent.record(
+            self.user, ConsentEvent.Purpose.SKIN_VISION,
+            SKIN_VISION_CONSENT_VERSION, accepted=False,
+        )
+        # Hidden again, and the scan itself is untouched — withdrawal is not a deletion.
+        self.assertIsNone(self._get().data["vision"])
+
+    def test_a_scan_without_skin_data_answers_409_not_500(self):
+        self.scan.analysis_data = {"reference_scores": {}}
+        self.scan.save(update_fields=["analysis_data"])
+        self.assertEqual(self._get().status_code, 409)
+
+    def test_consent_route_records_both_directions(self):
+        from doodee.skin_vision import SKIN_VISION_CONSENT_VERSION
+
+        granted = self.client.post(
+            "/api/v1/consent/skin-vision/",
+            {"accepted": True, "policy_version": SKIN_VISION_CONSENT_VERSION},
+            format="json",
+        )
+        self.assertTrue(granted.data["skin_vision_consented"])
+        self.assertTrue(self.client.get("/api/v1/session/").data["skin_vision_consented"])
+
+        withdrawn = self.client.post(
+            "/api/v1/consent/skin-vision/", {"accepted": False}, format="json",
+        )
+        self.assertFalse(withdrawn.data["skin_vision_consented"])
+        self.assertFalse(self.client.get("/api/v1/session/").data["skin_vision_consented"])
+
+    def test_consenting_to_wording_we_no_longer_show_is_rejected(self):
+        response = self.client.post(
+            "/api/v1/consent/skin-vision/",
+            {"accepted": True, "policy_version": "1999.1"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertFalse(self.client.get("/api/v1/session/").data["skin_vision_consented"])
+
+    def test_withdrawal_is_accepted_whatever_version_was_signed(self):
+        """A user must always be able to switch this off, including after a terms change."""
+        response = self.client.post(
+            "/api/v1/consent/skin-vision/",
+            {"accepted": False, "policy_version": "1999.1"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 200)
+
+
+class UploadCapturePathTest(TestCase):
+    """The file picker on the scan page, and the one claim it forces the client to make.
+
+    A photograph picked from a folder passes every check the engine performs — `_decode` measures
+    light and blur, `_validate_pose_set` measures head angle, and a sharp, well-lit, correctly
+    posed picture of somebody else satisfies all of them. Nothing downstream can object, so the
+    only thing standing between the product and a scan of a stranger is that the client is made to
+    say whose face it is and the server writes that down. These tests are about the "made to" part:
+    a confirmation the server merely hopes for is a checkbox the client can skip.
+    """
+
+    def setUp(self):
+        self.user = User.objects.create_user("uploader")
+        self.client = APIClient()
+        self.client.force_authenticate(self.user)
+        cache.clear()
+
+    def payload(self, **overrides):
+        body = {
+            "age_band": "adult", "reference_age_band": "18_35", "reference_profile": "neutral",
+            "reference_population": "TH", "analysis_consent_version": "2026.3", "scan_mode": "fast",
+            "capture_method": "upload", "upload_attestation_version": "2026.1",
+            "files": {view: "image/jpeg" for view in SCAN_VIEW_MODES["fast"]},
+        }
+        body.update(overrides)
+        return body
+
+    def reserve(self, payload, key="upload-key"):
+        with patch("doodee.views.signed_upload_url", side_effect=lambda name: f"https://storage.test/{name}"):
+            return self.client.post(
+                "/api/v1/scans/uploads/", payload, format="json", HTTP_IDEMPOTENCY_KEY=key,
+            )
+
+    def test_an_upload_is_recorded_as_an_upload(self):
+        response = self.reserve(self.payload())
+        self.assertEqual(response.status_code, 201, response.data)
+        self.assertEqual(Scan.objects.get().capture_method, Scan.CaptureMethod.UPLOAD)
+
+    def test_the_attestation_is_written_to_the_consent_log(self):
+        self.reserve(self.payload())
+        row = ConsentEvent.objects.get(user=self.user, purpose=ConsentEvent.Purpose.PHOTO_OWNER)
+        self.assertTrue(row.accepted)
+        self.assertEqual(row.policy_version, "2026.1")
+
+    def test_an_upload_without_the_attestation_is_refused(self):
+        """The test that makes the checkbox mean something.
+
+        Without this the client could simply not send the field — or a determined user could post
+        the request themselves — and the confirmation would be a decoration on a screen.
+        """
+        response = self.reserve(self.payload(upload_attestation_version=""))
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("upload_attestation_version", response.data)
+        self.assertFalse(Scan.objects.exists())
+
+    def test_a_missing_attestation_field_is_refused_too(self):
+        body = self.payload()
+        body.pop("upload_attestation_version")
+        self.assertEqual(self.reserve(body).status_code, 400)
+
+    def test_a_camera_scan_needs_no_attestation_and_records_none(self):
+        """The claim is only made where it was actually asked for."""
+        response = self.reserve(self.payload(capture_method="web_camera", upload_attestation_version=""))
+        self.assertEqual(response.status_code, 201, response.data)
+        self.assertFalse(
+            ConsentEvent.objects.filter(user=self.user, purpose=ConsentEvent.Purpose.PHOTO_OWNER).exists(),
+        )
+
+    def test_analysis_and_storage_consent_still_land(self):
+        """The new purpose is an addition, not a replacement."""
+        self.reserve(self.payload())
+        purposes = set(ConsentEvent.objects.filter(user=self.user).values_list("purpose", flat=True))
+        self.assertEqual(purposes, {
+            ConsentEvent.Purpose.ANALYSIS,
+            ConsentEvent.Purpose.STORAGE,
+            ConsentEvent.Purpose.PHOTO_OWNER,
+        })
+
+    def test_consent_is_readable_through_the_helper(self):
+        self.reserve(self.payload())
+        self.assertTrue(consent.granted(self.user, ConsentEvent.Purpose.PHOTO_OWNER))
+
+    def test_an_unknown_capture_method_is_still_refused(self):
+        response = self.reserve(self.payload(capture_method="carrier_pigeon"))
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("capture_method", response.data)
+
+    def test_uploads_are_reported_separately_in_the_marketing_report(self):
+        FirebaseIdentity.objects.create(user=self.user, firebase_uid="uid-uploader")
+        Scan.objects.create(
+            user=self.user, status=Scan.Status.COMPLETED, age_band=Scan.AgeBand.ADULT,
+            capture_method=Scan.CaptureMethod.UPLOAD, scan_mode=Scan.ScanMode.STANDARD,
+            expires_at=timezone.now() + timedelta(days=30),
+        )
+        methods = {row["method"] for row in capture_method_rows()}
+        self.assertIn("อัปโหลดรูป", methods)
+        self.assertNotIn("ไม่ระบุ", methods, "an upload must not fall through to the unknown bucket")

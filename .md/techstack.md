@@ -98,9 +98,9 @@ script `test` ของ `apps/web/package.json` เอง ไม่งั้น�
 | บริการ | ใช้ทำอะไร | ที่อยู่ในโค้ด |
 |---|---|---|
 | **Firebase Authentication** | ตัวตนผู้ใช้ทั้งระบบ (Google + email/password) | `authentication.py`, `lib/firebase.js` |
-| **Supabase Storage** | เก็บภาพใบหน้าใน private bucket `face-scans` | `backend/doodee/storage.py` (เรียก REST ตรง ไม่ใช้ SDK) |
-| **Anthropic Claude** | DOODEE Chat | `backend/doodee/chat.py` |
-| **OpenAI-compatible** (Groq / OpenRouter / Ollama) | ทางเลือกทดสอบแชทแบบไม่เสียเงิน · เลือกผู้ให้บริการที่ `/admin` ไม่ต้องแก้ไฟล์ | `chat.py` |
+| **Supabase Postgres + Storage** | ฐานข้อมูล managed และภาพใน private bucket `face-scans` | `DATABASE_URL`, `backend/doodee/storage.py` |
+| **OpenAI GPT-5.6 Luna** | DOODEE Chat production · reasoning low · 1,000 output tokens | `backend/doodee/chat.py` |
+| **Anthropic / OpenAI-compatible** | provider สำรองที่เลือกได้จาก `/admin` โดยไม่มี automatic failover | `chat.py` |
 | **Opn Payments (Omise)** | PromptPay + webhook · secret key ไม่เคยอยู่ในไฟล์ที่ commit | `backend/doodee/omise.py` |
 | **Sentry** | error report · ปิดเองถ้าไม่มี DSN | `config/settings.py` |
 | **Vercel** | host `apps/web` + edge function ตรวจประเทศ | `vercel.json`, `api/geo.js` |
@@ -116,6 +116,19 @@ MediaPipe + OpenCV ทำงานใน Celery worker ของเราเอ�
 **2. ภาพมีวันหมดอายุ**
 ผู้ใหญ่ 30 วัน / ผู้เยาว์ 24 ชั่วโมง · ลบด้วย `manage.py cleanup_expired_data` (ต้องรันทุกชั่วโมงบน production)
 ผลวิเคราะห์ยังอยู่หลังภาพถูกลบ — dashboard ต้องรับสภาพนี้ได้
+
+**2.1 งานภาพไม่รันใน API**
+client ใหม่ขอ signed upload ที่ `POST /scans/uploads/`, อัปโหลดตรงเข้า private Storage แล้ว `commit`
+ทั้ง scan และ preview/saved simulation รันในคิว `cv`; ฐานข้อมูลเป็น source of truth และ maintenance worker
+นำงาน queued/stuck กลับเข้าคิวทุกนาที งานใหม่ถูกหยุดเมื่อคิวถึง 100 หรือรายการเก่าสุดรอเกิน 10 นาที
+
+**2.2 Production แยก failure domain**
+`compose.prod.yaml` แยก Redis broker แบบ AOF ออกจาก Redis cache, แยก `cv` worker จาก maintenance worker
+และมี process lane สำหรับ chat (`127.0.0.1:8002`) กับ multipart scan เก่า (`127.0.0.1:8003`)
+reverse proxy ต้อง route `/api/v1/chat/` ไป 8002 และเฉพาะ `POST /api/v1/scans/` ไป 8003; ที่เหลือไป 8001
+Supabase Storage ต้องอนุญาต CORS `PUT` จาก origin ของ web app และคง bucket เป็น private
+ถ้าไม่ได้ใช้ Supabase Data API ให้ปิด exposure ของ schema ที่ Django ใช้; migration ใช้ direct URI
+(`MIGRATION_DATABASE_URL`) ส่วน runtime ใช้ pooler URI (`DATABASE_URL`) เท่านั้น
 
 **3. ตัวเลขในรายงานคำนวณสดทุกครั้ง**
 `backend/doodee/analytics.py` ไม่มีตารางสรุปและไม่มี nightly rollup โดยเจตนา

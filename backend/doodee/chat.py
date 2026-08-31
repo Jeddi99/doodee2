@@ -1,13 +1,19 @@
-"""DOODEE Chat: answering questions about a scan's own numbers, via Claude.
+"""DOODEE Chat: answering questions about a scan's own numbers through the selected provider.
 
 Two rules shape this module.
 
-**No face images leave the system.** Only the derived numbers in
-`analysis_data.reference_scores` are sent to Anthropic — the same 12 measurements the analysis
+**No face images leave the system *from here*.** Only the derived numbers in
+`analysis_data.reference_scores` are sent to the configured provider — the same 12 measurements the analysis
 screen already shows the user. Sending the photographs would be sending biometric data to a
-third party, which the analysis consent (`ConsentEvent.Purpose.ANALYSIS`) does not cover and
-`DataWeUseSection` does not disclose. If that ever changes it needs its own consent purpose and
-honest copy, not a quiet edit here.
+third party, which the analysis consent (`ConsentEvent.Purpose.ANALYSIS`) does not cover.
+
+That last sentence used to end "…and `DataWeUseSection` does not disclose", followed by: if it
+ever changes it needs its own consent purpose and honest copy, not a quiet edit here. It did
+change — skin analysis sends the front photograph to an external model — so the condition was
+met rather than sidestepped: `ConsentEvent.Purpose.SKIN_VISION` is that purpose, `skin_vision`
+is the only module that sends an image, and the onboarding, settings and landing copy were
+rewritten to say so. This module still sends numbers and nothing else, and a user who never
+turns skin analysis on has no image leave the system at all.
 
 **The model may not invent a verdict.** `reference_scoring.metric_score()` measures *distance
 from a Thai reference mean*, not quality, so "your nose scores 84" means "close to the cohort
@@ -32,8 +38,8 @@ class ChatUnavailable(RuntimeError):
 
 
 USER_AGENT = "doodee/1.0"
-MODEL = "claude-opus-5"
-MAX_TOKENS = 1500
+MODEL = "gemini-2.5-flash"
+MAX_TOKENS = 1000
 # This is an explanatory Q&A over a dozen numbers, not agentic work. Low effort keeps both the
 # per-turn cost (~฿0.6) and the wait (a few seconds, since gunicorn's sync workers cannot
 # stream) inside what the product can afford.
@@ -44,7 +50,7 @@ EFFORT = "low"
 MAX_QUESTION_CHARS = 2000
 # Turns of history replayed to the model. The system block (prompt + scan numbers) is the
 # cacheable part; history is not, so it is what actually grows the bill per turn.
-HISTORY_TURNS = 12
+HISTORY_TURNS = 6
 
 # Seconds to wait for one attempt at the model.
 #
@@ -244,7 +250,7 @@ def _strip_reasoning(text):
     return cleaned.strip()
 
 
-def _openai_reply(system_text, history, model, max_tokens, base_url):
+def _openai_reply(system_text, history, model, max_tokens, base_url, effort=EFFORT):
     """One turn against any OpenAI-compatible endpoint — Groq, OpenRouter, Ollama.
 
     `urllib` rather than a second SDK, for the same reason omise.py and storage.py use it: one
@@ -255,7 +261,7 @@ def _openai_reply(system_text, history, model, max_tokens, base_url):
     follows the safety rules less reliably than Opus 5, which is why the admin help text says
     to use this for checking the plumbing, not for real users.
     """
-    key = os.getenv("CHAT_API_KEY", "")
+    key = os.getenv("OPENAI_API_KEY", "") or os.getenv("CHAT_API_KEY", "")
     headers = {
         "Content-Type": "application/json",
         # Required, not cosmetic. urllib sends "Python-urllib/3.x" by default, which Groq's
@@ -267,11 +273,15 @@ def _openai_reply(system_text, history, model, max_tokens, base_url):
         # Ollama needs none; every hosted provider does.
         headers["Authorization"] = f"Bearer {key}"
 
-    payload = json.dumps({
+    parameters = {
         "model": model,
-        "max_tokens": max_tokens,
         "messages": [{"role": "system", "content": system_text}, *history],
-    }).encode()
+    }
+    if model.startswith("gpt-5.6"):
+        parameters.update(max_completion_tokens=max_tokens, reasoning_effort=effort)
+    else:
+        parameters["max_tokens"] = max_tokens
+    payload = json.dumps(parameters).encode()
     request = Request(f"{base_url.rstrip('/')}/chat/completions", data=payload, headers=headers, method="POST")
     try:
         with urlopen(request, timeout=REQUEST_TIMEOUT_SECONDS) as response:
@@ -292,15 +302,80 @@ def _openai_reply(system_text, history, model, max_tokens, base_url):
     usage = body.get("usage") or {}
     return text, {
         "input_tokens": usage.get("prompt_tokens", 0) or 0,
-        # No prompt caching on this path; reporting a guess here would corrupt the cost report.
-        "cached_input_tokens": 0,
+        "cached_input_tokens": ((usage.get("prompt_tokens_details") or {}).get("cached_tokens", 0) or 0),
         "cache_write_tokens": 0,
         "output_tokens": usage.get("completion_tokens", 0) or 0,
     }
 
 
+def _gemini_reply(system_text, history, model, max_tokens):
+    """One turn against the Google Gemini REST API.
+
+    Uses `gemini-2.5-flash` by default with `system_instruction` support and token usage tracking.
+    """
+    # Deliberately not falling back to `CHAT_API_KEY` — see `chat_enabled`. If the two lookups
+    # disagreed, a deployment could be told the feature was off and still have it answer.
+    key = os.getenv("GEMINI_API_KEY", "") or os.getenv("GOOGLE_API_KEY", "")
+    if not key:
+        raise ChatUnavailable("gemini_api_key_missing")
+
+    headers = {
+        "Content-Type": "application/json",
+        "User-Agent": USER_AGENT,
+    }
+
+    contents = []
+    for item in history:
+        role = "model" if item.get("role") in ("assistant", "model") else "user"
+        contents.append({
+            "role": role,
+            "parts": [{"text": item.get("content", "")}],
+        })
+
+    payload_dict = {
+        "contents": contents,
+        "generationConfig": {
+            "maxOutputTokens": max_tokens,
+            "temperature": 0.3,
+        },
+    }
+    if system_text and system_text.strip():
+        payload_dict["system_instruction"] = {
+            "parts": [{"text": system_text.strip()}]
+        }
+
+    payload = json.dumps(payload_dict).encode()
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}"
+    request = Request(url, data=payload, headers=headers, method="POST")
+    try:
+        with urlopen(request, timeout=REQUEST_TIMEOUT_SECONDS) as response:
+            body = json.loads(response.read().decode())
+    except HTTPError as exc:
+        detail = exc.read().decode()[:200] if exc.fp else ""
+        raise ChatUnavailable(f"http_{exc.code}: {detail}") from exc
+    except Exception as exc:  # noqa: BLE001 - timeouts, DNS, TLS
+        raise ChatUnavailable(f"unreachable: {exc}") from exc
+
+    try:
+        candidate = body["candidates"][0]
+        text = candidate["content"]["parts"][0]["text"]
+        text = _strip_reasoning(text)
+    except (KeyError, IndexError, TypeError) as exc:
+        raise ChatUnavailable(f"unexpected_response: {str(body)[:160]}") from exc
+    if not text:
+        raise ChatUnavailable("empty_response")
+
+    usage = body.get("usageMetadata") or {}
+    return text, {
+        "input_tokens": usage.get("promptTokenCount", 0) or 0,
+        "cached_input_tokens": usage.get("cachedContentTokenCount", 0) or 0,
+        "cache_write_tokens": 0,
+        "output_tokens": usage.get("candidatesTokenCount", 0) or 0,
+    }
+
+
 def reply(system_text, history, model=MODEL, effort=EFFORT, max_tokens=MAX_TOKENS,
-          provider="anthropic", base_url=""):
+          provider="gemini", base_url=""):
     """One turn. Returns `(text, usage_dict)`.
 
     `system_text` is the whole cached prefix — `system_prompt()` output plus the scan's
@@ -311,8 +386,11 @@ def reply(system_text, history, model=MODEL, effort=EFFORT, max_tokens=MAX_TOKEN
     the user's new question. The model and its parameters are passed in because they are set
     in the admin; the constants above are the fallback for a database with no settings row.
     """
+    if provider == "gemini":
+        return _gemini_reply(system_text, history, model, max_tokens)
+
     if provider == "openai":
-        return _openai_reply(system_text, history, model, max_tokens, base_url)
+        return _openai_reply(system_text, history, model, max_tokens, base_url, effort=effort)
 
     client = _client()
     try:
@@ -367,7 +445,19 @@ def chat_enabled():
     from .models import ChatSetting
 
     config = ChatSetting.current()
+    if config.provider == ChatSetting.Provider.GEMINI:
+        # `CHAT_API_KEY` used to count here as a third fallback, and it was the wrong kind of
+        # generous. That variable is where the OpenAI-compatible providers keep their key, so a
+        # Groq key sitting in it made this answer True, the client offered a working chat box,
+        # and every message came back 502 from Google saying "API key not valid" — a failure
+        # that reads as the feature being broken rather than as a key in the wrong slot. The
+        # admin help text has always named GEMINI_API_KEY and GOOGLE_API_KEY for this provider;
+        # this is the check catching up with what it promised.
+        return bool(os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY"))
     if config.provider == ChatSetting.Provider.OPENAI:
-        # A local Ollama needs no key, so a configured address is the requirement here.
+        if "api.openai.com" in config.base_url:
+            return bool(os.getenv("OPENAI_API_KEY") or os.getenv("CHAT_API_KEY"))
+        # Compatible providers differ: Ollama needs no key, and any hosted-key failure is
+        # reported by that provider instead of guessed from the URL here.
         return bool(config.base_url.strip())
     return bool(os.getenv("ANTHROPIC_API_KEY"))

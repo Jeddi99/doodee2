@@ -30,6 +30,8 @@ const SET_AT_RUNTIME = new Set([
   '--focus-scale', '--focus-x', '--focus-y',
   '--progress',
   '--reveal-order',
+  // One per skin signal row, carrying the backend's confidence for that reading.
+  '--skin-confidence',
 ]);
 
 test('every var(--x) in the stylesheet resolves to a property that is actually defined', () => {

@@ -49,21 +49,36 @@ export async function signIn() {
   return request('/session/');
 }
 
-export function uploadScan(files, ageBand, referenceAgeBand, referenceProfile, referencePopulation, consentVersion, scanMode = 'standard', captureMethod = 'web_camera') {
-  const body = new FormData();
-  for (const [view, file] of Object.entries(files)) {
-    if (file) body.append(view, file);
-  }
-  body.append('age_band', ageBand);
-  body.append('reference_age_band', referenceAgeBand);
-  body.append('reference_profile', referenceProfile);
-  body.append('reference_population', referencePopulation);
-  body.append('analysis_consent_version', consentVersion);
-  body.append('scan_mode', scanMode);
-  // For the admin report only. The server accepts nothing but its own two values and treats an
-  // absent one as unknown, so an older client is never described as a browser it is not.
-  body.append('capture_method', captureMethod);
-  return request('/scans/', { method: 'POST', body });
+/**
+ * Reserve a scan, PUT each image to its signed URL, then commit.
+ *
+ * Options rather than positional arguments: this took eight in a row, which was already at the
+ * limit of what a call site can be read against, and the upload path adds a ninth. Mobile uses
+ * `uploadScanDirect` in @doodee/shared and is unaffected.
+ */
+export function uploadScan(files, {
+  ageBand, referenceAgeBand, referenceProfile, referencePopulation, consentVersion,
+  scanMode = 'standard', captureMethod = 'web_camera', uploadAttestationVersion = '',
+}) {
+  const key = crypto.randomUUID();
+  const metadata = {
+    age_band: ageBand, reference_age_band: referenceAgeBand, reference_profile: referenceProfile,
+    reference_population: referencePopulation, analysis_consent_version: consentVersion,
+    scan_mode: scanMode, capture_method: captureMethod,
+    // Only sent when it means something. The server requires it for an upload and records it as
+    // the policy version behind the photo_owner consent row.
+    ...(uploadAttestationVersion ? { upload_attestation_version: uploadAttestationVersion } : {}),
+    files: Object.fromEntries(Object.entries(files).filter(([, file]) => file).map(([view, file]) => [view, file.type])),
+  };
+  return request('/scans/uploads/', {
+    method: 'POST', headers: { 'Content-Type': 'application/json', 'Idempotency-Key': key }, body: JSON.stringify(metadata),
+  }).then(async (reserved) => {
+    await Promise.all(Object.entries(reserved.uploads).map(async ([view, upload]) => {
+      const response = await fetch(upload.url, { method: 'PUT', headers: { 'Content-Type': upload.content_type }, body: files[view] });
+      if (!response.ok) throw new Error(`Storage upload failed (${response.status})`);
+    }));
+    return request(`/scans/${reserved.id}/commit/`, { method: 'POST' });
+  });
 }
 
 export const getScan = (scanId) => request(`/scans/${scanId}/status/`);
@@ -74,6 +89,21 @@ export const getScans = () => request('/scans/');
 // 403 for a free account, 409 while the scan is still being analysed — the caller shows a
 // different thing for each, so neither is smoothed into an empty result here.
 export const getScoreCard = (scanId) => request(`/scans/${scanId}/score-card/`);
+/**
+ * The user's skin readings over time, already split into runs the server judged comparable.
+ *
+ * The splitting is deliberately not done here: `skin_engine.comparison_break` is one definition
+ * of when two photographs may be compared, and a second copy in JavaScript would drift from it.
+ */
+export const getSkinTrend = () => request('/scans/skin-trend/');
+export const getSkinAnalysis = (scanId) => request(`/scans/${scanId}/skin/`);
+// Both directions go through POST: the consent log is append-only, so withdrawing writes a row
+// rather than deleting one, and the version says which wording was on screen when they agreed.
+export const setSkinVisionConsent = (accepted, policyVersion) => request('/consent/skin-vision/', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ accepted, policy_version: policyVersion }),
+});
 export const getSession = () => request('/session/');
 // หน้าโปรไฟล์: identity, plan and expiry, quotas, benefits, referral summary and the last ten
 // receipts in one read — the page is a single answer, not four.
@@ -85,12 +115,12 @@ export const getProcedures = (region) => request(region ? `/procedures/?region=$
 // `selections` is an array of `{ region, preset_id }` — one entry per region being simulated.
 export const createSimulation = (scanId, selections, consentVersion) => request('/simulations/', {
   method: 'POST',
-  headers: { 'Content-Type': 'application/json' },
+  headers: { 'Content-Type': 'application/json', 'Idempotency-Key': crypto.randomUUID() },
   body: JSON.stringify({ scan_id: scanId, selections, simulation_consent_version: consentVersion }),
 });
 export const previewSimulation = (scanId, selections, consentVersion) => request('/simulations/preview/', {
   method: 'POST',
-  headers: { 'Content-Type': 'application/json' },
+  headers: { 'Content-Type': 'application/json', 'Idempotency-Key': crypto.randomUUID() },
   body: JSON.stringify({ scan_id: scanId, selections, simulation_consent_version: consentVersion }),
 });
 export const getSimulation = (simulationId) => request(`/simulations/${simulationId}/status/`);
@@ -120,7 +150,7 @@ export const deleteChat = (conversationId) => request(`/chat/${conversationId}/`
 // thread on the voice it started with, so the cached prompt prefix stays byte-identical.
 export const sendChat = ({ message, conversationId, scanId, role }) => request('/chat/', {
   method: 'POST',
-  headers: { 'Content-Type': 'application/json' },
+  headers: { 'Content-Type': 'application/json', 'Idempotency-Key': crypto.randomUUID() },
   body: JSON.stringify({
     message,
     conversation_id: conversationId,

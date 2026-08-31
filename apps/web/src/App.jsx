@@ -20,12 +20,13 @@ const DashboardPage = lazy(() => import('./pages/DashboardPage'));
 const OnboardingPage = lazy(() => import('./pages/OnboardingPage'));
 // Own chunk: it pulls in the MediaPipe worker and the wasm loader.
 const ScanPage = lazy(() => import('./pages/ScanPage'));
+const SkinScanPage = lazy(() => import('./pages/SkinScanPage'));
 
 function WorkspaceFallback({ locale }) {
   return <div className="workspace-loading" role="status">{locale === 'th' ? 'กำลังเปิดหน้า…' : 'Opening…'}</div>;
 }
 
-const ROUTE_PATHS = { landing: '/', login: '/login', onboarding: '/onboarding', home: '/home', analysis: '/analysis', plan: '/plan', 'doodee-gpt': '/doodee-gpt', 'face-scan': '/scan', simulation: '/simulation', tryon: '/try-on', history: '/history', pricing: '/pricing', settings: '/settings', scorecard: '/score-card', referral: '/referral', profile: '/profile' };
+const ROUTE_PATHS = { landing: '/', login: '/login', onboarding: '/onboarding', home: '/home', analysis: '/analysis', plan: '/plan', 'doodee-gpt': '/doodee-gpt', 'face-scan': '/scan', 'skin-scan': '/skin-scan', simulation: '/simulation', skin: '/skin', tryon: '/try-on', history: '/history', pricing: '/pricing', settings: '/settings', scorecard: '/score-card', referral: '/referral', profile: '/profile' };
 
 // Every signed-in route lives inside DashboardPage's shell; the path picks the view.
 const DASHBOARD_VIEWS = {
@@ -33,6 +34,7 @@ const DASHBOARD_VIEWS = {
   analysis: 'analysis',
   plan: 'plan',
   simulation: 'simulate',
+  skin: 'skin',
   'doodee-gpt': 'doodeegpt',
   tryon: 'tryon',
   history: 'history',
@@ -176,6 +178,12 @@ export default function App() {
       {currentRoute === 'face-scan' && (
         <Suspense fallback={<WorkspaceFallback locale={locale} />}>
           <ScanPage />
+        </Suspense>
+      )}
+
+      {currentRoute === 'skin-scan' && (
+        <Suspense fallback={<WorkspaceFallback locale={locale} />}>
+          <SkinScanPage />
         </Suspense>
       )}
 

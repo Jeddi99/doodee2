@@ -227,22 +227,18 @@ export default function Home() {
   };
   const upload = async () => {
     setError('');
-    const body = new FormData();
+    const files: Record<string, { uri: string; type: string }> = {};
     for (const key of SCAN_VIEWS) {
       const uri = photosRef.current[key];
       if (!uri) return setError(`ขาดภาพ ${LABELS[key]}`);
-      body.append(key, { uri, name: `${key}.jpg`, type: 'image/jpeg' } as any);
+      files[key] = { uri, type: 'image/jpeg' };
     }
-    body.append('age_band', ageRange === 'under_18' ? 'minor' : 'adult');
-    body.append('reference_age_band', ageRange);
-    body.append('reference_profile', referenceProfile);
-    body.append('analysis_consent_version', '2026.3');
-    // SCAN_VIEWS here is all seven angles, so the mode has to say so — left absent the server
-    // defaults to `full` and happened to agree, which is not the same as being told.
-    body.append('scan_mode', 'full');
-    body.append('capture_method', 'mobile_camera');
     try {
-      const created = await api.uploadScan(body);
+      const created = await api.uploadScanDirect(files, {
+        age_band: ageRange === 'under_18' ? 'minor' : 'adult', reference_age_band: ageRange,
+        reference_profile: referenceProfile, reference_population: 'TH', analysis_consent_version: '2026.3',
+        scan_mode: 'full', capture_method: 'mobile_camera',
+      });
       setStatus(created);
       // Backed-off and bounded. This was `while (!settled)` at a flat 1.5 s, which polled faster
       // than the analysis could finish and never stopped at all if the worker died.

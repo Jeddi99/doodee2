@@ -19,7 +19,7 @@ test('a nonsense tick still returns a usable delay rather than NaN', () => {
   }
 });
 
-test('isSettled recognises both terminal statuses and nothing else', () => {
+test('isSettled recognises every terminal status and nothing else', () => {
   for (const status of SETTLED_STATUSES) assert.equal(isSettled(status), true);
   for (const status of ['queued', 'processing', 'uploading', '', undefined, null, 3]) {
     assert.equal(isSettled(status), false, `${String(status)} is not terminal`);

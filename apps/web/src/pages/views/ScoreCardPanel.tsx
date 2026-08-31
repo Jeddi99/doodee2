@@ -3,6 +3,7 @@ import { ImageOff, LockKeyhole, ScanFace } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { GlassCard } from "../DashboardPage";
 import { getScans, getScoreCard, getSession } from "../../lib/api";
+import { latestCraniofacialScan } from "../../lib/latestScan";
 
 /**
  * Similarity score card, entitlement-gated.
@@ -86,7 +87,7 @@ export default function ScoreCardPanel() {
   const navigate = useNavigate();
   const session = useQuery({ queryKey: ["session"], queryFn: getSession });
   const scans = useQuery({ queryKey: ["scans"], queryFn: getScans });
-  const scanId = new URLSearchParams(window.location.search).get("scan_id") || scans.data?.[0]?.id;
+  const scanId = new URLSearchParams(window.location.search).get("scan_id") || latestCraniofacialScan(scans.data)?.id;
 
   const card = useQuery({
     queryKey: ["score-card", scanId],

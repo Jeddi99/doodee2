@@ -17,7 +17,7 @@ from django.template.response import TemplateResponse
 from django.utils import timezone
 
 from .models import (
-    ChatConversation, ChatMessage, ChatRole, ChatSetting, ChatTopic, ChatUsage, ConsentEvent, Coupon,
+    AIUsageLedger, ChatConversation, ChatMessage, ChatRole, ChatSetting, ChatTopic, ChatUsage, ConsentEvent, Coupon,
     CouponGrant, CouponRedemption, CreditLedger, DailyActive, FirebaseIdentity, Notification,
     Order, PayoutAccount, Plan, PromoCode, PromoRedemption, PushToken, Referral, ReferralCode,
     Scan, Simulation, SimulationPreviewUsage, SiteSetting, Subscription, UserAttribution, Visit,
@@ -342,8 +342,8 @@ class ScanAdmin(ConfirmingModelAdmin):
 
 @admin.register(Simulation)
 class SimulationAdmin(ConfirmingModelAdmin):
-    list_display = ("id", "scan", "region", "status", "created_at", "expires_at")
-    list_filter = ("region", "status")
+    list_display = ("id", "scan", "kind", "region", "status", "attempt_count", "created_at", "expires_at")
+    list_filter = ("kind", "region", "status")
     readonly_fields = tuple(field.name for field in Simulation._meta.fields)
 
 
@@ -502,6 +502,14 @@ class ChatUsageAdmin(admin.ModelAdmin):
     autocomplete_fields = ("user",)
 
 
+@admin.register(AIUsageLedger)
+class AIUsageLedgerAdmin(admin.ModelAdmin):
+    list_display = ("created_at", "user", "provider", "model", "status", "reserved_satang", "actual_satang")
+    list_filter = ("status", "provider", "model")
+    search_fields = ("user__email", "idempotency_key")
+    readonly_fields = tuple(field.name for field in AIUsageLedger._meta.fields)
+
+
 @admin.register(ChatSetting)
 class ChatSettingAdmin(ConfirmingModelAdmin):
     """One row, edited in place. Add and delete are off so there is exactly one answer to
@@ -522,9 +530,9 @@ class ChatSettingAdmin(ConfirmingModelAdmin):
             "description": (
                 "ยิ่งโมเดลใหญ่ ระดับการคิดสูง และคำตอบยาว ค่าใช้จ่ายต่อคำถามยิ่งสูง · "
                 "<strong>คีย์ไม่ได้เก็บที่นี่</strong> ใส่ใน <code>.env</code> แล้ว restart: "
-                "Anthropic ใช้ <code>ANTHROPIC_API_KEY</code> · เจ้าอื่นใช้ <code>CHAT_API_KEY</code> · "
-                "<strong>OpenAI-compatible มีไว้ทดสอบ</strong> ไม่มี prompt caching (รายงานค่าใช้จ่ายจะขึ้นแคช 0) "
-                "และโมเดลฟรีตัวเล็กทำตามกฎความปลอดภัยได้ไม่แน่นอนเท่า Claude — ไม่ควรเปิดให้ผู้ใช้จริง"
+                "Gemini ใช้ <code>GEMINI_API_KEY</code> (หรือ <code>GOOGLE_API_KEY</code>) · "
+                "Anthropic ใช้ <code>ANTHROPIC_API_KEY</code> · OpenAI ใช้ <code>OPENAI_API_KEY</code> · "
+                "endpoint compatible อื่นใช้ <code>CHAT_API_KEY</code> · production default คือ Gemini 2.5 Flash"
             ),
         }),
         # โควตาแชทย้ายไปอยู่ที่ “แผน” แล้ว (ช่อง “แชทได้ (ข้อความ/เดือน)” ของแต่ละแผน)
@@ -546,12 +554,14 @@ class ChatSettingAdmin(ConfirmingModelAdmin):
 
         from .chat import chat_enabled
 
+        gemini_key = bool(os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY"))
         anthropic_key = bool(os.getenv("ANTHROPIC_API_KEY"))
         chat_key = bool(os.getenv("CHAT_API_KEY"))
         openai = obj.provider == ChatSetting.Provider.OPENAI
+        gemini = obj.provider == ChatSetting.Provider.GEMINI
 
         if chat_enabled():
-            where = obj.base_url if openai else "Anthropic"
+            where = "Google Gemini" if gemini else (obj.base_url if openai else "Anthropic")
             return format_html(
                 '<strong style="color:var(--object-tools-bg,#417690)">พร้อมใช้งาน</strong> · {} · {}',
                 where, obj.model,
@@ -559,10 +569,11 @@ class ChatSettingAdmin(ConfirmingModelAdmin):
 
         if not django_settings.CHAT_ENABLED:
             reason = "ปิดจากไฟล์ .env (CHAT_ENABLED=false) — ปุ่มคำถามสำเร็จรูปยังใช้ได้ตามปกติ"
+        elif gemini:
+            reason = "เลือก Google Gemini แต่ไม่มี GEMINI_API_KEY ใน .env (ใส่แล้วต้อง restart)"
         elif openai:
             reason = "เลือก OpenAI-compatible แล้วแต่ยังไม่ได้ใส่ “ที่อยู่ API” ด้านล่าง"
         elif chat_key:
-            # The exact trap that cost a real afternoon: the key is there, on the other setting.
             reason = ("เลือก Anthropic แต่ไม่มี ANTHROPIC_API_KEY ใน .env — "
                       "คุณมี CHAT_API_KEY อยู่แล้ว ถ้าจะใช้ Groq หรือ OpenRouter "
                       "ให้เปลี่ยน “ผู้ให้บริการ” ด้านล่างเป็น OpenAI-compatible แล้วใส่ที่อยู่ API")
@@ -571,8 +582,8 @@ class ChatSettingAdmin(ConfirmingModelAdmin):
 
         return format_html(
             '<strong style="color:var(--error-fg,#ba2121)">ปิดอยู่</strong> — {}<br>'
-            '<span style="color:var(--body-quiet-color)">ANTHROPIC_API_KEY: {} · CHAT_API_KEY: {}</span>',
-            reason, "มี" if anthropic_key else "ไม่มี", "มี" if chat_key else "ไม่มี",
+            '<span style="color:var(--body-quiet-color)">GEMINI_API_KEY: {} · ANTHROPIC_API_KEY: {} · CHAT_API_KEY: {}</span>',
+            reason, "มี" if gemini_key else "ไม่มี", "มี" if anthropic_key else "ไม่มี", "มี" if chat_key else "ไม่มี",
         )
 
     def has_add_permission(self, request):

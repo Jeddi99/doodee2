@@ -22,3 +22,10 @@ staticfiles/
 # celery beat's own state, written into ./backend because compose bind-mounts it. Appears the
 # first time `docker compose up` runs the beat container, and is not ours to commit.
 backend/celerybeat-schedule
+
+# Test photographs for the scan page's upload path. Derived from an asset already in the tree by
+# backend/datamock/make_fixtures.py, so the recipe is version-controlled and the megabytes are
+# not. Regenerate with the command in backend/datamock/README.md.
+backend/datamock/*
+!backend/datamock/make_fixtures.py
+!backend/datamock/README.md

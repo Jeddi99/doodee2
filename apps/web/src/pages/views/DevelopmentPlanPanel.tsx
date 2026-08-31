@@ -4,6 +4,7 @@ import { useNavigate } from "react-router-dom";
 import { GlassCard } from "../DashboardPage";
 import { getDevelopmentPlan, getScans, getSession } from "../../lib/api";
 import { useLocale } from "../../useLocale";
+import { latestCraniofacialScan } from "../../lib/latestScan";
 
 /**
  * แผนพัฒนาตนเอง, built from this user's own measurements.
@@ -95,7 +96,7 @@ export default function DevelopmentPlanPanel() {
 
   const session = useQuery({ queryKey: ["session"], queryFn: getSession });
   const scans = useQuery({ queryKey: ["scans"], queryFn: getScans });
-  const scanId = new URLSearchParams(window.location.search).get("scan_id") || scans.data?.[0]?.id;
+  const scanId = new URLSearchParams(window.location.search).get("scan_id") || latestCraniofacialScan(scans.data)?.id;
   const entitled = session.data?.development_plan_enabled === true;
 
   const plan = useQuery({
