@@ -9,11 +9,16 @@ merge. Everything this app needs to change lives in the seams described below.
 The tree is mounted at **`/ui`**, not `/`. It is not a replacement for the
 existing pages yet — see [Not wired yet](#not-wired-yet).
 
+It is also not the whole app. The shell now hosts this product's own
+Django-backed screens alongside the ported ones — see
+[This app's own screens](#this-apps-own-screens).
+
 ```
 src/dd/
   DoodeeUI.tsx        root; stands in for the Next `app/layout.tsx`
   AppShell.tsx        stands in for `app/(app)/layout.tsx`
-  routes.tsx          route table; one entry per upstream `page.tsx`
+  routes.tsx          route table — ported screens AND this app's own
+  legacy-views.tsx    adapters mounting this app's screens in the shell
   globals.css         VERBATIM copy — do not edit, see "Styling"
   theme.css           fonts + `.dd-ui` rules this app adds
   preflight.generated.css   generated, see "Styling"
@@ -113,6 +118,36 @@ means that drift cannot recur here.
 > A missing model does not fail loudly. The dev server answers an unknown path
 > with `index.html`, and MediaPipe reports the HTML as
 > `"The model is not a valid Flatbuffer buffer"`.
+
+## This app's own screens
+
+The upstream app has **no equivalent** for DOODEE Chat, the members-only score
+card, referral + withdrawal, skin scan/trend, or the development plan. Those are
+this product's reason to exist and they are all Django-backed and working, so
+adopting the ported UI wholesale would have deleted them. Instead they render
+*inside* the ported shell, and get restyled panel by panel.
+
+They live in `src/pages/**` and are imported from there, never copied into
+`src/dd` — this directory stays a re-syncable mirror of upstream; anything under
+`src/pages` is ours.
+
+Most are prop-less default exports that already read Django through
+tanstack-query, so `routes.tsx` mounts them directly. `legacy-views.tsx` covers
+the four that took props from `DashboardPage`'s internal state (`Overview`,
+`Analysis`, `SimulationView`, `TryOnView`) and supplies them from the router.
+
+**Where both apps have a screen, the local one wins** and the ported one stays in
+the tree as its design reference. `scan` is the clearest case: `uploadScan()` →
+Django is what produces the score card, history, chat context and development
+plan, none of which the ported browser-only `ScanFlow` feeds. Same for `history`,
+`settings`, `pricing`, `try-on` and `simulation`.
+
+`LegacyScope` wraps these routes in `.dd-legacy`, which `theme.css` uses to
+re-establish two things they need and the ported shell does not provide: the
+`--app-*` colour variables their stylesheet reads (declared on `.doodee-app`,
+which is not an ancestor here) and the browser default typography the scoped
+Preflight strips. That block is scaffolding — each panel deletes its share as it
+is restyled.
 
 ## Not wired yet
 

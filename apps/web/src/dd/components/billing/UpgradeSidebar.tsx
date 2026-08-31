@@ -4,8 +4,16 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import {
+  Award,
+  BarChart3,
   BookOpen,
+  ClipboardList,
+  Clock,
   Crown,
+  Droplet,
+  Gift,
+  LayoutDashboard,
+  MessageCircle,
   Moon,
   Palette,
   Pin,
@@ -36,14 +44,15 @@ interface UpgradeSidebarProps {
   lockToViewport?: boolean;
 }
 
+// The rows a signed-in user reaches first. Deliberately not the whole nav:
+// prefetching fifteen route chunks on idle costs more than it saves.
 const NAV_PREFETCH_HREFS = [
-  "/",
+  "/home",
   "/scan",
-  "/surgery",
-  "/try-on",
+  "/analysis",
+  "/score-card",
+  "/doodee-gpt",
   "/history",
-  "/upgrade",
-  "/methodology",
   "/settings",
 ] as const;
 
@@ -109,11 +118,27 @@ export function UpgradeSidebar({
         )
     : 0;
 
+  // Upstream this listed only the ported screens. It now also carries this
+  // app's own Django-backed ones — chat, the score card, referral, skin and the
+  // development plan — which the upstream app has no equivalent for and which
+  // are the reason this product exists. Labels for those are inline th/en
+  // rather than `t.upgrade.sidebar.*`, because the ported dictionaries have no
+  // keys for screens that never existed upstream; they move into the
+  // dictionaries as each panel is restyled.
+  const th = lang === "th";
   const items: NavItem[] = [
+    { href: "/home", label: th ? "ภาพรวม" : "Overview", icon: LayoutDashboard },
     { href: "/scan", label: t.upgrade.sidebar.scan, icon: ScanFace },
-    { href: "/surgery", label: lang === "th" ? "จำลองรูป" : "Simulate", icon: ShieldCheck },
-    { href: "/try-on", label: lang === "th" ? "แต่งหน้า" : t.upgrade.sidebar.tryOn, icon: Palette },
-    { href: "/upgrade", label: t.upgrade.sidebar.plan, icon: Crown },
+    { href: "/analysis", label: th ? "ผลวิเคราะห์" : "Analysis", icon: BarChart3 },
+    { href: "/score-card", label: th ? "การ์ดคะแนน" : "Score card", icon: Award },
+    { href: "/plan", label: th ? "แผนพัฒนา" : "Plan", icon: ClipboardList },
+    { href: "/doodee-gpt", label: th ? "DOODEE Chat" : "DOODEE Chat", icon: MessageCircle },
+    { href: "/skin", label: th ? "ผิว" : "Skin", icon: Droplet },
+    { href: "/simulation", label: th ? "จำลองรูป" : "Simulate", icon: ShieldCheck },
+    { href: "/try-on", label: th ? "แต่งหน้า" : t.upgrade.sidebar.tryOn, icon: Palette },
+    { href: "/history", label: th ? "ประวัติ" : "History", icon: Clock },
+    { href: "/referral", label: th ? "แนะนำเพื่อน" : "Referral", icon: Gift },
+    { href: "/pricing", label: t.upgrade.sidebar.plan, icon: Crown },
     {
       href: "/methodology",
       label: t.upgrade.sidebar.methodology,
@@ -127,20 +152,17 @@ export function UpgradeSidebar({
   // hosting (the app shell wraps every /(app)/* route).
   function isActive(href: string): boolean {
     if (href === "/") return pathname === "/";
+    // `/scan` used to also claim `/history`; history has its own row now.
     if (href === "/scan") {
-      return (
-        pathname === "/scan" ||
-        pathname.startsWith("/scan/") ||
-        pathname === "/history" ||
-        pathname.startsWith("/history/")
-      );
+      return pathname === "/scan" || pathname.startsWith("/scan/");
     }
-    if (href === "/upgrade") {
+    // `/upgrade` is a redirect to `/pricing`, so the pricing row owns both.
+    if (href === "/pricing") {
       return (
-        pathname === "/upgrade" ||
-        pathname.startsWith("/upgrade/") ||
         pathname === "/pricing" ||
-        pathname.startsWith("/pricing/")
+        pathname.startsWith("/pricing/") ||
+        pathname === "/upgrade" ||
+        pathname.startsWith("/upgrade/")
       );
     }
     return pathname === href || pathname.startsWith(`${href}/`);

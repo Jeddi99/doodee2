@@ -35,7 +35,6 @@ function page<T extends Record<string, unknown>>(
 // --- Public surface (no auth, no app shell) --------------------------------
 const LandingHero = page(() => import("@/components/marketing/LandingHero"), "LandingHero");
 const WelcomeLogin = page(() => import("@/components/marketing/WelcomeLogin"), "WelcomeLogin");
-const PricingPage = page(() => import("@/components/pricing/PricingPage"), "PricingPage");
 const FaqPage = page(() => import("@/components/marketing/FaqPage"), "FaqPage");
 const BlogIndexPage = page(() => import("@/components/marketing/BlogIndexPage"), "BlogIndexPage");
 const BlogPostPage = page(() => import("@/components/marketing/BlogPostPage"), "BlogPostPage");
@@ -45,19 +44,51 @@ const SharedScanView = page(() => import("@/components/share/SharedScanView"), "
 const ValidationSnapshotView = page(() => import("@/components/proof/ValidationSnapshotView"), "ValidationSnapshotView");
 const EditorFaceCardPage = page(() => import("@/components/editor/EditorFaceCardPage"), "EditorFaceCardPage");
 
-// --- Signed-in surface (inside AppShell) -----------------------------------
-const ScanCockpitPage = page(() => import("@/components/scan/cockpit/ScanCockpitPage"), "ScanCockpitPage");
-const HistoryPage = page(() => import("@/components/history/HistoryPage"), "HistoryPage");
-const CompareView = page(() => import("@/components/history/CompareView"), "CompareView");
-const SettingsPage = page(() => import("@/components/settings/SettingsPage"), "SettingsPage");
+// --- Signed-in surface: ported screens with no local equivalent -------------
 const RedeemPage = page(() => import("@/components/redeem/RedeemPage"), "RedeemPage");
-const TryOnPage = page(() => import("@/components/try-on/TryOnPage"), "TryOnPage");
 const LipstickPage = page(() => import("@/components/lipstick/LipstickPage"), "LipstickPage");
 const HairColorPage = page(() => import("@/components/hair-color/HairColorPage"), "HairColorPage");
 const EyeColorPage = page(() => import("@/components/eye-color/EyeColorPage"), "EyeColorPage");
-const SurgeryFlow = page(() => import("@/components/surgery/SurgeryFlow"), "SurgeryFlow");
 const ValidatePage = page(() => import("@/components/validate/ValidatePage"), "ValidatePage");
 const FaceDebugPage = page(() => import("@/components/face-debug/FaceDebugPage"), "FaceDebugPage");
+const CompareView = page(() => import("@/components/history/CompareView"), "CompareView");
+
+// --- Signed-in surface: this app's own Django-backed screens ----------------
+//
+// Where both apps have a screen, the local one wins and the ported one becomes
+// its design reference rather than its replacement. The local screens read the
+// Django API; the ported equivalents talk to the upstream app's own /api/*
+// routes and Stripe, which do not exist here. `scan` is the clearest case:
+// uploadScan() -> Django is what produces the score card, history, chat context
+// and development plan, none of which the ported browser-only ScanFlow feeds.
+//
+// Still-ported, still-reachable counterparts for reference while restyling:
+//   scan       @/components/scan/cockpit/ScanCockpitPage
+//   history    @/components/history/HistoryPage
+//   settings   @/components/settings/SettingsPage
+//   pricing    @/components/pricing/PricingPage
+//   try-on     @/components/try-on/TryOnPage
+//   surgery    @/components/surgery/SurgeryFlow
+const local = (loader: () => Promise<{ default: ComponentType }>) => lazy(loader);
+
+const ScanPage = local(() => import("../pages/ScanPage"));
+const SkinScanPage = local(() => import("../pages/SkinScanPage"));
+const ChatPanel = local(() => import("../pages/views/ChatPanel"));
+const ScoreCardPanel = local(() => import("../pages/views/ScoreCardPanel"));
+const ReferralPanel = local(() => import("../pages/views/ReferralPanel"));
+const ProfilePanel = local(() => import("../pages/views/ProfilePanel"));
+const SkinPanel = local(() => import("../pages/views/SkinPanel"));
+const DevelopmentPlanPanel = local(() => import("../pages/views/DevelopmentPlanPanel"));
+const HistoryPanel = local(() => import("../pages/views/HistoryPanel"));
+const SettingsPanel = local(() => import("../pages/views/SettingsPanel"));
+const PricingPanel = local(() => import("../pages/views/PricingPanel"));
+
+// Views that took props from DashboardPage's internal state; see ./legacy-views.
+const OverviewRoute = local(() => import("./legacy-views").then((m) => ({ default: m.OverviewRoute })));
+const AnalysisRoute = local(() => import("./legacy-views").then((m) => ({ default: m.AnalysisRoute })));
+const SimulationRoute = local(() => import("./legacy-views").then((m) => ({ default: m.SimulationRoute })));
+const TryOnRoute = local(() => import("./legacy-views").then((m) => ({ default: m.TryOnRoute })));
+const LegacyScope = local(() => import("./legacy-views").then((m) => ({ default: m.LegacyScope })));
 
 /** Matches the transparent placeholder the upstream pages used as a Suspense
  *  fallback, so a route swap does not flash the page background. */
@@ -71,7 +102,6 @@ export function DoodeeRoutes() {
       <Routes>
         <Route index element={<LandingHero />} />
         <Route path="login" element={<WelcomeLogin />} />
-        <Route path="pricing" element={<PricingPage />} />
         <Route path="faq" element={<FaqPage />} />
         <Route path="methodology" element={<MethodologyPage />} />
         <Route path="privacy" element={<PrivacyPage />} />
@@ -86,18 +116,35 @@ export function DoodeeRoutes() {
         <Route path="upgrade" element={<Navigate to="../pricing" replace />} />
 
         <Route element={<AppShell />}>
-          <Route path="scan" element={<ScanCockpitPage />} />
-          <Route path="history" element={<HistoryPage />} />
-          <Route path="history/compare" element={<CompareView />} />
-          <Route path="settings" element={<SettingsPage />} />
+          {/* This app's own screens, on the Django API. Wrapped in a layout
+              route that re-establishes what their stylesheet needs; see
+              LegacyScope. */}
+          <Route element={<LegacyScope />}>
+            <Route path="home" element={<OverviewRoute />} />
+            <Route path="analysis" element={<AnalysisRoute />} />
+            <Route path="plan" element={<DevelopmentPlanPanel />} />
+            <Route path="doodee-gpt" element={<ChatPanel />} />
+            <Route path="score-card" element={<ScoreCardPanel />} />
+            <Route path="referral" element={<ReferralPanel />} />
+            <Route path="profile" element={<ProfilePanel />} />
+            <Route path="skin" element={<SkinPanel />} />
+            <Route path="skin-scan" element={<SkinScanPage />} />
+            <Route path="scan" element={<ScanPage />} />
+            <Route path="history" element={<HistoryPanel />} />
+            <Route path="settings" element={<SettingsPanel />} />
+            <Route path="pricing" element={<PricingPanel />} />
+            <Route path="simulation" element={<SimulationRoute />} />
+            <Route path="try-on" element={<TryOnRoute />} />
+          </Route>
+
+          {/* Ported screens with no local equivalent. */}
           <Route path="redeem" element={<RedeemPage />} />
-          <Route path="try-on" element={<TryOnPage />} />
           <Route path="lipstick" element={<LipstickPage />} />
           <Route path="hair-color" element={<HairColorPage />} />
           <Route path="eye-color" element={<EyeColorPage />} />
-          <Route path="surgery" element={<SurgeryFlow />} />
           <Route path="validate" element={<ValidatePage />} />
           <Route path="face-debug" element={<FaceDebugPage />} />
+          <Route path="history/compare" element={<CompareView />} />
         </Route>
 
         {/* Anything unrecognised goes to the landing page rather than a blank

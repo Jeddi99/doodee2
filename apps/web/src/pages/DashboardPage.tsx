@@ -67,7 +67,7 @@ import {
 } from "../analysisCatalog";
 import { latestCraniofacialScan } from "../lib/latestScan";
 
-type AppView =
+export type AppView =
   | "overview"
   | "analysis"
   | "plan"
@@ -325,7 +325,7 @@ function InsightList({
   );
 }
 
-function Overview({
+export function Overview({
   openView,
   onUnlock,
 }: {
@@ -341,7 +341,13 @@ function Overview({
   const [selectedRatio, setSelectedRatio] = useState<RatioMetric | null>(null);
 
   const unlockedCount = pillars.filter((item) => !item.locked).length;
-  const overallVal = overall !== null ? overall : parseFloat(pillars[0]?.score || "0");
+  // `pillarsFor(null)` scores every pillar "—" for an account with no scan yet,
+  // and `"—" || "0"` is truthy, so the fallback never fired: parseFloat gave
+  // NaN, which reached `toFixed(1)` as the literal text "NaN" and the gauge's
+  // strokeDashoffset as an invalid attribute. Guard on the parsed value.
+  const firstPillarScore = parseFloat(pillars[0]?.score ?? "");
+  const overallVal =
+    overall !== null ? overall : Number.isFinite(firstPillarScore) ? firstPillarScore : 0;
   const scoreDisplay = overallVal.toFixed(1);
 
   // SVG Gauge calculations
@@ -1059,7 +1065,7 @@ function UnlockModal({ onClose }: { onClose: () => void }) {
   );
 }
 
-function Analysis({
+export function Analysis({
   onUnlock,
   openView,
 }: {
