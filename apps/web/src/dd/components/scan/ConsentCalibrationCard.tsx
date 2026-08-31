@@ -1,4 +1,5 @@
 "use client";
+import { ddFetch } from "../../lib/api-bridge";
 
 import { useEffect, useMemo, useState } from "react";
 import { CheckCircle2, Database, Loader2, ShieldCheck } from "lucide-react";
@@ -70,7 +71,7 @@ export function ConsentCalibrationCard({ result, quality, source }: Props) {
       setState("login");
       return;
     }
-    const response = await fetch("/api/dataset/consent-sample", {
+    const response = await ddFetch("/api/dataset/consent-sample", {
       method: "POST",
       headers: {
         "content-type": "application/json",

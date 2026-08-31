@@ -1,3 +1,4 @@
+import { ddFetch } from "./api-bridge";
 /**
  * Phase 152 → 158.18 — Plan-aware billing entrypoint.
  *
@@ -181,7 +182,7 @@ async function runCheckout(
 
   let res: Response;
   try {
-    res = await fetch("/api/stripe/checkout", {
+    res = await ddFetch("/api/stripe/checkout", {
       method: "POST",
       headers: {
         "content-type": "application/json",
@@ -263,7 +264,7 @@ export async function openBillingPortal(): Promise<PortalResult> {
 
   let res: Response;
   try {
-    res = await fetch("/api/stripe/portal", {
+    res = await ddFetch("/api/stripe/portal", {
       method: "POST",
       headers: {
         "content-type": "application/json",

@@ -1,4 +1,5 @@
 "use client";
+import { ddFetch } from "../../lib/api-bridge";
 
 import { memo, useCallback, useEffect, useMemo, useState } from "react";
 import Image from "next/image";
@@ -910,7 +911,7 @@ const RedeemInlineForm = memo(function RedeemInlineForm(): React.JSX.Element {
         setErrorCode("UNAUTHORIZED");
         return;
       }
-      const res = await fetch("/api/redeem", {
+      const res = await ddFetch("/api/redeem", {
         method: "POST",
         headers: {
           "content-type": "application/json",

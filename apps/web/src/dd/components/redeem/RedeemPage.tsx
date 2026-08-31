@@ -1,4 +1,5 @@
 "use client";
+import { ddFetch } from "../../lib/api-bridge";
 
 import { useEffect, useRef, useState } from "react";
 import type { FocusEvent, FormEvent } from "react";
@@ -90,7 +91,7 @@ export function RedeemPage() {
         return;
       }
 
-      const res = await fetch("/api/redeem", {
+      const res = await ddFetch("/api/redeem", {
         method: "POST",
         headers: {
           "content-type": "application/json",

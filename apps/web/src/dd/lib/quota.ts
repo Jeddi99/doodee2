@@ -1,3 +1,4 @@
+import { ddFetch } from "./api-bridge";
 /**
  * Phase 152 → 158.17 — Client-side quota gateway.
  *
@@ -151,7 +152,7 @@ interface ConsumeErrorBody {
 export async function fetchSubscription(
   idToken: string
 ): Promise<SubscriptionRow> {
-  const res = await fetch("/api/quota", {
+  const res = await ddFetch("/api/quota", {
     method: "GET",
     headers: authHeaders(idToken),
     cache: "no-store",
@@ -168,7 +169,7 @@ export async function consumeQuotaApi(
   kind: QuotaKind,
   idToken: string
 ): Promise<SubscriptionRow> {
-  const res = await fetch("/api/quota/consume", {
+  const res = await ddFetch("/api/quota/consume", {
     method: "POST",
     headers: authHeaders(idToken),
     body: JSON.stringify({ kind }),
@@ -203,7 +204,7 @@ export async function refundQuotaApi(
   idToken: string
 ): Promise<void> {
   try {
-    const res = await fetch("/api/quota/refund", {
+    const res = await ddFetch("/api/quota/refund", {
       method: "POST",
       headers: authHeaders(idToken),
       body: JSON.stringify({ kind }),
@@ -239,7 +240,7 @@ export async function trackUsageApi(
   idToken: string
 ): Promise<void> {
   try {
-    await fetch("/api/usage/track", {
+    await ddFetch("/api/usage/track", {
       method: "POST",
       headers: authHeaders(idToken),
       body: JSON.stringify(input),

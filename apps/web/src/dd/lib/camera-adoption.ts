@@ -1,4 +1,5 @@
 "use client";
+import { ddFetch } from "./api-bridge";
 
 import { getAccessToken } from "@/lib/supabase/auth-client";
 
@@ -100,7 +101,7 @@ async function postEvent(
   item: QueuedCameraAdoptionEvent
 ): Promise<boolean> {
   try {
-    const res = await fetch("/api/product-events", {
+    const res = await ddFetch("/api/product-events", {
       method: "POST",
       headers: {
         authorization: `Bearer ${token}`,

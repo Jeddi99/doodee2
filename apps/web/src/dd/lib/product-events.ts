@@ -1,4 +1,5 @@
 "use client";
+import { ddFetch } from "./api-bridge";
 
 import { getAccessToken } from "@/lib/supabase/auth-client";
 import type { ProductEventName } from "@/lib/supabase/types";
@@ -110,7 +111,7 @@ export async function trackProductEvent(
   }
   if (!token && !ANONYMOUS_EVENTS.has(event)) return;
   try {
-    await fetch("/api/product-events", {
+    await ddFetch("/api/product-events", {
       method: "POST",
       headers: {
         ...(token ? { authorization: `Bearer ${token}` } : {}),

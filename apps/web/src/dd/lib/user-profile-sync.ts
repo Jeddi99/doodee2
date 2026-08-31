@@ -1,4 +1,5 @@
 "use client";
+import { ddFetch } from "./api-bridge";
 
 import { getAccessToken } from "@/lib/supabase/auth-client";
 import type { UserPrefs } from "@/lib/user-prefs";
@@ -24,7 +25,7 @@ export async function syncUserProfile(
   }
   if (!token) return;
   try {
-    await fetch("/api/user-profile", {
+    await ddFetch("/api/user-profile", {
       method: "PUT",
       headers: {
         authorization: `Bearer ${token}`,
