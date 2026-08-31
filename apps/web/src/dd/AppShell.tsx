@@ -2,12 +2,13 @@
  * Ported from the Next.js app's `src/app/(app)/layout.tsx` — the chrome every
  * signed-in screen rendered inside.
  *
- * Two changes from upstream, both forced by react-router:
+ * Changes from upstream:
  *   - `{children}` becomes `<Outlet />`, since a layout route renders its match
  *     rather than being handed children.
- *   - `next/dynamic` is not used for the two deferred widgets; `React.lazy`
+ *   - `next/dynamic` is not used for the deferred widget; `React.lazy`
  *     with an explicit `<Suspense>` is the direct equivalent and avoids routing
- *     them through the shim for no gain.
+ *     it through the shim for no gain.
+ *   - `<OnboardingWizard />` dropped; see the comment at its old call site.
  *
  * The markup is otherwise unchanged, including the Tailwind classes, so it
  * still reads as a diff against upstream.
@@ -29,11 +30,6 @@ import { QuotaGateProvider } from "@/lib/quota-gate";
 import { PaywallDialog } from "@/components/billing/PaywallDialog";
 import { ThemeToggle } from "@/components/ThemeToggle";
 
-const OnboardingWizard = lazy(() =>
-  import("@/components/onboarding/OnboardingWizard").then((m) => ({
-    default: m.OnboardingWizard,
-  })),
-);
 const InstallPrompt = lazy(() =>
   import("@/components/pwa/InstallPrompt").then((m) => ({ default: m.InstallPrompt })),
 );
@@ -92,14 +88,20 @@ export function AppShell() {
 
           <MobilePricingNav lang={lang} />
           <PaywallDialog />
-          {/* These three are deferred and purely additive chrome; a failure to
-              load one must not take the page with it, hence a null fallback
-              rather than a shared boundary. */}
+          {/* Deferred, purely additive chrome; a failure to load must not take
+              the page with it, hence a null fallback rather than a shared
+              boundary.
+
+              Upstream also mounted <OnboardingWizard /> here. It is dropped:
+              this app has its own onboarding at /onboarding, gated by
+              authRouting and persisted through lib/onboardingAnswers. The
+              ported wizard reads its own `hasOnboarded()` localStorage key,
+              which is unset for every existing user, so it opened a modal over
+              every signed-in screen and asked the same questions again into a
+              different store. The ported component stays in the tree as a
+              design reference. */}
           <Suspense fallback={null}>
             <InstallPrompt />
-          </Suspense>
-          <Suspense fallback={null}>
-            <OnboardingWizard />
           </Suspense>
         </div>
       </QuotaGateProvider>
