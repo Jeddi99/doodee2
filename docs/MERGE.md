@@ -98,21 +98,43 @@ helper 6 ไฟล์ลอยตั้งแต่ UI ถูก revert ที�
 
 ## ลำดับงาน
 
-### Phase 0 — เปลี่ยนคำศัพท์แล้วต่อสาย
+### Phase 0 — เปลี่ยนคำศัพท์แล้วต่อสาย ✅ เสร็จแล้ว
 
-ทำสามอย่างพร้อมกันเพราะแยกไม่ได้ — เปลี่ยนอย่างใดอย่างหนึ่งก่อนแล้วระบบพัง:
+commit `76d2c78` · `177bf4d` · `4e028bc` · `0749ca4` — 739 backend tests, 251 web tests, build ผ่าน
 
-1. `GET /procedures/` เสิร์ฟ `procedure_catalog.public_catalog()` (92) แทน `procedures.PROCEDURES` (24)
-2. `_canonical_presets` resolve ผ่าน `procedure_catalog.resolve_procedure()` คืน `ProcedureSpec`
-3. `validate_selections` รับ `{region, procedure_id, intensity_level}` แทน `{region, preset_id}`
-   — `canonical_pipeline` อ่าน `selection["procedure_id"]` อยู่แล้วสำหรับ `intensity_by_ref`
-   ซึ่งปัจจุบันได้ `{}` เสมอเพราะ client ส่ง key นี้ไม่เป็น
+ทำพร้อมกันเพราะแยกไม่ได้:
 
-พอสามข้อนี้ลงพร้อมกัน `surface_effects`, `flux_refine`, `evidence` จะเริ่มทำงานเป็นครั้งแรก
-— **เตรียมรับว่าผลลัพธ์ภาพจะเปลี่ยนไปจากเดิมทันที** ไม่ใช่แค่มีตัวเลือกเพิ่ม
+1. `GET /procedures/` เสิร์ฟ `public_catalog()` — 72 แถวที่ render ได้ ซ่อน 20 แถวนอกขอบเขต
+   (`?include_unavailable=true` คืนครบ 92 ไว้ตรวจกับ data.txt) · เพิ่ม `/procedures/categories/`
+   · route detail เดิมใช้ `<slug:>` ซึ่ง character class ไม่มีจุด → id จริงอย่าง `"1.1"` ตอบ 404 ทุกตัว
+2. `_canonical_presets` resolve ผ่าน `resolve_procedure()` คืน `ProcedureSpec`
+3. `validate_selections` รับ `{procedure_id, intensity_level}` คู่กับ `{region, preset_id}` เดิม
+   ปฏิเสธ stack ที่ผสมสองแคตตาล็อก และปฏิเสธหัตถการซ้ำแทนที่จะยุบ (ยุบแล้ว zip กับ selections เพี้ยน)
+4. `SimulationView.jsx` เขียนใหม่รอบแคตตาล็อก — tab ตามหมวด, stack เดียวคีย์ด้วยหัตถการ,
+   ระดับความเข้มบนแถว stack, สามมุมกล้อง
 
-ไฟล์: `backend/doodee/simulation_engine.py`, `views.py`, `procedures.py` (ลบ),
-`apps/web/src/components/SimulationView.jsx`
+**สี่เรื่องที่โผล่มาตอนต่อสายจริง และแก้ไปแล้ว:**
+
+| เจอ | ทำไมถึงไม่เจอตอนวางแผน | แก้ |
+|---|---|---|
+| หัตถการ catalog ไม่มี legacy fallback | legacy renderer วาดจากภาพเดียว ทำ pipeline สามมุมไม่ได้ | สแกนที่ fuse ไม่ได้ → `canonical_required` ตั้งแต่ validate ไม่ปล่อยให้ไป render ครึ่ง ๆ |
+| preview คืนแต่มุมหน้าตรง | `legacy_view` hardcode เป็น `"front"` สำหรับ spec | รับ `view` จาก client · บันทึกใน `parameters` ให้ worker render มุมเดียวกัน |
+| zoom ใช้ไม่ได้ | selection ของ catalog ไม่มี `region` — หัตถการมี ผ่าน pipeline และเป็นคนละคำศัพท์ (22 ชื่อ ไม่ใช่ 6) | `_region_indices` อ่านจากตารางไหนก็ได้ที่รู้จักชื่อนั้น · `surface_effects.REGION_GROUPS` มีครบ 22 อยู่แล้ว |
+| หัตถการ 1.2 ทำ render ล้มทั้งภาพ | ดัน `cheekFiller` ติดลบ ซึ่ง `evidence` ไม่มีทิศนั้น (ตั้งใจ — ไม่มีหัตถการที่ลดปริมาตรกลางหน้า) | movement ยัง render แต่ไม่มีบรรทัดในบันทึก · dose ที่กุขึ้นแย่กว่าบรรทัดที่หายไป · มีเทสต์ตรึงว่าเหลือแถวเดียว |
+
+**และหนึ่งเรื่องที่พอร์ตตกไปตั้งแต่แรก:** `apps/web/src/simulation.css` ไม่เคยถูกยกมาจาก doodoodeedee
+หน้าจำลองทั้งหน้าจึงใช้สไตล์ default ของ browser มาตลอด — เขียนใหม่ด้วย token `--dd-*` ของ doodee web
+(ฟ้าบนน้ำแข็ง) ไม่ใช่ก็อปม่วงบนเทาของ doodoodeedee
+
+**หนี้ที่เกิดขึ้นและยังไม่แก้:** `apps/mobile/app/simulation.tsx` + `packages/shared/src/api.ts`
+ยังเรียก `?region=` และส่ง `{region, preset_id}` → ตอนนี้ได้ `preset_region_mismatch`
+mobile อยู่นอกขอบเขตที่ตกลงกัน แต่นี่คือ **จอที่พังจริง** ไม่ใช่แค่ฟีเจอร์ที่ไม่ได้พอร์ต
+
+ไฟล์: `simulation_engine.py`, `views.py`, `urls.py`, `serializers.py`, `tasks.py`,
+`canonical_pipeline.py`, `SimulationView.jsx`, `lib/procedureStack.js`, `lib/simulationError.js`,
+`lib/api.js`, `simulation.css`
+
+> `procedures.py` **ยังไม่ลบ** — `development_plan.py` และโหมดเทียบค่าอ้างอิงยังใช้อยู่ · ลบใน Phase 3
 
 ### Phase 1 — ชั้นวัด
 
