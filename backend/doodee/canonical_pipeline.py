@@ -24,7 +24,7 @@ import cv2
 import numpy as np
 
 from . import evidence
-from .surface_effects import apply_surface_pipeline, steps_mask
+from .surface_effects import REGION_GROUPS, apply_surface_pipeline, steps_mask
 from .procedure_catalog import (
     ProcedureSpec, TECHNIQUE_BY_REF, canonical_technique, refine_plan, surface_steps,
 )
@@ -1156,6 +1156,19 @@ def _download_views(download_fn, object_names):
     return [future.result() for future in futures]
 
 
+def _region_indices(region):
+    """The landmarks a focus box is drawn around, from whichever table names this region.
+
+    Two vocabularies meet here. The legacy catalog works in six coarse regions; the surface
+    pipeline and every catalog procedure work in twenty-two finer ones -- `nose_alar`, not
+    `nose`. Both are answered from one lookup so the viewer does not have to know which
+    catalog produced the render it is pointing at.
+    """
+    if region in REGION_LANDMARKS:
+        return REGION_LANDMARKS[region]
+    return tuple(index for island in REGION_GROUPS.get(region, ()) for index in island)
+
+
 def simulate_scan_views(scan, sliders, download_fn, *, selections=None, presets=None,
                         amplify=1., engine="tps", max_side=1280,
                         output_format=".webp", step=8, refine=True):
@@ -1210,7 +1223,11 @@ def simulate_scan_views(scan, sliders, download_fn, *, selections=None, presets=
         intensity_by_ref.get(preset.source_ref, intensity_by_ref.get(preset.id, 3))
         for preset in surface_specs
     ]
-    regions = [selection["region"] for selection in selections if "region" in selection]
+    # A catalog selection names no region -- the procedure does, through its pipeline. Without
+    # this the viewer had nothing to aim at for a catalog render and the zoom sat disabled on a
+    # picture whose whole point is one small area.
+    regions = ([selection["region"] for selection in selections if "region" in selection]
+               or list(dict.fromkeys(step.region for spec in atomic_specs for step in spec.pipeline)))
     rendered_views = {}
     for view, morphed in zip(prepared, projected):
         after, moved, _triangles, guard = simulate(
@@ -1245,8 +1262,9 @@ def simulate_scan_views(scan, sliders, download_fn, *, selections=None, presets=
             "max_shift_px": round(float(shift.max()), 2),
             "held_back": round(1. - guard, 3) if guard < 1. else 0.,
             "focus_boxes": {
-                region: _focus_box(view["points"], REGION_LANDMARKS[region], view["image"].shape)
-                for region in regions
+                region: _focus_box(view["points"], indices, view["image"].shape)
+                for region, indices in ((name, _region_indices(name)) for name in regions)
+                if indices
             },
             "applied_regions": (
                 sorted({step.region for step in steps}) if surface_specs else regions
@@ -1284,8 +1302,19 @@ def simulate_scan_views(scan, sliders, download_fn, *, selections=None, presets=
             },
         })
     if not measurements:
-        measurements = [evidence.record(key, value, amplify)
-                        for key, value in sliders.items() if value]
+        for key, value in sliders.items():
+            if not value:
+                continue
+            try:
+                measurements.append(evidence.record(key, value, amplify))
+            except KeyError:
+                # A direction no procedure in the evidence table performs -- `side()` returns
+                # nothing for it on purpose, so that a negative setting on a control with no
+                # reverse is not silently reported as a milder version of the upward treatment.
+                # The movement is still rendered; it just gets no line in the record, because a
+                # fabricated dose would be worse than a missing one. Logged, not swallowed: this
+                # is a gap between the catalog and the evidence table, and it should be closed.
+                logger.warning("no evidence for %s at %s; measurement line omitted", key, value)
     return {
         "views": rendered_views,
         "legacy_view": legacy_view,

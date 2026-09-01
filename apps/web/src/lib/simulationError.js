@@ -38,6 +38,34 @@ const MESSAGES = {
     th: () => 'บริเวณนี้อยู่ใกล้ค่าเฉลี่ยมากจนการปรับจะมองไม่เห็นความต่าง',
     en: () => 'This region already sits so close to the mean that a change would be invisible.',
   },
+  canonical_required: {
+    th: () => 'หัตถการจากแคตตาล็อกต้องใช้ภาพครบทั้งสามมุม สแกนนี้มีไม่ครบ จึงจำลองให้ไม่ได้',
+    en: () => 'Catalog procedures need all three photographs. This scan does not have them, so it cannot be simulated.',
+  },
+  mixed_catalogs: {
+    th: () => 'รวมหัตถการกับรูปทรงไว้ในภาพเดียวกันไม่ได้ เลือกอย่างใดอย่างหนึ่ง',
+    en: () => 'Procedures and shapes cannot share one image. Choose one or the other.',
+  },
+  duplicate_procedure: {
+    th: () => 'หัตถการเดียวกันถูกเลือกซ้ำ เอาออกหนึ่งรายการก่อน',
+    en: () => 'The same procedure was chosen twice. Remove one of them.',
+  },
+  unknown_procedure: {
+    th: () => 'ไม่พบหัตถการที่เลือกในแคตตาล็อก',
+    en: () => 'That procedure is not in the catalog.',
+  },
+  procedure_out_of_scope: {
+    th: (name) => `${name || 'หัตถการนี้'}ไม่ได้อยู่ในขอบเขตของภาพใบหน้า จึงจำลองไม่ได้`,
+    en: (name) => `${name || 'That procedure'} is outside the scope of a face photograph, so it cannot be simulated.`,
+  },
+  invalid_intensity_level: {
+    th: () => 'ระดับความเข้มที่เลือกอยู่นอกช่วง 1–5',
+    en: () => 'The chosen intensity is outside the 1–5 range.',
+  },
+  unknown_view: {
+    th: () => 'มุมภาพที่ขอไม่ได้ถูกสร้างไว้',
+    en: () => 'That camera angle is not one of the rendered views.',
+  },
   preview_in_progress: {
     th: () => 'กำลังสร้างภาพก่อนหน้าอยู่ รอสักครู่แล้วลองอีกครั้ง',
     en: () => 'A preview is still rendering. Wait a moment and try again.',
@@ -90,7 +118,11 @@ for (const code of CLIENT_FAULT) {
   };
 }
 
-const CODE = /^([a-z_]+)(?::([a-z_]+))?$/;
+// The suffix names whichever thing the failure belongs to: a region id (`chin`) for the shape
+// catalog, or a procedure's source ref (`1.7`) for the clinical one. Digits and dots are in the
+// class for the second — without them `procedure_out_of_scope:1.7` fails to parse and the raw
+// code reaches the screen, which is exactly what this module exists to prevent.
+const CODE = /^([a-z_]+)(?::([a-z0-9_.]+))?$/;
 
 /**
  * @param message  the raw string thrown by the API layer

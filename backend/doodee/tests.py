@@ -659,6 +659,66 @@ class ProcedureSelectionTest(TestCase):
         self.assertEqual(columns["parameters"]["delta"], -.05)
 
 
+class ProcedureFocusBoxTest(SimpleTestCase):
+    """The viewer's zoom has to have something to aim at for a catalog render.
+
+    A catalog selection names no region -- the procedure does, through its pipeline, and in a
+    finer vocabulary than the six the legacy catalog used. Nothing joined the two, so a catalog
+    render came back with no focus boxes and the zoom sat disabled on a picture whose whole
+    point is one small area of the face.
+    """
+
+    def test_every_region_a_procedure_can_touch_resolves_to_landmarks(self):
+        from doodee.canonical_pipeline import _region_indices
+        from doodee.procedure_catalog import PROCEDURES
+
+        regions = {step.region for spec in PROCEDURES if spec.supported for step in spec.pipeline}
+        missing = sorted(region for region in regions if not _region_indices(region))
+        self.assertEqual(missing, [], f"no focus box possible for: {missing}")
+
+    def test_the_finer_vocabulary_is_reached_when_the_coarse_one_does_not_name_it(self):
+        from doodee.canonical_pipeline import _region_indices
+        from doodee.surface_effects import REGION_GROUPS
+
+        self.assertEqual(_region_indices("nose_alar"), REGION_GROUPS["nose_alar"][0])
+        self.assertEqual(_region_indices("unknown_region"), ())
+
+
+class ProcedureEvidenceGapTest(SimpleTestCase):
+    """A catalog procedure whose movement the evidence table cannot describe must still render.
+
+    `evidence.side` returns nothing for a direction no procedure performs -- that is deliberate,
+    so a negative setting on a control with no reverse is never reported as a milder version of
+    the upward treatment. But `record` raised on it, and the measurement list is built after the
+    images are already rendered, so one such movement failed the whole simulation.
+
+    Today exactly one row is in that position: 1.2 drives `cheekFiller` negative, and no
+    procedure in the table removes midface volume. The image is still made; the record simply
+    has no line for that movement, which is the honest answer and not a fabricated dose.
+    """
+
+    def test_the_gap_is_still_exactly_one_row_and_it_is_named(self):
+        from doodee import evidence
+        from doodee.procedure_catalog import PROCEDURES, compile_warp_sliders
+
+        gaps = {
+            (spec.source_ref, key)
+            for spec in PROCEDURES if spec.supported
+            for level in range(1, 6)
+            for key, value in compile_warp_sliders([spec], [level]).items()
+            if value and evidence.side(key, value) is None
+        }
+        self.assertEqual(gaps, {("1.2", "cheekFiller")},
+                         "a new gap appeared, or 1.2 was fixed and this test should go")
+
+    def test_a_movement_with_no_evidence_is_omitted_rather_than_invented(self):
+        from doodee import evidence
+
+        self.assertIsNone(evidence.side("cheekFiller", -34))
+        with self.assertRaises(KeyError):
+            evidence.record("cheekFiller", -34)
+
+
 class ProcedureSimulationApiTest(TestCase):
     """The catalog reaching the queue: what a preview request records and answers with."""
 

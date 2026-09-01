@@ -106,19 +106,30 @@ export const getSession = () => request('/session/');
 // receipts in one read — the page is a single answer, not four.
 export const getProfile = () => request('/profile/');
 export const deleteScan = (scanId) => request(`/scans/${scanId}/`, { method: 'DELETE' });
-// Without a region this returns the whole catalog, which the simulation view needs: a stacked
-// selection has to name shapes and procedures for regions whose tab is not open.
-export const getProcedures = (region) => request(region ? `/procedures/?region=${encodeURIComponent(region)}` : '/procedures/');
-// `selections` is an array of `{ region, preset_id }` — one entry per region being simulated.
-export const createSimulation = (scanId, selections, consentVersion) => request('/simulations/', {
-  method: 'POST',
-  headers: { 'Content-Type': 'application/json', 'Idempotency-Key': crypto.randomUUID() },
-  body: JSON.stringify({ scan_id: scanId, selections, simulation_consent_version: consentVersion }),
+// The clinical catalog: what a clinic actually does, one row per procedure. Without a category
+// this returns the whole renderable set, which the simulation view needs — a stack has to name
+// procedures from categories whose tab is not open.
+export const getProcedures = (category) => request(category ? `/procedures/?category=${encodeURIComponent(category)}` : '/procedures/');
+// The headings, so the list can be grouped without the client hardcoding them. Derived on the
+// server from the catalog, so a heading with nothing renderable behind it never arrives here.
+export const getProcedureCategories = () => request('/procedures/categories/');
+// `selections` is either `{ procedure_id, intensity_level }` per catalog procedure, or the older
+// `{ region, preset_id }` per region. One request cannot mix the two.
+//
+// `view` names which of the three renders comes back as the image. Only the fused engine makes
+// more than one, so it is left out for a legacy stack, where the angle follows from the preset.
+const simulationBody = (scanId, selections, consentVersion, view) => JSON.stringify({
+  scan_id: scanId, selections, simulation_consent_version: consentVersion, ...(view ? { view } : {}),
 });
-export const previewSimulation = (scanId, selections, consentVersion) => request('/simulations/preview/', {
+export const createSimulation = (scanId, selections, consentVersion, view) => request('/simulations/', {
   method: 'POST',
   headers: { 'Content-Type': 'application/json', 'Idempotency-Key': crypto.randomUUID() },
-  body: JSON.stringify({ scan_id: scanId, selections, simulation_consent_version: consentVersion }),
+  body: simulationBody(scanId, selections, consentVersion, view),
+});
+export const previewSimulation = (scanId, selections, consentVersion, view) => request('/simulations/preview/', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json', 'Idempotency-Key': crypto.randomUUID() },
+  body: simulationBody(scanId, selections, consentVersion, view),
 });
 export const getSimulation = (simulationId) => request(`/simulations/${simulationId}/status/`);
 // DOODEE Chat. Only the measurements travel upstream — the backend never sends the photos,

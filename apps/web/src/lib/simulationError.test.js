@@ -53,3 +53,27 @@ test('nothing to report reads as empty so the caller renders no error block', ()
     assert.deepEqual(describeSimulationError(empty, true, label), { code: null, region: null, text: '' });
   }
 });
+
+test('a procedure ref parses as the thing the failure belongs to, dot and all', () => {
+  // `1.7` is a source ref, not a region slug. Before the dot was in the character class this
+  // fell through to the raw-message branch and the user read `procedure_out_of_scope:1.7`.
+  const result = describeSimulationError('procedure_out_of_scope:1.7', false, (id) => `procedure ${id}`);
+  assert.equal(result.code, 'procedure_out_of_scope');
+  assert.equal(result.region, '1.7');
+  assert.equal(result.text, 'procedure 1.7 is outside the scope of a face photograph, so it cannot be simulated.');
+});
+
+test('the catalog refusals each say what to do about them', () => {
+  for (const [code, thai] of [
+    ['canonical_required', /สามมุม/],
+    ['mixed_catalogs', /เลือกอย่างใดอย่างหนึ่ง/],
+    ['duplicate_procedure', /ซ้ำ/],
+    ['unknown_procedure', /ไม่พบหัตถการ/],
+    ['invalid_intensity_level', /1–5/],
+    ['unknown_view', /มุมภาพ/],
+  ]) {
+    const result = describeSimulationError(code, true, label);
+    assert.equal(result.code, code);
+    assert.match(result.text, thai, code);
+  }
+});
