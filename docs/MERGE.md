@@ -140,35 +140,46 @@ commit `76d2c78` · `177bf4d` · `4e028bc` · `0749ca4` — 739 backend tests, 2
 
 > `procedures.py` **ยังไม่ลบ** — `development_plan.py` และโหมดเทียบค่าอ้างอิงยังใช้อยู่ · ลบใน Phase 3
 
-### Phase 1 — ชั้นวัด
+### Phase 1 — ชั้นวัด ✅ เสร็จแล้ว
 
-- ยก metric ที่ `2ef0164` จงใจไม่เอามา: `_tilt_degrees`, `_facing`, `_signed_point_line_distance`,
-  E-line (Ricketts), gonial angle proxy, canthal/brow tilt, mentolabial angle
-- ขยายเพดานจาก 30 เป็น 60 metric
-- bump `FORMULA_VERSION` → `2026.5-extended`
-- ยก `metric_catalog.py` มา แล้วให้ `apps/web/src/analysisCatalog.ts` (static 102 รายการ) อ่านจาก
-  backend แทนการ hardcode — `CATALOG_NAME_TO_METRIC` ที่ map ได้ 12 จะหายไปเอง
+commit `31bc5cc` · `03510aa` — metric 27 → **51** · `FORMULA_VERSION` = `2026.5-extended`
 
-> **ผลข้างเคียงที่ยอมรับแล้ว:** สแกนที่เก็บไว้ (ตอนนี้ 6 รายการ, production 0) จะเทียบกับของใหม่ไม่ได้
-> ตอนนี้คือช่วงที่ราคาถูกที่สุดที่จะทำ
+- มุมเป็นองศา (canthal/brow tilt, gonial angle, mentolabial), สัดส่วนเทียบ feature ต่อ feature,
+  เส้น E ของ Ricketts แบบ**มีเครื่องหมาย** (ริมฝีปากล้ำเส้นกับอยู่หลังเส้นเป็นคนละเรื่อง)
+- `metric_catalog.py` 85 รายการ · `GET /metric-catalog/?group=`
+- `reference_scoring` ได้ `views_from_metrics` → คะแนนแยกหน้าตรง/ด้านข้าง (ของจริง: front 83, side 52)
 
-ไฟล์: `backend/doodee/analysis_engine.py`, `metric_catalog.py` (ใหม่),
-`apps/web/src/data/faceMetrics.js` (`MetricCatalogTest` บังคับให้ key ตรงกัน)
+**ที่ต่างจากแผน:**
 
-### Phase 2 — ชั้นตีความ
+| เจอ | ทำอะไร |
+|---|---|
+| `analysis_engine` แตกกันสองทาง — WEB มี `skin` scan mode + `skin_engine` ที่ DDD ไม่มี | merge ทีละส่วน ไม่ทับไฟล์ · **ไม่เอา** `_skin_metrics` ของ DDD เพราะ `skin_engine` ที่นี่ (LAB, band-pass, per-region) ดีกว่ามาก |
+| `metric_catalog` อ้างคีย์ผิว `visible_*` 4 ตัวที่ engine ที่นี่ไม่ผลิต | เพิ่ม family ที่สาม `skin_signals` ชี้ไปคีย์จริงของ `skin_engine` · แยกจาก `metrics` เพราะ face scan ผลิต metric ครบแต่ไม่มี skin signal เลย |
+| เทสต์ที่ปักคีย์ไว้เป็น**รายชื่อเขียนมือ** และเก่าไปแล้วสองทาง (ขาด `lip_fullness_ratio`, ยังอ้าง `visible_*` ที่เลิกผลิต) | แทนด้วยสองอย่างที่อ่านไฟล์ต้นทางจริง: `METRIC_KEYS` ตรวจกับ output ทุกครั้งที่สแกน + `faceMetrics.test.js` แกะ `analysis_engine.py` |
 
-- `findings.py` — z-score → คำตัดสินไทย/อังกฤษ 4 ระดับ + `_category_headroom`
-- `score_distribution.py` — KDE + histogram + percentile · **ครอบด้วย `redact()` ที่ยกมาจาก
-  `percentile.py`** เพื่อรักษาโมเดลธุรกิจ · gate `reliable` ที่ n≥30 และรายงานตรง ๆ เมื่อไม่ถึง
-- `medical_references.py`
-- route `GET /scans/<uuid>/assessment/` — รวม overall/categories/per-view/distribution/findings/
-  coverage/cohort ในคำตอบเดียว
+> `CATALOG_NAME_TO_METRIC` ใน `dashboardData.ts` ยังไม่ลบ — ผูกกับหน้าจอ measurement library ยกไป Phase 5
 
-> `percentile.py` เดิมถูกแทนที่ แต่ `ScoreCardEndpointTest` และ `SimilarityPercentileTest` ต้อง
-> เขียนใหม่ให้ครอบพฤติกรรมเดิมที่ยังต้องจริง: ตัวเลขที่ปิดต้อง**หายจาก payload** ไม่ใช่ติดธง
+### Phase 2 — ชั้นตีความ ✅ เสร็จแล้ว
 
-ไฟล์: `backend/doodee/findings.py`, `score_distribution.py`, `medical_references.py` (ใหม่ทั้งสาม),
-`views.py`, `urls.py`, `percentile.py` (ยุบ), `tests.py`
+commit `f07eab7` — `findings.py` · `score_distribution.py` · `GET /scans/<uuid>/assessment/`
+
+ของจริงบนสแกนที่มีอยู่: strengths 6 · improvements 6 · unnamed 0 พร้อมคำตัดสินไทย/อังกฤษ
+
+**สามช่องที่ต้นทางเปิดทิ้งไว้ และปิดที่นี่:**
+
+1. **`/assessment/` ไม่มี gating เลย** — วางข้าง `score_card` ที่ redact อยู่ มันคือ**ประตูที่สอง**
+   เข้าถึงตัวเลขที่ประตูแรกกันไว้ · ตอนนี้ redact ด้วย `percentile.redact` ตัวเดียวกัน
+   บวกกับคำตัดสินที่เป็นคำตอบของแพ็กเกจจ่ายเงิน — รายการที่ล็อกเหลือแค่ชื่อ จำนวนยังบอกครบ
+2. **`_procedures_by_id()` คืน `{}`** — เป็น stub ที่ทำให้ทุก finding บอกเงียบ ๆ ว่าทำอะไรไม่ได้ ·
+   ต่อกับตารางจริง · Phase 3 ลบ `procedures.py` เมื่อไหร่ เทสต์แดงทันทีจนกว่าจะ re-point
+3. **`medical_reference` อ่านจาก `data.json` ที่ไม่มีในรีโปต้นทางด้วยซ้ำ** — ตัดทิ้ง
+   dose/หน่วย/มม./แหล่งอ้างอิงอยู่ใน `evidence.py` แล้ว คีย์ด้วย control ที่ simulation ขยับจริง
+
+**แผนเดิมผิดหนึ่งข้อ:** `percentile.py` **ไม่ได้**ถูกแทนที่ · `similarity_percentile` วัดระยะ
+chi-square ถึงค่าเฉลี่ยอ้างอิง ส่วน `score_distribution` วัดอันดับเทียบผู้ใช้คนอื่น
+คนละปริมาณ ทั้งคู่ควรมี — เก็บทั้งสองไฟล์
+
+> `medical_references.py` **ไม่พอร์ต** — ไม่มีไฟล์ข้อมูล และคีย์ด้วย preset_id ที่กำลังจะลบ
 
 ### Phase 3 — ชั้นจำลองให้ครบ
 
