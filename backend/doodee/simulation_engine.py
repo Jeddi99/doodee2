@@ -387,3 +387,117 @@ def simulate(source, presets, max_side=2048, output_format=".png"):
     ]
     focus_boxes = {region: _focus_box(region_point_set, width, height) for region, region_point_set in region_points.items()}
     return encoded.tobytes(), measurements, focus_boxes
+
+
+# ---------------------------------------------------------------------------
+# Canonical three-view pipeline, ported from github.com/Rapeepath/doodoodeedee.
+#
+# The engine above warps one photograph at a time from a 2-D movement table.
+# `canonical_pipeline` instead fuses the front and both profiles into a single
+# 3-D model, applies the change there, and projects it back into each view — so
+# the front and the profile of the same simulation agree with each other, which
+# two independent 2-D warps cannot guarantee.
+#
+# Both engines are kept, and `engine_for_selections` decides. That is not
+# indecision: the two model different things and one of them has no counterpart
+# upstream.
+#
+#   reference:<region>  -> the engine above. This app can aim a region at a
+#                          measurement taken from reference scores
+#                          (`reference_preset`). The canonical pipeline works
+#                          from a closed catalog of named sliders and has no
+#                          way to express "move this until it measures X", so
+#                          routing these there would delete a working feature.
+#   catalog presets     -> the canonical pipeline. All 26 preset ids in
+#                          procedures.py exist in SIMULATION_PRESETS with the
+#                          same measurement_key, so the mapping is by id.
+#
+# Known consequence, flagged rather than hidden: a person switching between the
+# preset and reference tabs is looking at output from two renderers. They should
+# converge on one once the reference mode has a slider-shaped answer.
+# ---------------------------------------------------------------------------
+
+CANONICAL_VIEWS = ("front", "left_profile", "right_profile")
+
+
+def canonical_available(scan):
+    """Whether the fused pipeline can run on this scan at all.
+
+    It needs all three views: the model is built by fusing them, so a missing one
+    is not a degraded render but no render. `fast` and `skin` scan modes never
+    have profiles, and older scans predate the profile capture entirely.
+    """
+    objects = scan.image_objects or {}
+    return all(objects.get(view) for view in CANONICAL_VIEWS)
+
+
+def engine_for_selections(scan, selections):
+    """"canonical" or "legacy" — which renderer this request must use."""
+    if any(str(s.get("preset_id", "")).startswith(REFERENCE_PRESET_PREFIX) for s in selections):
+        return "legacy"
+    return "canonical" if canonical_available(scan) else "legacy"
+
+
+def _canonical_presets(selections):
+    """Look each selection up in the canonical catalog, keyed by preset id.
+
+    Returns None if any selection has no canonical counterpart, so the caller
+    falls back whole rather than rendering a stack that quietly dropped one row —
+    the same reasoning `validate_selections` gives for refusing a partial stack.
+    """
+    from .geometry_controls import get_preset
+
+    presets = [get_preset(s.get("preset_id")) for s in selections]
+    return None if any(p is None for p in presets) else presets
+
+
+def simulate_canonical(scan, selections, download_fn, output_format=".png", max_side=1280):
+    """Render one simulation through the fused three-view model.
+
+    Returns `(output, measurements, focus, extra)` where the first three match what
+    `simulate()` returns, so callers keep their existing unpacking, and `extra`
+    carries what only this engine produces — the other rendered views and the
+    model version — for `Simulation.view_objects`.
+    """
+    from .canonical_pipeline import simulate_scan_views
+    from .geometry_controls import INTENSITY_SETTINGS, sliders_for_selections
+
+    presets = _canonical_presets(selections)
+    if presets is None:
+        raise ValueError("invalid_preset")
+
+    # This app's UI has no intensity control, so every selection renders at the
+    # catalog's own default rather than at whatever `sliders_for_selections`
+    # would read off a missing key. Kept as a named default so that adding the
+    # control later is a UI change and not a change of meaning here.
+    levelled = [
+        {**s, "intensity_level": s.get("intensity_level", preset["default_intensity_level"])}
+        for s, preset in zip(selections, presets)
+    ]
+    for s in levelled:
+        if s["intensity_level"] not in INTENSITY_SETTINGS:
+            raise ValueError("invalid_intensity_level")
+
+    result = simulate_scan_views(
+        scan,
+        sliders_for_selections(levelled, presets),
+        download_fn,
+        selections=levelled,
+        presets=presets,
+        output_format=output_format,
+        max_side=max_side,
+    )
+    primary = result["views"][result["legacy_view"]]
+    extra = {
+        "model_version": result["model_version"],
+        "legacy_view": result["legacy_view"],
+        "related_procedures": result["related_procedures"],
+        "views": {
+            name: {"yaw": view["yaw"], "max_shift_px": view["max_shift_px"],
+                   "held_back": view["held_back"], "source_object": view["source_object"]}
+            for name, view in result["views"].items()
+        },
+        "encoded_views": {name: view["encoded"] for name, view in result["views"].items()},
+        "before_encoded": primary["before_encoded"],
+    }
+    return primary["encoded"], result["measurements"], primary["focus_boxes"], extra

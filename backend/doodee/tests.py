@@ -942,6 +942,100 @@ class SavedSimulationWorkerTest(TestCase):
         self.assertEqual(self.simulation.status, Simulation.Status.COMPLETED, self.simulation.error_message)
         self.assertEqual([p["id"] for p in render.call_args.args[1]], ["nose-narrow"])
 
+    @patch("doodee.tasks.upload_image")
+    @patch("doodee.tasks.simulate")
+    @patch("doodee.tasks.simulate_canonical")
+    def test_a_three_view_scan_renders_through_the_canonical_engine(self, canonical, legacy, upload):
+        """The fused engine is chosen, and the views it renders beyond the pair are kept.
+
+        `after_object` is only whichever view the request asked for. The other two are rendered
+        from the same fused model at the same cost, so discarding them would mean paying to
+        compute an answer and throwing it away.
+        """
+        canonical.return_value = (
+            b"after-front", [{"key": "eye_aspect_ratio", "region": "eyes"}], {"eyes": FOCUS_BOX},
+            {"model_version": "canonical-3d-fusion-lab-v1", "legacy_view": "front",
+             "related_procedures": ["Blepharoplasty"],
+             "views": {}, "before_encoded": b"before-front",
+             "encoded_views": {"front": b"after-front", "left_profile": b"after-left",
+                               "right_profile": b"after-right"}},
+        )
+        self.scan.image_objects = {
+            "front": "private/front", "left_profile": "private/left", "right_profile": "private/right",
+        }
+        self.scan.save()
+        self.simulation.selections = [{"region": "eyes", "preset_id": "eyes-open"}]
+        self.simulation.region, self.simulation.preset_id = "eyes", "eyes-open"
+        self.simulation.save()
+        from .tasks import process_simulation
+
+        process_simulation(str(self.simulation.id))
+        self.simulation.refresh_from_db()
+        self.assertEqual(self.simulation.status, Simulation.Status.COMPLETED, self.simulation.error_message)
+        self.assertFalse(legacy.called, "a three-view scan must not fall back to the single-image engine")
+        self.assertEqual(self.simulation.model_version, "canonical-3d-fusion-lab-v1")
+        self.assertEqual(
+            sorted(self.simulation.view_objects), ["front", "left_profile", "right_profile"],
+        )
+        # before + the primary after + the two other views.
+        self.assertEqual(upload.call_count, 4)
+
+    @patch("doodee.tasks.upload_image")
+    @patch("doodee.tasks.simulate_canonical")
+    def test_a_preview_does_not_pay_to_store_the_other_views(self, canonical, upload):
+        """Rendered either way, kept only when something will read them.
+
+        A preview is written on every slider change and expires within the hour, and nothing
+        reads its extra views — so storing them is bandwidth and storage spent on an image no
+        one will open.
+        """
+        canonical.return_value = (
+            b"after-front", [{"key": "eye_aspect_ratio", "region": "eyes"}], {"eyes": FOCUS_BOX},
+            {"model_version": "canonical-3d-fusion-lab-v1", "legacy_view": "front",
+             "related_procedures": [], "views": {}, "before_encoded": b"before-front",
+             "encoded_views": {"front": b"after-front", "left_profile": b"after-left",
+                               "right_profile": b"after-right"}},
+        )
+        self.scan.image_objects = {
+            "front": "private/front", "left_profile": "private/left", "right_profile": "private/right",
+        }
+        self.scan.save()
+        self.simulation.kind = Simulation.Kind.PREVIEW
+        self.simulation.selections = [{"region": "eyes", "preset_id": "eyes-open"}]
+        self.simulation.save()
+        from .tasks import process_simulation
+
+        process_simulation(str(self.simulation.id))
+        self.simulation.refresh_from_db()
+        self.assertEqual(self.simulation.status, Simulation.Status.COMPLETED, self.simulation.error_message)
+        self.assertEqual(self.simulation.view_objects, {})
+        self.assertEqual(upload.call_count, 2, "a preview stores only the before/after pair")
+
+    def test_which_engine_each_request_gets(self):
+        """The routing decision, which is the whole reason two renderers are kept.
+
+        A reference target has no canonical equivalent — the fused engine's sliders are a closed
+        catalog of named movements, with no way to express "move this until it measures X" — so it
+        goes to the engine that models it even when the scan could support the other. And the
+        fused engine needs all three views to build its model, so a front-only scan has nothing to
+        fuse and falls back rather than failing.
+        """
+        from .simulation_engine import engine_for_selections
+
+        three_views = Scan(image_objects={
+            "front": "private/front", "left_profile": "private/left", "right_profile": "private/right",
+        })
+        front_only = Scan(image_objects={"front": "private/front"})
+        catalog = [{"region": "eyes", "preset_id": "eyes-open"}]
+        reference = [{"region": "eyes", "preset_id": "reference:eyes"}]
+
+        self.assertEqual(engine_for_selections(three_views, catalog), "canonical")
+        self.assertEqual(engine_for_selections(three_views, reference), "legacy")
+        self.assertEqual(engine_for_selections(front_only, catalog), "legacy")
+        # Mixed stacks follow the reference row: rendering half a stack on each engine would put
+        # two renderers' output in one image.
+        self.assertEqual(engine_for_selections(three_views, catalog + reference), "legacy")
+
 
 class PoseQualityTest(TestCase):
     @patch("doodee.analysis_engine._decode")

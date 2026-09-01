@@ -19,3 +19,7 @@ anthropic>=0.75,<1
 # already, but pinned here on purpose: a library that encrypts customer bank details must not be
 # able to vanish because something else stopped depending on it.
 cryptography>=42,<52
+# canonical_pipeline imports PIL directly. Present transitively today via other
+# packages; pinned because a renderer must not lose its image library because
+# something else stopped depending on it.
+pillow>=10,<13

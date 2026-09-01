@@ -10,7 +10,10 @@ from django.utils import timezone
 from . import ai_budget, consent, skin_vision
 from .analysis_engine import analyze_images
 from .models import ConsentEvent, Scan, Simulation, SimulationPreviewUsage
-from .simulation_engine import has_profile_images, related_union, simulate, source_for_scan, validate_selections
+from .simulation_engine import (
+    engine_for_selections, has_profile_images, related_union, simulate, simulate_canonical,
+    source_for_scan, validate_selections,
+)
 from .storage import delete_image, download_image, upload_image
 
 
@@ -194,28 +197,64 @@ def process_simulation(simulation_id):
     try:
         # Rows saved before stacking have no `selections`, so the old columns stand in for one.
         selections = simulation.selections or [{"region": simulation.region, "preset_id": simulation.preset_id}]
+        # Validated on both paths, so a selection the old engine would refuse cannot slip
+        # through by being routed to the new one.
         presets, _targets = validate_selections(simulation.scan, selections, has_profile_images(simulation.scan))
-        source, source_object, source_view = source_for_scan(simulation.scan, presets[0], download_image)
-        source_type, source_extension = _image_type(source)
         # The focus boxes are a viewer hint for the live preview; a stored simulation is served
         # as a plain pair of images, so nothing here would read them.
         output_format = ".webp" if simulation.kind == Simulation.Kind.PREVIEW else ".png"
-        output, measurements, _focus = simulate(source, presets, output_format=output_format)
-        base = f"users/{simulation.scan.user_id}/simulations/{simulation.id}"
-        before_object = f"{base}/before.{source_extension}"
         after_extension = "webp" if simulation.kind == Simulation.Kind.PREVIEW else "png"
+        base = f"users/{simulation.scan.user_id}/simulations/{simulation.id}"
+        extra = None
+
+        if engine_for_selections(simulation.scan, selections) == "canonical":
+            output, measurements, _focus, extra = simulate_canonical(
+                simulation.scan, selections, download_image, output_format=output_format,
+            )
+            source, source_view = extra["before_encoded"], extra["legacy_view"]
+            source_type, source_extension = f"image/{after_extension}", after_extension
+        else:
+            source, _source_object, source_view = source_for_scan(simulation.scan, presets[0], download_image)
+            source_type, source_extension = _image_type(source)
+            output, measurements, _focus = simulate(source, presets, output_format=output_format)
+
+        before_object = f"{base}/before.{source_extension}"
         after_object = f"{base}/after.{after_extension}"
         upload_image(before_object, source, source_type)
+        uploaded = [before_object]
         try:
             upload_image(after_object, output, f"image/{after_extension}")
+            uploaded.append(after_object)
+            view_objects = {}
+            # The fused model renders all three views whatever is asked for, so keeping the
+            # other two is nearly free at render time — but not at storage time, and a preview
+            # is written on every slider change and expires within the hour. Nothing reads them
+            # for a preview, so only a saved simulation pays to keep them.
+            if extra and simulation.kind != Simulation.Kind.PREVIEW:
+                # Uploaded after the pair the client already knows how to read, so a failure
+                # here cannot cost a simulation that has otherwise succeeded — see the except.
+                for name, encoded in extra["encoded_views"].items():
+                    if name == extra["legacy_view"]:
+                        continue
+                    object_name = f"{base}/{name}.{after_extension}"
+                    upload_image(object_name, encoded, f"image/{after_extension}")
+                    uploaded.append(object_name)
+                    view_objects[name] = object_name
+                view_objects[extra["legacy_view"]] = after_object
         except Exception:
-            delete_image(before_object)
+            for object_name in uploaded:
+                delete_image(object_name)
             raise
         simulation.before_object = before_object
         simulation.after_object = after_object
+        simulation.view_objects = view_objects
         simulation.source_view = source_view
         simulation.measurements = measurements
-        simulation.related_procedures = related_union(presets)
+        simulation.related_procedures = (
+            extra["related_procedures"] if extra else related_union(presets)
+        )
+        if extra:
+            simulation.model_version = extra["model_version"]
         simulation.status, simulation.progress = Simulation.Status.COMPLETED, 100
         simulation.error_code = simulation.error_message = ""
     except ValueError as exc:

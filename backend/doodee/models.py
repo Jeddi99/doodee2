@@ -208,6 +208,11 @@ class Simulation(models.Model):
     model_version = models.CharField(max_length=80, verbose_name="เวอร์ชันโมเดล")
     before_object = models.CharField(max_length=500, blank=True, verbose_name="ไฟล์ภาพก่อน")
     after_object = models.CharField(max_length=500, blank=True, verbose_name="ไฟล์ภาพหลัง")
+    # Only the canonical three-view engine fills this. It renders front and both profiles from
+    # one fused model, and `after_object` above is just whichever of them the request asked for;
+    # the other two would otherwise be discarded after being paid for. Empty for every simulation
+    # rendered by the single-image engine, which is what `{}` means here — not "not yet uploaded".
+    view_objects = models.JSONField(default=dict, blank=True, verbose_name="ไฟล์ภาพรายมุม")
     error_code = models.CharField(max_length=40, blank=True, verbose_name="รหัสข้อผิดพลาด")
     error_message = models.CharField(max_length=500, blank=True, verbose_name="ข้อความข้อผิดพลาด")
     expires_at = models.DateTimeField(verbose_name="หมดอายุ")
