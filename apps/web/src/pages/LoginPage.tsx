@@ -1,4 +1,4 @@
-import { FormEvent, useState } from "react";
+import { FormEvent, useEffect, useRef, useState } from "react";
 import {
   ArrowLeft,
   ArrowRight,
@@ -11,6 +11,7 @@ import { Link, useNavigate } from "react-router-dom";
 import Brand from "../Brand";
 import { useLocale } from "../useLocale";
 import { canSubmitCode, normalizeCode } from "../lib/promoCode";
+import { rememberReferralCode, takeStoredReferralCode } from "../lib/referral";
 import { redeemCode } from "../lib/api";
 import { errorMessage } from "../lib/apiError";
 import { authErrorKey } from "../lib/authForm";
@@ -68,10 +69,25 @@ export default function LoginPage() {
     setReferralState("saved");
   };
 
+  /**
+   * Read the code from storage rather than from state.
+   *
+   * The redirect path leaves the page, so by the time this runs on the way back the component
+   * has remounted and `referral` is empty. `continueWithGoogle` stashes it before handing over
+   * to Firebase, and `takeStoredReferralCode` clears it on read so a failed claim is not retried
+   * on every load for as long as the tab is open.
+   */
   const afterSignIn = async () => {
-    if (referralState === "saved") {
+    let code = "";
+    try {
+      code = takeStoredReferralCode(window.sessionStorage);
+    } catch {
+      // Private browsing with storage disabled; fall back to whatever is still in state.
+    }
+    if (!code && referralState === "saved") code = normalizeCode(referral);
+    if (code) {
       try {
-        await redeemCode(normalizeCode(referral));
+        await redeemCode(code);
       } catch (error) {
         console.warn("referral redeem failed", errorMessage(error));
       }
@@ -79,10 +95,55 @@ export default function LoginPage() {
     navigate("/onboarding");
   };
 
+  /**
+   * Finish a sign-in that came back through the redirect path.
+   *
+   * Two things make this necessary. Firebase restores the session by itself, but the code that
+   * runs afterwards — redeeming a referral, moving to onboarding — lived in a promise that was
+   * destroyed when the page navigated away. And `authRouting.authRedirect` only moves a
+   * signed-in user off `landing`, not off `login`, so without this the user would come back
+   * already authenticated and simply sit on the login screen looking at the button they just
+   * pressed.
+   */
+  const completedRedirect = useRef(false);
+  useEffect(() => {
+    if (completedRedirect.current) return;
+    completedRedirect.current = true;
+    let cancelled = false;
+    (async () => {
+      try {
+        const { completeGoogleRedirect } = await import("../lib/firebase");
+        const credential = await completeGoogleRedirect();
+        if (!credential || cancelled) return;
+        setGoogleBusy(true);
+        await afterSignIn();
+      } catch (error) {
+        if (cancelled) return;
+        setSignInError(messageFor(authErrorKey(error)) || t.signInFailed);
+        setGoogleBusy(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // Once per mount. `afterSignIn` closes over state this deliberately does not re-read: the
+    // referral code it needs comes from storage on this path, not from the emptied form.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const continueWithGoogle = async () => {
     if (busy) return;
     setGoogleBusy(true);
     setSignInError("");
+    // Stashed BEFORE the call, not after: when the popup is blocked, `googleSignIn` falls back
+    // to a full-page redirect and never returns, taking this component's state with it.
+    if (referralState === "saved") {
+      try {
+        rememberReferralCode(normalizeCode(referral), window.sessionStorage);
+      } catch {
+        // Storage disabled. The popup path still has the code in state.
+      }
+    }
     try {
       const { googleSignIn } = await import("../lib/firebase");
       await googleSignIn();

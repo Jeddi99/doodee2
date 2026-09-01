@@ -50,6 +50,13 @@ const CODES = {
   'auth/too-many-requests': 'tooMany',
   'auth/network-request-failed': 'network',
   'auth/popup-closed-by-user': 'popupClosed',
+  // Reached only when the redirect fallback in lib/firebase.js also failed, so the advice has to
+  // be about the browser rather than "try again" — trying again does the same thing.
+  'auth/popup-blocked': 'popupBlocked',
+  // The origin is not on the Firebase project's authorised domain list. An operator mistake the
+  // user cannot do anything about, and one that otherwise reads as a mysterious generic failure
+  // on a brand new deployment or a new dev port.
+  'auth/unauthorized-domain': 'unauthorizedDomain',
   // The sign-in method is off in the Firebase console. Says so plainly, because this one is
   // an operator mistake and the user can do nothing about it.
   'auth/operation-not-allowed': 'methodDisabled',
