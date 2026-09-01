@@ -588,7 +588,7 @@ class ProcedureSelectionTest(TestCase):
 
         render.return_value = {
             "views": {"front": {"encoded": b"png", "before_encoded": b"png", "focus_boxes": {},
-                                "yaw": 0., "max_shift_px": 1., "held_back": 0.,
+                                "yaw": 0., "max_shift_px": 1., "held_back": 0., "changed": True,
                                 "source_object": "private/front"}},
             "legacy_view": "front", "measurements": [], "related_procedures": [],
             "model_version": "canonical-3d-fusion-lab-v1",
@@ -615,7 +615,8 @@ class ProcedureSelectionTest(TestCase):
 
         def rendered(name):
             return {"encoded": name.encode(), "before_encoded": b"png", "focus_boxes": {},
-                    "yaw": 0., "max_shift_px": 1., "held_back": 0., "source_object": f"private/{name}"}
+                    "yaw": 0., "max_shift_px": 1., "held_back": 0., "changed": True,
+                    "source_object": f"private/{name}"}
 
         render.return_value = {
             "views": {name: rendered(name) for name in ("front", "left_profile", "right_profile")},
@@ -682,6 +683,55 @@ class ProcedureFocusBoxTest(SimpleTestCase):
 
         self.assertEqual(_region_indices("nose_alar"), REGION_GROUPS["nose_alar"][0])
         self.assertEqual(_region_indices("unknown_region"), ())
+
+
+class UnchangedViewTest(TestCase):
+    """A procedure that only shows from one angle is a correct render, not a failed one.
+
+    The no-visible-change guard was per view and raised on the first render that came back
+    identical to its source. Tattoo removal on one cheek does nothing to the opposite profile,
+    so it failed the whole simulation — two correct images thrown away over the third. Checked
+    across the set now: nothing moving *anywhere* is still a failure, because that means the
+    request rendered a photograph.
+    """
+
+    def setUp(self):
+        self.user = User.objects.create_user("unchanged-views")
+        self.scan = Scan.objects.create(
+            user=self.user, age_band="adult", scan_mode="standard", status="completed",
+            image_objects={"front": "private/front", "left_profile": "private/left",
+                           "right_profile": "private/right"},
+            expires_at=timezone.now() + timedelta(days=1),
+        )
+        self.simulation = Simulation.objects.create(
+            scan=self.scan, region="jaw", preset_id="1.1",
+            selections=[{"procedure_id": "1.1"}], model_version="",
+            expires_at=timezone.now() + timedelta(days=30),
+        )
+
+    @patch("doodee.tasks.upload_image")
+    @patch("doodee.tasks.download_image", return_value=b"source")
+    @patch("doodee.tasks.simulate_canonical")
+    def test_a_view_nothing_moved_in_is_not_stored(self, canonical, download, upload):
+        """Storing it would pay to keep a copy of the upload and offer an empty angle."""
+        canonical.return_value = (
+            b"after-front", [], {},
+            {"model_version": "canonical-3d-fusion-lab-v1", "legacy_view": "front",
+             "related_procedures": ["ยกกระชับอัลเทอร่า / ไฮฟู"],
+             "views": {"front": {"changed": True}, "left_profile": {"changed": False},
+                       "right_profile": {"changed": True}},
+             "before_encoded": b"before-front",
+             "encoded_views": {"front": b"after-front", "left_profile": b"after-left",
+                               "right_profile": b"after-right"}},
+        )
+        from .tasks import process_simulation
+
+        process_simulation(str(self.simulation.id))
+        self.simulation.refresh_from_db()
+        self.assertEqual(self.simulation.status, Simulation.Status.COMPLETED,
+                         self.simulation.error_message)
+        self.assertEqual(sorted(self.simulation.view_objects), ["front", "right_profile"])
+        self.assertNotIn("left_profile", self.simulation.view_objects)
 
 
 class ProcedureEvidenceGapTest(SimpleTestCase):
@@ -1443,7 +1493,9 @@ class SavedSimulationWorkerTest(TestCase):
             b"after-front", [{"key": "eye_aspect_ratio", "region": "eyes"}], {"eyes": FOCUS_BOX},
             {"model_version": "canonical-3d-fusion-lab-v1", "legacy_view": "front",
              "related_procedures": ["Blepharoplasty"],
-             "views": {}, "before_encoded": b"before-front",
+             "views": {name: {"changed": True} for name in
+                       ("front", "left_profile", "right_profile")},
+             "before_encoded": b"before-front",
              "encoded_views": {"front": b"after-front", "left_profile": b"after-left",
                                "right_profile": b"after-right"}},
         )
@@ -1479,7 +1531,10 @@ class SavedSimulationWorkerTest(TestCase):
         canonical.return_value = (
             b"after-front", [{"key": "eye_aspect_ratio", "region": "eyes"}], {"eyes": FOCUS_BOX},
             {"model_version": "canonical-3d-fusion-lab-v1", "legacy_view": "front",
-             "related_procedures": [], "views": {}, "before_encoded": b"before-front",
+             "related_procedures": [],
+             "views": {name: {"changed": True} for name in
+                       ("front", "left_profile", "right_profile")},
+             "before_encoded": b"before-front",
              "encoded_views": {"front": b"after-front", "left_profile": b"after-left",
                                "right_profile": b"after-right"}},
         )

@@ -1245,9 +1245,7 @@ def simulate_scan_views(scan, sliders, download_fn, *, selections=None, presets=
             if refine:
                 after = _refine_views(after, moved, surface_specs, surface_levels,
                                       view["name"], amplify)
-        active = bool(sliders) or bool(surface_specs)
-        if active and np.array_equal(after, view["image"]):
-            raise ValueError(f"simulation_no_visible_change:{view['name']}")
+        changed = not np.array_equal(after, view["image"])
         ok_before, encoded_before = cv2.imencode(output_format, view["image"])
         ok_after, encoded_after = cv2.imencode(output_format, after)
         if not ok_before or not ok_after:
@@ -1261,6 +1259,10 @@ def simulate_scan_views(scan, sliders, download_fn, *, selections=None, presets=
             "yaw": round(float(yaw_degrees(view["rotation"])), 2),
             "max_shift_px": round(float(shift.max()), 2),
             "held_back": round(1. - guard, 3) if guard < 1. else 0.,
+            # Whether anything moved *in this view*. A change confined to one part of the face
+            # is invisible from an angle that cannot see it -- tattoo removal on a cheek does
+            # nothing to the opposite profile -- and that is a correct render, not a failure.
+            "changed": changed,
             "focus_boxes": {
                 region: _focus_box(view["points"], indices, view["image"].shape)
                 for region, indices in ((name, _region_indices(name)) for name in regions)
@@ -1271,6 +1273,13 @@ def simulate_scan_views(scan, sliders, download_fn, *, selections=None, presets=
             ),
         }
         view["moved"] = moved
+
+    # Checked across the whole set rather than per view. Raising on the first view that did not
+    # move threw away two correct renders whenever a procedure only shows from one angle, which
+    # failed the entire simulation for a change the user could see perfectly well on the front.
+    # Nothing moving anywhere is still a failure: it means the request rendered a photograph.
+    if (sliders or surface_specs) and not any(v["changed"] for v in rendered_views.values()):
+        raise ValueError("simulation_no_visible_change")
 
     wanted_source = (
         "front" if atomic_specs else presets[0]["source_view"]

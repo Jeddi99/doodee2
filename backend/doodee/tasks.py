@@ -237,6 +237,12 @@ def process_simulation(simulation_id):
                 for name, encoded in extra["encoded_views"].items():
                     if name == extra["legacy_view"]:
                         continue
+                    # A view nothing moved in is the source photograph. Storing it as a result
+                    # would pay to keep a copy of the upload and would offer the user an angle
+                    # with nothing to see on it — a procedure confined to one cheek does not
+                    # show on the opposite profile, and that is a correct render, not a failure.
+                    if not extra["views"][name]["changed"]:
+                        continue
                     object_name = f"{base}/{name}.{after_extension}"
                     upload_image(object_name, encoded, f"image/{after_extension}")
                     uploaded.append(object_name)
