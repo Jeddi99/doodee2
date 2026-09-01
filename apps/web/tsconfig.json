@@ -23,19 +23,7 @@
     "isolatedModules": true,
     "noEmit": true,
     "jsx": "react-jsx",
-    "types": ["vite/client"],
-    // The UI ported from the Next.js app keeps its original `@/...` specifiers
-    // and its `next/*` imports; both are aliased in vite.config.js and must be
-    // mirrored here or the editor and `tsc --noEmit` cannot resolve them.
-    "paths": {
-      "@/*": ["./src/dd/*"],
-      "next/link": ["./src/dd/shims/next-link.tsx"],
-      "next/image": ["./src/dd/shims/next-image.tsx"],
-      "next/navigation": ["./src/dd/shims/next-navigation.ts"],
-      "next/dynamic": ["./src/dd/shims/next-dynamic.tsx"],
-      "server-only": ["./src/dd/shims/server-only.ts"],
-      "@supabase/supabase-js": ["./src/dd/shims/supabase-types.ts"]
-    }
+    "types": ["vite/client"]
   },
   "include": ["src"]
 }

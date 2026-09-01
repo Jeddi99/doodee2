@@ -3,19 +3,6 @@ import { createRoot } from 'react-dom/client'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { BrowserRouter } from 'react-router-dom'
 import './styles.css'
-// The ported design system, loaded after styles.css so it wins inside `.dd-ui`
-// where the two genuinely overlap. See dd/theme.css for how they are kept from
-// colliding everywhere else.
-//
-// These are three separate imports rather than one file of `@import`s on
-// purpose: Vite inlines CSS `@import` before PostCSS runs, so an imported file
-// arrives at the plugin chain under the *importer's* path. The plugin that
-// scopes globals.css keys off that path, and silently no-ops if globals.css is
-// not its own module — which would let globals.css repaint every pre-existing
-// page. Order is load-bearing: reset, then theme, then local overrides.
-import './dd/preflight.generated.css'
-import './dd/globals.css'
-import './dd/theme.css'
 import App from './App.jsx'
 import { retry, retryDelay } from './lib/queryRetry.js'
 

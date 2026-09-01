@@ -3,27 +3,24 @@
  * app to settle, and reports what rendered plus any console error, uncaught
  * exception or failed request.
  *
- * Exists because a green `vite build` proves the ported tree *compiles* and
- * nothing more. Every defect this pass actually found was invisible to the
- * build: navigation escaping the /ui mount prefix, a missing .tflite that the
- * dev server answered with index.html (MediaPipe then reported it as "not a
- * valid Flatbuffer buffer"), and styled-jsx props reaching the DOM.
+ * Exists because a green `vite build` proves the app *compiles* and nothing
+ * more. A screen that throws on mount, requests an asset the dev server answers
+ * with index.html, or renders an empty shell all build perfectly.
  *
  * Usage — the dev server must already be running:
  *
- *   node scripts/smoke-routes.mjs http://localhost:5173 [--auth] <route>...
+ *   node scripts/smoke-routes.mjs http://localhost:5173 <route>...
  *
- *   --auth          seed the ported tree's local-dev session (see
- *                   src/dd/lib/local-dev-auth.ts) so AuthGate admits the run
- *                   and the signed-in screens render instead of bouncing to
- *                   login. Dev builds on localhost only.
- *   SMOKE_WAIT_MS   per-route settle time, default 4500.
+ *   SMOKE_WAIT_MS   minimum settle time per route. The run waits for the DOM to
+ *                   stop growing regardless; this only raises the floor.
  *
- * A route PASSes when it rendered a non-trivial DOM, logged no unexpected
- * error, and mounted the correct UI: `.dd-ui` present for a /ui route and
- * absent everywhere else. That last check is the one that matters — a /ui route
- * quietly rendering the pre-existing app means its navigation escaped the mount
- * prefix, which looks fine in a screenshot.
+ * There is no way to fake a session: auth is Firebase and `lib/authRouting`
+ * gates on a real signed-in user, so a signed-in route redirects to the landing
+ * page here. That still tells you the redirect works and neither screen throws;
+ * it does not tell you the signed-in screen renders.
+ *
+ * A route PASSes when it rendered a non-trivial DOM and logged no unexpected
+ * error, exception or failed request.
  *
  * Chrome runs on a throwaway --user-data-dir, so the developer's own profile
  * and sessions are never touched. It also runs on SwiftShader: MediaPipe builds
@@ -37,12 +34,7 @@ import { join } from "node:path";
 
 const CHROME =
   "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
-const argv = process.argv.slice(2);
-// `--auth` seeds the ported tree's local-dev session flag (see
-// dd/lib/local-dev-auth.ts) so AuthGate admits us and the signed-in screens
-// actually render instead of bouncing to login.
-const AUTH = argv.includes("--auth");
-const [baseUrl, ...routes] = argv.filter((a) => a !== "--auth");
+const [baseUrl, ...routes] = process.argv.slice(2);
 
 const profile = mkdtempSync(join(tmpdir(), "dd-smoke-"));
 const chrome = spawn(
@@ -127,12 +119,11 @@ const EXPECTED = [
   // back to the guest token. Handled in code; noise in the console.
   /identitytoolkit\.googleapis\.com/,
   // Any 4xx from the Django API. This harness verifies RENDERING, not data
-  // integration: `--auth` seeds the client-side gate only, so there is no real
-  // session, and even with one the sample data is not seeded (e.g. GET
-  // /scans/<id>/skin/ answers 409 `skin_analysis_unavailable` by design when a
-  // scan carries no skin reading). A screen that reaches a 4xx has already
-  // mounted and is exercising its own error path, which is what is being
-  // checked here. Verifying the responses themselves needs a seeded backend.
+  // integration: there is no signed-in session here, and the sample data is not
+  // seeded either (GET /scans/<id>/skin/ answers 409 `skin_analysis_unavailable`
+  // by design when a scan carries no skin reading). A screen that reaches a 4xx
+  // has already mounted and is exercising its own error path, which is what is
+  // being checked. Verifying the responses themselves needs a seeded backend.
   /HTTP 4\d\d: .*\/api\/v1\//,
 ];
 
@@ -180,13 +171,6 @@ try {
   await c.send("Runtime.enable", {}, sessionId);
   await c.send("Log.enable", {}, sessionId);
   await c.send("Network.enable", {}, sessionId);
-  if (AUTH) {
-    await c.send(
-      "Page.addScriptToEvaluateOnNewDocument",
-      { source: `try{localStorage.setItem("doodee.local_dev_auth.v1","1")}catch(e){}` },
-      sessionId,
-    );
-  }
 
   let logs = [];
   const netUrls = new Map();
@@ -230,12 +214,9 @@ try {
       {
         expression: `(() => {
           const root = document.getElementById('root');
-          const dd = document.querySelector('.dd-ui');
-          const text = (dd ?? root)?.innerText ?? '';
+          const text = root?.innerText ?? '';
           return JSON.stringify({
             nodes: root ? root.querySelectorAll('*').length : 0,
-            ddMounted: !!dd,
-            ddNodes: dd ? dd.querySelectorAll('*').length : 0,
             bodyBg: getComputedStyle(document.body).backgroundColor,
             htmlClass: document.documentElement.className,
             title: document.title,
@@ -272,11 +253,10 @@ try {
 
 let failed = 0;
 for (const r of results) {
-  const wantsDd = r.route === "/ui" || r.route.startsWith("/ui/");
-  const ok = r.nodes > 10 && r.errors.length === 0 && r.ddMounted === wantsDd;
+  const ok = r.nodes > 10 && r.errors.length === 0;
   if (!ok) failed++;
   console.log(`\n${ok ? "PASS" : "FAIL"}  ${r.route}`);
-  console.log(`   nodes=${r.nodes} ddMounted=${r.ddMounted} ddNodes=${r.ddNodes}`);
+  console.log(`   nodes=${r.nodes}`);
   console.log(`   bodyBg=${r.bodyBg}  html.class="${r.htmlClass}"`);
   console.log(`   text: ${r.text || "(empty)"}`);
   for (const e of r.errors) console.log(`   ! ${e.slice(0, 300)}`);

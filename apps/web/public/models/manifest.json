@@ -1,9 +1,0 @@
-{
-  "inputSize": 224,
-  "normalize": "imagenet",
-  "outputRange": [
-    1,
-    5
-  ],
-  "outputIndex": 0
-}

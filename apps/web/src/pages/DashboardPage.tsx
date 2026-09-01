@@ -67,7 +67,7 @@ import {
 } from "../analysisCatalog";
 import { latestCraniofacialScan } from "../lib/latestScan";
 
-export type AppView =
+type AppView =
   | "overview"
   | "analysis"
   | "plan"
@@ -325,7 +325,7 @@ function InsightList({
   );
 }
 
-export function Overview({
+function Overview({
   openView,
   onUnlock,
 }: {
@@ -1065,7 +1065,7 @@ function UnlockModal({ onClose }: { onClose: () => void }) {
   );
 }
 
-export function Analysis({
+function Analysis({
   onUnlock,
   openView,
 }: {

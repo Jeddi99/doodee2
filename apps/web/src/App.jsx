@@ -1,6 +1,6 @@
 import React, { lazy, Suspense, useEffect, useState } from 'react';
 import { onAuthStateChanged } from 'firebase/auth';
-import { Route, Routes, useLocation, useNavigate } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { authRedirect } from './lib/authRouting';
 import { referralCodeFromQuery, rememberReferralCode } from './lib/referral';
 import {
@@ -10,12 +10,6 @@ import {
 import { postAttribution } from './lib/api';
 import { getFirebaseAuth } from './lib/firebase';
 import { useLocale } from './useLocale';
-// The prefix the ported UI is served from. Everything below it is handled by
-// dd/routes.tsx and must not touch the routing or auth-redirect logic that the
-// pre-existing pages depend on. Imported rather than redeclared: the ported
-// tree's Next shims rewrite their absolute paths against the same constant, and
-// the two drifting apart would send a ported screen to a pre-existing one.
-import { DD_BASE as DD_PREFIX } from './dd/shims/base-path';
 
 // The landing page carries the MediaPipe demo and the treatment canvas, so it
 // is worth its own chunk even though it is the first route most users hit.
@@ -27,14 +21,6 @@ const OnboardingPage = lazy(() => import('./pages/OnboardingPage'));
 // Own chunk: it pulls in the MediaPipe worker and the wasm loader.
 const ScanPage = lazy(() => import('./pages/ScanPage'));
 const SkinScanPage = lazy(() => import('./pages/SkinScanPage'));
-
-// The UI ported from the Next.js `doodee` app. Mounted under /ui while its
-// screens are wired to the Django API one at a time; the routes it serves are
-// listed in dd/routes.tsx. Kept behind a prefix rather than taking over `/` so
-// the shipping app is never in a half-migrated state — a ported screen becomes
-// canonical only once its data layer is connected.
-const DoodeeUI = lazy(() => import('./dd/DoodeeUI'));
-const DoodeeRoutes = lazy(() => import('./dd/routes').then((m) => ({ default: m.DoodeeRoutes })));
 
 function WorkspaceFallback({ locale }) {
   return <div className="workspace-loading" role="status">{locale === 'th' ? 'กำลังเปิดหน้า…' : 'Opening…'}</div>;
@@ -63,10 +49,6 @@ export default function App() {
   const location = useLocation();
   const navigate = useNavigate();
   const currentRoute = Object.entries(ROUTE_PATHS).find(([, path]) => path === location.pathname)?.[0] || 'landing';
-  // Computed before the effects below so the auth-redirect one can opt out: a
-  // /ui path matches no entry in ROUTE_PATHS, so it would look like 'landing'
-  // and get bounced to /home the moment a signed-in user opened it.
-  const isPortedRoute = location.pathname === DD_PREFIX || location.pathname.startsWith(`${DD_PREFIX}/`);
   const { locale } = useLocale();
   const [authState, setAuthState] = useState({ ready: false, user: null });
 
@@ -162,30 +144,9 @@ export default function App() {
   }, [isAuthenticated]);
 
   useEffect(() => {
-    if (isPortedRoute) return;
     const redirect = authRedirect(authState.ready, isAuthenticated, currentRoute);
     if (redirect) navigate(ROUTE_PATHS[redirect], { replace: true });
-  }, [authState.ready, currentRoute, isAuthenticated, isPortedRoute, navigate]);
-
-  // The ported UI does its own auth gating (dd/AppShell wraps the signed-in
-  // routes in <AuthGate>), so it renders without waiting on the auth state
-  // this component tracks for the pre-existing pages.
-  if (isPortedRoute) {
-    return (
-      <Suspense fallback={<WorkspaceFallback locale={locale} />}>
-        <Routes>
-          <Route
-            path={`${DD_PREFIX}/*`}
-            element={
-              <DoodeeUI>
-                <DoodeeRoutes />
-              </DoodeeUI>
-            }
-          />
-        </Routes>
-      </Suspense>
-    );
-  }
+  }, [authState.ready, currentRoute, isAuthenticated, navigate]);
 
   if (!authState.ready || authRedirect(authState.ready, isAuthenticated, currentRoute)) {
     return <WorkspaceFallback locale={locale} />;
