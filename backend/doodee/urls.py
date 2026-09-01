@@ -4,7 +4,7 @@ from rest_framework.routers import DefaultRouter
 from .views import (
     ChatViewSet, NotificationViewSet, OrderViewSet, MetricCatalogList, ProcedureCategoryList, ProcedureList, ScanViewSet, SimulationViewSet,
     attribution_view, cancel_withdrawal, credits, delete_account, demo_scan, omise_webhook,
-    pay_order, payout_account, plans, profile, redeem, referral_claim, referral_overview,
+    pay_order, payout_account, scan_assessment, plans, profile, redeem, referral_claim, referral_overview,
     register_push_token, session, skin_vision_consent, validate_coupon_view, visit, withdrawals,
 )
 
@@ -35,6 +35,9 @@ urlpatterns = [
     # The characteristics the product claims to read, and what backs each one. Its own route
     # rather than part of a scan's payload: it is the same answer for everyone and is asked for
     # before there is a scan to attach it to.
+    # Findings and the distribution in one answer: they are read together, and two requests
+    # would let the page show a percentile beside findings from a different scan.
+    path("scans/<uuid:scan_id>/assessment/", scan_assessment),
     path("metric-catalog/", MetricCatalogList.as_view()),
     path("procedures/", ProcedureList.as_view()),
     # The 13 headings, so a client can group the list without hardcoding them.

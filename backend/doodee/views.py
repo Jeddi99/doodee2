@@ -41,6 +41,9 @@ from .omise import (
 )
 from .demo_data import create_demo_scan
 from . import metric_catalog, procedure_catalog
+from .findings import findings_for
+from .reference_scoring import views_from_metrics
+from .score_distribution import all_latest_by_user, distribution_of
 from .chat import (
     HISTORY_TURNS, MAX_QUESTION_CHARS, ChatUnavailable, chat_enabled, reply as chat_reply,
     scan_context, system_prompt, title_for,
@@ -1032,6 +1035,114 @@ class ProcedureList(APIView):
             ))
         except ValueError as exc:
             raise ValidationError({"category": str(exc)}) from exc
+
+
+@api_view(("GET",))
+def scan_assessment(request, scan_id):
+    """What the assessment screen shows: the findings, and where the score sits among other people.
+
+    One request rather than two because the two are read together, and separating them would let
+    the page render a percentile beside findings from a different scan.
+
+    Gated at the same depth as the score card. Upstream this endpoint has no gating at all, which
+    beside a redacted `score_card` would have been a second door onto the numbers the first one
+    withholds — the free tier would simply read them here instead. The withholding is the same
+    `percentile.redact`, applied before the response is built, so the locked figures never leave
+    the server.
+    """
+    scan = Scan.objects.filter(pk=scan_id, user=request.user).exclude(
+        status=Scan.Status.DELETION_PENDING).first()
+    if not scan:
+        raise NotFound("scan_not_found")
+    scores = (scan.analysis_data or {}).get("reference_scores") or {}
+    overall = scores.get("overall_score")
+    # One walk over the completed scans, then three populations out of it. Front and side are
+    # separate from the overall one and from each other: a scan with no side score belongs to
+    # neither side population, and deriving one from its overall would compare a face with itself.
+    #
+    # `ranked_against` leaves this person out — their own earlier scans are the same face, so a
+    # percentile measured against them says nothing. `drawn_from` keeps them in, because the curve
+    # is a picture of the scores this deployment holds and theirs is one of them.
+    by_user = all_latest_by_user()
+    drawn_from = {name: list(found.values()) for name, found in by_user.items()}
+    ranked_against = {
+        name: [score for user_id, score in found.items() if user_id != scan.user_id]
+        for name, found in by_user.items()
+    }
+    # Derived from the stored metrics when the scan was analysed before per-view scoring existed:
+    # the metrics already imply the two numbers, so re-running the worker over old scans would
+    # change their measurements as a side effect of adding a score.
+    scored_views = scores.get("views") or views_from_metrics(scores.get("metrics") or [])
+    views = [
+        {**item, "distribution": distribution_of(
+            item.get("score"),
+            ranked_against.get(item["key"], []),
+            drawn_from.get(item["key"], []),
+        )}
+        for item in scored_views
+    ]
+    payload = {
+        "scan_id": str(scan.id),
+        "status": scan.status,
+        "overall_score": overall,
+        "categories": scores.get("categories") or [],
+        # Front and side scored separately, each against the people who were also scored on that
+        # view. A single overall number cannot say that a face reads well from the front and not
+        # from the side, which is the distinction the two photographs were taken to make.
+        "views": views,
+        # The scored metrics themselves: the screen draws each one onto the photograph it was
+        # measured on, which needs the key, the view and the observed value, not just the total.
+        "metrics": scores.get("metrics") or [],
+        "coverage": scores.get("coverage") or {},
+        # Cohort and source metadata for the observed-vs-reference numbers above. A report
+        # generator otherwise receives the values but not the study population that gives them
+        # meaning.
+        "reference": scores.get("reference"),
+        # Whether this person falls inside the cohort the reference means were published for. The
+        # score is never rescaled for someone outside it, so the screen has to be able to say so.
+        "cohort_match": scores.get("cohort_match"),
+        "population_match": scores.get("population_match"),
+        "distribution": distribution_of(
+            overall, ranked_against.get("overall", []), drawn_from.get("overall", []),
+        ),
+        **findings_for(scores),
+    }
+    if entitlement.current_plan(request.user).analysis_depth == Plan.AnalysisDepth.PARTIAL:
+        payload = _redact_assessment(payload)
+    return Response(payload)
+
+
+#: How many findings a partial plan sees. Enough to be worth reading and to show the rest exists.
+VISIBLE_FINDINGS_WHEN_REDACTED = 2
+
+
+def _redact_assessment(payload):
+    """The partial-depth assessment: the same categories rule as the card, applied to findings too.
+
+    `redact` already answers the categories half, and reusing it is the point — two withholding
+    rules for one product means the day they disagree, one of them is leaking. What it does not
+    know about is `improvements`, which is the paid answer in prose: every finding carries the
+    verdict sentence naming what to do something about.
+
+    The count stays, and so do the names. Seeing that four more findings exist is the honest shape
+    of a teaser; hiding them entirely would misrepresent how much the analysis found.
+    """
+    from .percentile import redact
+
+    redacted = redact(payload)
+    improvements = payload.get("improvements") or []
+    visible, hidden = (improvements[:VISIBLE_FINDINGS_WHEN_REDACTED],
+                       improvements[VISIBLE_FINDINGS_WHEN_REDACTED:])
+    return {
+        **redacted,
+        "improvements": [
+            *visible,
+            *({"key": item.get("key"), "catalog_id": item.get("catalog_id"),
+               "name_th": item.get("name_th"), "name_en": item.get("name_en"),
+               "group": item.get("group"), "locked": True} for item in hidden),
+        ],
+        "locked_findings": [item.get("key") for item in hidden],
+    }
 
 
 class MetricCatalogList(APIView):

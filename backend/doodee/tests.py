@@ -506,6 +506,306 @@ class MetricCatalogApiTest(TestCase):
         self.assertTrue(all(item["note_th"] and item["note_en"] for item in unmeasured))
 
 
+class FindingsTest(TestCase):
+    """Scored metrics turned into a short list of what stands out, and said plainly.
+
+    A table of twelve ratios is not something anyone reads. The wording is a deliberate product
+    decision: someone who cannot see what is actually different about their face cannot decide
+    what to do about it, and softened wording hides the finding instead of delivering it.
+    """
+
+    def scores(self, *pairs):
+        return {
+            "status": "experimental_reference_similarity",
+            "overall_score": 74,
+            "categories": [{"key": "nose", "score": 70, "metric_count": 2}],
+            "metrics": [
+                {"key": key, "category": "nose", "view": "front", "normalized_deviation": z,
+                 "observed": 0.3, "reference": 0.28, "unit": "ratio", "score": 70}
+                for key, z in pairs
+            ],
+        }
+
+    def test_a_scan_that_was_never_scored_produces_no_findings(self):
+        from .findings import findings_for
+
+        for empty in ({}, None, {"status": "minor_not_scored"}):
+            self.assertEqual(findings_for(empty),
+                             {"strengths": [], "improvements": [], "unnamed": []})
+
+    def test_inside_the_band_is_a_strength_and_outside_it_is_something_to_act_on(self):
+        from .findings import findings_for
+
+        result = findings_for(self.scores(("alar_width", 0.2), ("nasolabial_angle", 2.4)))
+        self.assertEqual([item["key"] for item in result["strengths"]], ["alar_width"])
+        self.assertEqual([item["key"] for item in result["improvements"]], ["nasolabial_angle"])
+        self.assertEqual(result["strengths"][0]["severity"], "excellent")
+        self.assertEqual(result["improvements"][0]["severity"], "severe")
+
+    def test_the_two_directions_are_different_findings_not_one_with_a_sign(self):
+        """Eyes above the reference read wide-set and below it close-set; one phrase covers neither."""
+        from .findings import findings_for
+
+        above = findings_for(self.scores(("intercanthal", 2.2)))["improvements"][0]
+        below = findings_for(self.scores(("intercanthal", -2.2)))["improvements"][0]
+        self.assertEqual((above["direction"], below["direction"]), ("above", "below"))
+        self.assertNotEqual(above["verdict_th"], below["verdict_th"])
+        self.assertTrue(all(item["verdict_th"] and item["verdict_en"] for item in (above, below)))
+
+    def test_a_scored_metric_with_no_catalogue_entry_is_reported_not_dropped(self):
+        """Otherwise a metric added to the scorer just vanishes from the summary."""
+        from .findings import findings_for
+
+        result = findings_for(self.scores(("not_a_real_key", 1.9)))
+        self.assertEqual(result["unnamed"], ["not_a_real_key"])
+        self.assertEqual(result["improvements"], [])
+
+    def test_improvements_lead_with_what_can_be_acted_on_not_with_the_worst_number(self):
+        """Sorting on distance alone opened the list on a dead end — the worst news and nothing
+        to do about it — which reads as a verdict rather than as information. A finding with no
+        procedure behind it is still reported; it just sorts below the ones that have one."""
+        from .findings import findings_for
+
+        result = findings_for(self.scores(("alar_width", 1.4), ("nasolabial_angle", 2.8),
+                                          ("nasofrontal_angle", 2.1)))
+        keys = [item["key"] for item in result["improvements"]]
+        self.assertEqual(keys[0], "alar_width", "the only one with a procedure behind it")
+        self.assertEqual(keys[1:], ["nasolabial_angle", "nasofrontal_angle"],
+                         "and the rest worst-first")
+        self.assertEqual(len(keys), 3, "nothing is hidden for having no answer")
+
+    def test_among_equals_the_furthest_from_the_reference_is_read_first(self):
+        from .findings import findings_for
+
+        result = findings_for(self.scores(("nasolabial_angle", 2.1), ("nasofrontal_angle", 2.8)))
+        self.assertEqual([item["key"] for item in result["improvements"]],
+                         ["nasofrontal_angle", "nasolabial_angle"])
+
+    def test_a_finding_only_offers_procedures_this_deployment_can_render(self):
+        """Upstream's `_procedures_by_id` returns `{}`, which silently told every finding that
+        nothing could be done about it. Wired to the real table here, so this asserts it is."""
+        from .findings import _procedures_by_id, findings_for
+
+        self.assertTrue(_procedures_by_id(), "the procedure join is stubbed out again")
+        finding = findings_for(self.scores(("alar_width", 2.2)))["improvements"][0]
+        self.assertTrue(finding["actionable"])
+        self.assertTrue(all(item["id"] in _procedures_by_id() for item in finding["procedures"]))
+        self.assertEqual(finding["procedures"][0]["reference_measurement"]["key"], "alar_width")
+
+    def test_a_measurement_with_nothing_to_offer_says_so_rather_than_inventing_one(self):
+        from .findings import findings_for
+
+        finding = findings_for(self.scores(("nasofrontal_angle", 2.2)))["improvements"][0]
+        self.assertEqual(finding["procedures"], [])
+        self.assertFalse(finding["actionable"])
+
+    def test_the_four_brow_procedures_the_catalogue_cites_are_known_to_be_unrenderable(self):
+        """Recorded rather than left to be discovered: brows are in `UNSUPPORTED_CATEGORIES`,
+        so `metric_catalog` cites four presets `procedures.py` does not carry. They are dropped
+        silently today, which is right — never offer what cannot be rendered — but silent."""
+        from .findings import _procedures_by_id
+        from .metric_catalog import CATALOG
+
+        cited = {key for item in CATALOG for key in item["procedures"]}
+        self.assertEqual(sorted(cited - set(_procedures_by_id())),
+                         ["brow-lift", "brow-lower", "brow-tail-lift", "brow-tail-lower"])
+
+
+class ScoreDistributionTest(TestCase):
+    """Where a score sits among everyone else, and how much to trust that."""
+
+    def test_the_first_user_is_not_in_the_hundredth_percentile_of_one(self):
+        from .score_distribution import distribution_of
+
+        result = distribution_of(80, [])
+        self.assertIsNone(result["percentile"])
+        self.assertIsNone(result["mean"])
+        self.assertFalse(result["reliable"])
+
+    def test_a_small_sample_answers_but_says_it_is_not_reliable(self):
+        from .score_distribution import RELIABLE_SAMPLE_SIZE, distribution_of
+
+        small = distribution_of(80, [70, 75, 90])
+        self.assertEqual(small["percentile"], 66.7)
+        self.assertFalse(small["reliable"])
+        self.assertEqual(small["reliable_at"], RELIABLE_SAMPLE_SIZE)
+        big = distribution_of(80, list(range(RELIABLE_SAMPLE_SIZE)))
+        self.assertTrue(big["reliable"])
+
+    def test_the_curve_is_drawn_from_a_different_population_than_the_rank(self):
+        """A deployment's only user was left looking at an empty chart beside a score: there was
+        nobody to rank them against, so nothing was drawn either."""
+        from .score_distribution import distribution_of
+
+        result = distribution_of(80, [], [80])
+        self.assertIsNone(result["percentile"], "still nobody to rank against")
+        self.assertTrue(result["histogram"], "but there is something to draw")
+        self.assertTrue(result["includes_you"])
+        self.assertEqual(result["drawn_sample_size"], 1)
+
+    def test_seeded_scores_are_counted_so_the_screen_can_say_they_are_not_real(self):
+        from .score_distribution import distribution_of
+
+        self.assertEqual(distribution_of(80, [70, 90], [70, 80, 90], synthetic=2)["synthetic_sample_size"], 2)
+
+    def test_placeholders_are_dropped_once_the_real_sample_can_stand_alone(self):
+        from .score_distribution import RELIABLE_SAMPLE_SIZE, retire_seed_scores
+
+        seeded = set(range(100, 110))
+        real_enough = {index: 70 for index in range(RELIABLE_SAMPLE_SIZE)}
+        thin = {index: 70 for index in range(5)}
+        by_user = {"overall": {**real_enough, **{index: 60 for index in seeded}},
+                   "side": {**thin, **{index: 60 for index in seeded}}}
+        retired = retire_seed_scores(by_user, seeded)
+        self.assertEqual(len(retired["overall"]), RELIABLE_SAMPLE_SIZE, "real sample stands alone")
+        self.assertEqual(len(retired["side"]), len(thin) + len(seeded), "still needs the shape")
+
+
+class ScanAssessmentEndpointTest(TestCase):
+    """`/assessment/` — findings and the distribution in one answer, at the depth the plan pays for.
+
+    The gate is the point. Upstream this endpoint has none, and beside a `score_card` that
+    redacts, an ungated assessment is simply a second door onto the numbers the first one
+    withholds.
+    """
+
+    SCORES = {
+        "status": "experimental_reference_similarity",
+        "overall_score": 74,
+        "categories": [
+            {"key": "nose", "score": 88, "metric_count": 2},
+            {"key": "lips", "score": 80, "metric_count": 2},
+            {"key": "eyes", "score": 61, "metric_count": 1},
+            {"key": "chin", "score": 55, "metric_count": 1},
+        ],
+        "views": [{"key": "front", "score": 80, "metric_count": 3},
+                  {"key": "side", "score": 60, "metric_count": 1}],
+        "metrics": [
+            {"key": "alar_width", "category": "nose", "view": "front", "normalized_deviation": 2.4,
+             "observed": .3, "reference": .28, "unit": "ratio", "score": 60},
+            {"key": "upper_vermillion", "category": "lips", "view": "front",
+             "normalized_deviation": 2.2, "observed": .2, "reference": .18, "unit": "ratio", "score": 62},
+            {"key": "chin_height", "category": "chin", "view": "front", "normalized_deviation": -2.6,
+             "observed": .2, "reference": .24, "unit": "ratio", "score": 55},
+            {"key": "eye_fissure", "category": "eyes", "view": "front", "normalized_deviation": 2.1,
+             "observed": .3, "reference": .27, "unit": "ratio", "score": 61},
+            {"key": "nasofrontal_angle", "category": "nose", "view": "side",
+             "normalized_deviation": 2.9, "observed": 140, "reference": 132, "unit": "degree", "score": 60},
+        ],
+        "coverage": {"scored_metrics": 5, "available_reference_metrics": 12, "scored_categories": 4},
+        "cohort_match": "within_reference_age_range",
+        "population_match": "within_reference_population",
+        "reference": {"sample_size": 240, "age_range": "18-35", "version": "thai-photo-2019-v1"},
+    }
+
+    def setUp(self):
+        self.user = User.objects.create_user("assessed")
+        self.client = APIClient()
+        self.client.force_authenticate(self.user)
+        self.scan = Scan.objects.create(
+            user=self.user, age_band="adult", status=Scan.Status.COMPLETED,
+            analysis_data={"reference_scores": self.SCORES},
+            expires_at=timezone.now() + timedelta(days=30),
+        )
+
+    def url(self, scan=None):
+        return f"/api/v1/scans/{(scan or self.scan).id}/assessment/"
+
+    def entitle(self):
+        self.user.groups.add(Group.objects.get(name="pro_member"))
+
+    def test_a_paid_plan_gets_the_findings_and_the_distribution_in_one_answer(self):
+        self.entitle()
+        response = self.client.get(self.url())
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["overall_score"], 74)
+        self.assertEqual(len(response.data["categories"]), 4)
+        self.assertTrue(response.data["improvements"])
+        self.assertIn("percentile", response.data["distribution"])
+        self.assertNotIn("redacted", response.data)
+
+    def test_each_view_is_ranked_against_the_people_scored_on_that_view(self):
+        """A single overall number cannot say a face reads well from the front and not the side,
+        which is the distinction the two photographs were taken to make."""
+        self.entitle()
+        views = {item["key"]: item for item in self.client.get(self.url()).data["views"]}
+        self.assertEqual(sorted(views), ["front", "side"])
+        self.assertTrue(all("distribution" in item for item in views.values()))
+
+    def test_a_partial_plan_gets_a_teaser_and_the_locked_numbers_never_leave_the_server(self):
+        """A client that receives every figure and paints a blur over three has withheld nothing."""
+        response = self.client.get(self.url())
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.data["redacted"])
+        body = json.dumps(response.data, default=str)
+        locked = [item for item in response.data["categories"] if item.get("locked")]
+        self.assertTrue(locked, "some categories must be withheld")
+        for item in locked:
+            self.assertIsNone(item["score"])
+        self.assertNotIn("61", [str(item.get("score")) for item in response.data["categories"]])
+        # The verdict prose is the paid answer; a locked finding keeps its name and nothing else.
+        hidden = [item for item in response.data["improvements"] if item.get("locked")]
+        self.assertTrue(hidden)
+        for item in hidden:
+            self.assertNotIn("verdict_th", item)
+            self.assertNotIn(item["key"] + '", "verdict', body)
+
+    def test_the_teaser_still_says_how_much_was_found(self):
+        """Hiding the rows entirely would misrepresent how much the analysis actually covers."""
+        response = self.client.get(self.url())
+        self.assertEqual(len(response.data["categories"]), len(self.SCORES["categories"]))
+        self.assertTrue(all(item.get("key") for item in response.data["categories"]))
+        self.assertTrue(response.data["locked_findings"])
+        self.assertTrue(all(item.get("name_th") for item in response.data["improvements"]))
+
+    def test_the_two_strongest_categories_are_the_ones_left_visible(self):
+        response = self.client.get(self.url())
+        visible = [item["key"] for item in response.data["categories"] if not item.get("locked")]
+        self.assertEqual(visible, ["nose", "lips"])
+
+    def test_someone_elses_scan_is_not_found_rather_than_forbidden(self):
+        other = User.objects.create_user("someone-else")
+        theirs = Scan.objects.create(
+            user=other, age_band="adult", status=Scan.Status.COMPLETED,
+            analysis_data={"reference_scores": self.SCORES},
+            expires_at=timezone.now() + timedelta(days=30),
+        )
+        self.entitle()
+        self.assertEqual(self.client.get(self.url(theirs)).status_code, 404)
+
+    def test_a_scan_awaiting_deletion_is_gone_for_this_purpose(self):
+        self.entitle()
+        self.scan.status = Scan.Status.DELETION_PENDING
+        self.scan.save(update_fields=("status",))
+        self.assertEqual(self.client.get(self.url()).status_code, 404)
+
+    def test_a_scan_with_no_scores_answers_with_empty_findings_not_an_error(self):
+        """A scan still processing has a page to render; it just has nothing on it yet."""
+        self.entitle()
+        self.scan.analysis_data = {}
+        self.scan.save(update_fields=("analysis_data",))
+        response = self.client.get(self.url())
+        self.assertEqual(response.status_code, 200)
+        self.assertIsNone(response.data["overall_score"])
+        self.assertEqual(response.data["improvements"], [])
+        self.assertEqual(response.data["views"], [])
+
+    def test_a_person_is_not_ranked_against_their_own_earlier_scans(self):
+        """Their own earlier scans are the same face, so counting them ranks someone against
+        themselves. The curve still draws them, because it is a picture of what is held."""
+        self.entitle()
+        Scan.objects.create(
+            user=self.user, age_band="adult", status=Scan.Status.COMPLETED,
+            analysis_data={"reference_scores": {**self.SCORES, "overall_score": 99}},
+            expires_at=timezone.now() + timedelta(days=30),
+        )
+        distribution = self.client.get(self.url()).data["distribution"]
+        self.assertEqual(distribution["sample_size"], 0)
+        self.assertIsNone(distribution["percentile"])
+        self.assertEqual(distribution["drawn_sample_size"], 1)
+        self.assertTrue(distribution["includes_you"])
+
+
 class ProcedureNamesEnTest(TestCase):
     """Every row carries an English name, and the table names nothing that does not exist.
 
