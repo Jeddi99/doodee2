@@ -383,6 +383,48 @@ class MetricCatalogTest(SimpleTestCase):
         self.assertTrue({f"{name}_ratio" for name in shared} <= self.WEB_LABELLED_METRICS)
 
 
+class SimulationPolishSwitchTest(TestCase):
+    """A face must not reach a paid endpoint because someone set a key.
+
+    `flux_refine` is the second path a photograph leaves this system, after `skin_vision`. Before
+    the switch existed the only thing stopping an upload was an unset `BFL_API_KEY` — an accident,
+    not a decision. These assert on `urlopen` never being called rather than on the exception,
+    because an exception raised after the crop is already on the wire would still pass a test that
+    only checked the exception.
+    """
+
+    def _crop(self):
+        return np.full((64, 64, 3), 128, np.uint8), np.full((64, 64), 255, np.uint8)
+
+    def test_a_key_alone_does_not_make_the_feature_available(self):
+        from doodee import flux_refine
+
+        with patch.dict(os.environ, {"BFL_API_KEY": "k", "SIMULATION_POLISH_ENABLED": "false"}):
+            self.assertFalse(flux_refine.enabled())
+            self.assertFalse(flux_refine.available())
+
+    def test_the_switch_sends_nothing_even_with_a_key(self):
+        from doodee import flux_refine
+
+        image, mask = self._crop()
+        with patch.dict(os.environ, {"BFL_API_KEY": "k", "SIMULATION_POLISH_ENABLED": "false"}), \
+             patch("urllib.request.urlopen") as urlopen:
+            with self.assertRaisesRegex(RuntimeError, "simulation_polish_disabled"):
+                flux_refine.refine(image, mask, "polish", next(iter(flux_refine.PROMPTS)))
+        urlopen.assert_not_called()
+
+    def test_the_render_falls_back_to_the_deterministic_image(self):
+        """The switch must degrade the render, not fail it."""
+        from doodee import canonical_pipeline
+
+        image, _ = self._crop()
+        with patch.dict(os.environ, {"BFL_API_KEY": "k", "SIMULATION_POLISH_ENABLED": "false"}), \
+             patch("urllib.request.urlopen") as urlopen:
+            returned = canonical_pipeline._refine_views(image, [], [], [], "front", 1.0)
+        self.assertIs(returned, image)
+        urlopen.assert_not_called()
+
+
 class SimulationSafetyTest(TestCase):
     def test_presets_are_closed_bounded_and_region_matched(self):
         self.assertEqual(validate_preset("nose", "nose-narrow")["delta"], -.04)

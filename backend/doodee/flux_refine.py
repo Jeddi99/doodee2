@@ -206,9 +206,26 @@ def capabilities():
             "masked_edits": not (which == "gateway" and model in MASKLESS_MODELS), "reason": None}
 
 
+def enabled() -> bool:
+    """The deliberate switch, separate from having a key.
+
+    Off by default, and the second place a face leaves this system — the first being
+    `skin_vision`, which is gated the same way and for the same reason. A key being present means
+    the request *could* be made; this means someone decided it should be. Until this module was
+    wired up the only thing stopping an upload was that nobody had set `BFL_API_KEY`, which is an
+    accident rather than a decision: the day someone sets it for an experiment, every simulation
+    starts posting cropped photographs of users' faces to a third party.
+
+    What travels is a box around one feature, not the whole frame (see the module docstring), but
+    a crop of an eyelid or a jawline is still a photograph of a person, and consent for a
+    simulation is not consent to send it somewhere.
+    """
+    return os.getenv("SIMULATION_POLISH_ENABLED", "false").lower() == "true"
+
+
 def available() -> bool:
     """True when a refine call would be attempted. Callers check this before building a mask."""
-    return bool(capabilities()["ready"])
+    return enabled() and bool(capabilities()["ready"])
 
 
 def _snap(length):
@@ -506,6 +523,11 @@ def refine(image, mask, kind, prompt_key, blend=None):
     built hairline at 45% leaves it half transparent, which reads as a rendering fault rather than
     as a subtle result.
     """
+    # Checked here and not only in `available`, for the same reason `skin_vision.analyze` re-checks
+    # its own switch: this is the last line before a photograph is on the wire, and a caller that
+    # reaches it with the feature off should get an exception rather than a silent upload.
+    if not enabled():
+        raise RuntimeError("simulation_polish_disabled")
     if kind not in ("erase", "fill", "polish"):
         raise ValueError(f"unsupported FLUX edit kind: {kind}")
     if prompt_key not in PROMPTS:
