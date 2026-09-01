@@ -15024,3 +15024,33 @@ body[data-locale="th"] .eyebrow {
   background: radial-gradient(ellipse, rgba(255,255,255,.82), rgba(169,212,249,.2) 52%, transparent 74%);
   filter: blur(8px);
 }
+
+/* The spoken-guidance toggle.
+ *
+ * Deliberately not inside `.capture-viewport__meta`: that bar is hidden at the mobile
+ * breakpoint, and a phone held at arm's length while the user turns their head away from it is
+ * precisely the situation the spoken guidance exists for. Hiding its only control there would
+ * have removed the feature from the case it was built for. */
+.capture-sound-toggle {
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  z-index: 3;
+  display: grid;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+  padding: 0;
+  border: 1px solid rgba(255, 255, 255, .34);
+  border-radius: 50%;
+  color: #fff;
+  background: rgba(12, 18, 28, .42);
+  backdrop-filter: blur(10px);
+  cursor: pointer;
+  transition: background-color 160ms ease, border-color 160ms ease;
+}
+.capture-sound-toggle:hover { background: rgba(12, 18, 28, .58); }
+.capture-sound-toggle[aria-pressed="false"] {
+  color: rgba(255, 255, 255, .62);
+  border-color: rgba(255, 255, 255, .2);
+}

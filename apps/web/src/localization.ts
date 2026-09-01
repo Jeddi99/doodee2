@@ -212,6 +212,8 @@ export const siteCopy = {
     },
     scan: {
       autoCapture: "Auto capture",
+      voiceOn: "Spoken guidance on",
+      voiceOff: "Spoken guidance off",
       progress: "%d of %d complete",
       exit: "Exit face scan",
       preview: "Live camera preview",
@@ -539,6 +541,8 @@ export const siteCopy = {
     },
     scan: {
       autoCapture: "ถ่ายอัตโนมัติ",
+      voiceOn: "เสียงบอกท่าเปิดอยู่",
+      voiceOff: "เสียงบอกท่าปิดอยู่",
       progress: "ถ่ายแล้ว %d จาก %d มุม",
       exit: "ออกจากการสแกน",
       preview: "ภาพสดจากกล้อง",

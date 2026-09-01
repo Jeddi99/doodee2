@@ -3,7 +3,7 @@
   "front_smile": { "yaw": [-8, 8], "pitch": [-6, 14], "roll": [-10, 10], "smile": [0.55, 1] },
   "left_oblique": { "yaw": [-50, -30], "pitch": [-8, 8], "roll": [-10, 10], "smile": [0, 1] },
   "right_oblique": { "yaw": [30, 50], "pitch": [-8, 8], "roll": [-10, 10], "smile": [0, 1] },
-  "left_profile": { "yaw": [-80, -55], "pitch": [-10, 10], "roll": [-10, 10], "smile": [0, 1] },
-  "right_profile": { "yaw": [55, 80], "pitch": [-10, 10], "roll": [-10, 10], "smile": [0, 1] },
+  "left_profile": { "yaw": [-85, -48], "pitch": [-12, 12], "roll": [-12, 12], "smile": [0, 1] },
+  "right_profile": { "yaw": [48, 85], "pitch": [-12, 12], "roll": [-12, 12], "smile": [0, 1] },
   "basal": { "yaw": [-8, 8], "pitch": [-30, -15], "roll": [-10, 10], "smile": [0, 1] }
 }

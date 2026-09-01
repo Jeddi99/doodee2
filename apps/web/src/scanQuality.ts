@@ -1,9 +1,36 @@
-export const CANDIDATE_TARGET = 5;
+/**
+ * How many good frames a step collects before it fires, and how still the head has to be held
+ * while it does.
+ *
+ * The front step and the profile steps are not the same task, and used to be treated as though
+ * they were. Facing the camera, the guidance, the hold meter and the preview are all in view, so
+ * a person corrects continuously and holding within 6 degrees is easy. Turned 60 degrees away
+ * they can see none of it: the instruction they are following is written on a screen behind their
+ * cheek. Asking for front-grade steadiness during a blind hold is what made this step hard, so
+ * the profiles get a wider tolerance and collect fewer frames.
+ *
+ * Note what this does *not* change: `poseCode` still decides what counts as a valid pose. These
+ * numbers only govern how long a valid pose must be sustained, and how many valid frames are
+ * scored against each other before the best one is kept.
+ */
+const FRONT_HOLD = { candidates: 5, yawTolerance: 6, pitchTolerance: 6, positionTolerance: 0.03 } as const;
+const PROFILE_HOLD = { candidates: 3, yawTolerance: 10, pitchTolerance: 10, positionTolerance: 0.045 } as const;
 
 export const captureSteps = [
-  { id: "front", label: "Front", short: "Face the camera", yaw: [-8, 8], pitch: [-6, 14], roll: [-10, 10], close: false },
-  { id: "left_profile", label: "Left 90°", short: "Turn fully left", yaw: [-80, -55], pitch: [-10, 10], roll: [-10, 10], close: false },
-  { id: "right_profile", label: "Right 90°", short: "Turn fully right", yaw: [55, 80], pitch: [-10, 10], roll: [-10, 10], close: false },
+  { id: "front", label: "Front", short: "Face the camera", yaw: [-8, 8], pitch: [-6, 14], roll: [-10, 10], close: false, hold: FRONT_HOLD },
+  // The profile windows are wider than the pose they describe, deliberately. Under-rotation is
+  // the common failure — people turn about 45 degrees when asked to turn "fully" — so the floor
+  // sits at 48 rather than 55, and the ceiling at 85 catches those who overshoot instead.
+  //
+  // This is a real trade, not a free one: a profile ratio measured off a head at 48 degrees is
+  // not quite the same quantity as one measured at 65. The widening is kept modest for that
+  // reason, and `pose_targets.json` carries these same numbers — a backend test compares the two
+  // against real photographs, so they cannot drift apart.
+  //
+  // The -50..-48 sliver overlaps `left_oblique` (-50..-30) and that is harmless: SCAN_VIEW_MODES
+  // never asks one session for both, since `fast` captures obliques and `standard` profiles.
+  { id: "left_profile", label: "Left 90°", short: "Turn fully left", yaw: [-85, -48], pitch: [-12, 12], roll: [-12, 12], close: false, hold: PROFILE_HOLD },
+  { id: "right_profile", label: "Right 90°", short: "Turn fully right", yaw: [48, 85], pitch: [-12, 12], roll: [-12, 12], close: false, hold: PROFILE_HOLD },
 ] as const;
 
 export type LandmarkPoint = { x: number; y: number; z?: number };

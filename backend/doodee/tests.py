@@ -1050,7 +1050,7 @@ class PoseQualityTest(TestCase):
             view: {"yaw": 0, "pitch": -20 if view == "basal" else 0, "roll": 0}
             for view in SCAN_VIEWS
         }
-        with self.assertRaisesRegex(ValueError, r"pose_left_profile:yaw:-55"):
+        with self.assertRaisesRegex(ValueError, r"pose_left_profile:yaw:-48"):
             _validate_pose_set(poses, "full")
 
     def test_pose_error_names_axis_and_rounded_correction(self):
@@ -1083,7 +1083,7 @@ class PoseQualityTest(TestCase):
             "left_profile": {"yaw": -68, "pitch": 0, "roll": 0},
             "right_profile": {"yaw": 40, "pitch": 0, "roll": 0},
         }
-        with self.assertRaisesRegex(ValueError, r"pose_right_profile:yaw:\+15"):
+        with self.assertRaisesRegex(ValueError, r"pose_right_profile:yaw:\+8"):
             _validate_pose_set(poses, "standard")
 
     def test_basal_target_sits_on_the_chin_up_side_of_zero(self):

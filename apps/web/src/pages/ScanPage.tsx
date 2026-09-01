@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Check, ImageUp, RotateCcw, ShieldCheck, X } from "lucide-react";
+import { Check, ImageUp, RotateCcw, ShieldCheck, Volume2, VolumeX, X } from "lucide-react";
 import type { NormalizedLandmark } from "@mediapipe/tasks-vision";
 import { useNavigate } from "react-router-dom";
 import Brand from "../Brand";
@@ -7,6 +7,7 @@ import { uploadScan } from "../lib/api";
 import { errorMessage } from "../lib/apiError";
 import { readOnboardingAnswers } from "../lib/onboardingAnswers";
 import { useLocale } from "../useLocale";
+import { createCaptureVoice, silentVoice, type CaptureVoice } from "../lib/captureVoice";
 import {
   bitmapFromDataUrl, classifyDecodeFailure, cropToJpeg, dataUrlToFile, decodeOriented, fitBitmap,
   isSideways, MAX_DETECT_EDGE, MAX_SUBMIT_EDGE,
@@ -14,7 +15,6 @@ import {
 import { prepareUpload, type StillReading } from "../lib/uploadSlot";
 import { ANALYSIS_CONSENT_VERSION } from "./OnboardingPage";
 import {
-  CANDIDATE_TARGET,
   candidateScore,
   captureSteps,
   findMatchingCaptureStep,
@@ -73,7 +73,7 @@ function referencePosition(index: number) {
 
 export default function ScanPage() {
   const navigate = useNavigate();
-  const { copy } = useLocale();
+  const { copy, locale } = useLocale();
   const [uploadError, setUploadError] = useState("");
   const videoRef = useRef<HTMLVideoElement>(null);
   const viewportRef = useRef<HTMLDivElement>(null);
@@ -104,6 +104,15 @@ export default function ScanPage() {
   const [activeStep, setActiveStep] = useState(0);
   const [quality, setQuality] = useState<Quality>({ valid: false, code: "finding_face", score: 0 });
   const [holdProgress, setHoldProgress] = useState(0);
+  // Spoken guidance is on by default: the profile steps are the reason it exists, and a user who
+  // needs it most is the one least able to discover a toggle while their head is turned away.
+  const [soundOn, setSoundOn] = useState(true);
+  const soundOnRef = useRef(true);
+  const voiceRef = useRef<CaptureVoice>(silentVoice);
+  // Tracks the invalid -> valid edge, so the "in the window" tone fires once per hold rather than
+  // on every frame of it.
+  const poseWasValidRef = useRef(false);
+  const voiceLangRef = useRef("th-TH");
   const [captures, setCaptures] = useState<(string | null)[]>(emptyCaptures);
   const [sources, setSources] = useState<(CaptureSource | null)[]>(emptySources);
   // Mirrored in a ref for the same reason `capturesRef` is: `processLandmarks` and the capture
@@ -123,6 +132,8 @@ export default function ScanPage() {
   const [error, setError] = useState("");
 
   const stopCamera = useCallback(() => {
+    voiceRef.current.close();
+    voiceRef.current = silentVoice;
     runIdRef.current += 1;
     runningRef.current = false;
     cancelAnimationFrame(rafRef.current);
@@ -281,7 +292,7 @@ export default function ScanPage() {
       activeStepRef.current = nextStep;
       setActiveStep(nextStep);
       lastFaceBoxRef.current = null;
-      setHoldProgress(candidateCountsRef.current[nextStep] / CANDIDATE_TARGET);
+      setHoldProgress(candidateCountsRef.current[nextStep] / captureSteps[nextStep].hold.candidates);
       setQuality({ valid: false, code: "position_for_step", score: 0 });
       captureLockedRef.current = false;
     };
@@ -293,6 +304,7 @@ export default function ScanPage() {
     const frame = captureFrame();
     if (!frame) return;
     captureLockedRef.current = true;
+    voiceRef.current.shutter();
     setHoldProgress(1);
     setFlash(true);
     window.setTimeout(() => setFlash(false), 130);
@@ -315,13 +327,16 @@ export default function ScanPage() {
         activeStepRef.current = matchedStep;
         setActiveStep(matchedStep);
         poseWindowRef.current = [];
-        setHoldProgress(candidateCountsRef.current[matchedStep] / CANDIDATE_TARGET);
+        setHoldProgress(candidateCountsRef.current[matchedStep] / captureSteps[matchedStep].hold.candidates);
       }
       lastFaceBoxRef.current = getFaceBox(landmarks);
       updateAutoFrame(landmarks, captureSteps[matchedStep].close);
     }
 
     const currentStep = activeStepRef.current;
+    // How still this step wants the head held and how many frames it scores. The profiles ask
+    // for less of both: see the note on `captureSteps`.
+    const hold = captureSteps[currentStep].hold;
     const framingZoom = landmarks
       ? getAutoFrame(landmarks, captureSteps[currentStep].close).zoom
       : autoFrameRef.current.zoom;
@@ -332,7 +347,7 @@ export default function ScanPage() {
     if (landmarks) {
       const pose = getPoseSignature(landmarks, now, observation);
       poseWindowRef.current = [...poseWindowRef.current.filter((item) => now - item.at <= 900), pose];
-      if (measured.valid && !isPoseWindowStable(poseWindowRef.current, 6, 0.03, 6)) {
+      if (measured.valid && !isPoseWindowStable(poseWindowRef.current, hold.yawTolerance, hold.positionTolerance, hold.pitchTolerance)) {
         measured = {
           valid: false,
           code: poseWindowRef.current.length < 4 ? "checking_angle" : "hold_still",
@@ -345,7 +360,7 @@ export default function ScanPage() {
 
     if (!measured.valid || captureLockedRef.current) {
       if (now - lastUiUpdateRef.current > 90) {
-        setHoldProgress(candidateCountsRef.current[currentStep] / CANDIDATE_TARGET);
+        setHoldProgress(candidateCountsRef.current[currentStep] / captureSteps[currentStep].hold.candidates);
         setQuality(measured);
         lastUiUpdateRef.current = now;
       }
@@ -359,17 +374,17 @@ export default function ScanPage() {
       if (!best || score > best.score) {
         bestCandidatesRef.current[currentStep] = { score };
       }
-      candidateCountsRef.current[currentStep] = Math.min(CANDIDATE_TARGET, candidateCountsRef.current[currentStep] + 1);
+      candidateCountsRef.current[currentStep] = Math.min(hold.candidates, candidateCountsRef.current[currentStep] + 1);
     }
 
-    const progress = candidateCountsRef.current[currentStep] / CANDIDATE_TARGET;
+    const progress = candidateCountsRef.current[currentStep] / hold.candidates;
     if (now - lastUiUpdateRef.current > 70) {
       setHoldProgress(progress);
       setQuality({ ...measured, code: "selecting_frame" });
       lastUiUpdateRef.current = now;
     }
     const best = bestCandidatesRef.current[currentStep];
-    if (candidateCountsRef.current[currentStep] >= CANDIDATE_TARGET && best && !captureLockedRef.current) {
+    if (candidateCountsRef.current[currentStep] >= hold.candidates && best && !captureLockedRef.current) {
       finishCapture();
     }
   }, [captureFrame, finishCapture, updateAutoFrame]);
@@ -501,6 +516,11 @@ export default function ScanPage() {
 
   const startCamera = useCallback(async () => {
     stopCamera();
+    if (soundOnRef.current && voiceRef.current === silentVoice) {
+      voiceRef.current = createCaptureVoice(voiceLangRef.current);
+    }
+    voiceRef.current.reset();
+    poseWasValidRef.current = false;
     const runId = runIdRef.current;
     setPhase("loading");
     setError("");
@@ -715,6 +735,36 @@ export default function ScanPage() {
   const liveMessage = quality.code === "position_for_step"
     ? stepCopy(activeStep).short
     : qualityText(quality.code);
+
+  voiceLangRef.current = locale === "en" ? "en-US" : "th-TH";
+  soundOnRef.current = soundOn;
+
+  /**
+   * The spoken half of the guidance, driven from the same `quality` the text is drawn from so the
+   * two can never say different things.
+   *
+   * Corrections are spoken; `selecting_frame` is not. Once the pose is right the user's job is to
+   * stop moving, and narrating that is an instruction to act at the exact moment acting would
+   * ruin the frame -- the rising tone already says "hold" without asking for anything.
+   */
+  useEffect(() => {
+    const voice = voiceRef.current;
+    if (quality.valid) {
+      if (!poseWasValidRef.current) {
+        poseWasValidRef.current = true;
+        voice.ready();
+      }
+      return;
+    }
+    poseWasValidRef.current = false;
+    voice.say(quality.code, liveMessage);
+  }, [quality, liveMessage]);
+  useEffect(() => {
+    if (soundOn) return;
+    voiceRef.current.close();
+    voiceRef.current = silentVoice;
+  }, [soundOn]);
+
   const hasUpload = sources.some((item) => item === "upload");
 
   return (
@@ -750,6 +800,23 @@ export default function ScanPage() {
             <span><ShieldCheck size={15} /> {copy.scan.onDevice}</span>
             <span>{cameraFps ? copy.scan.fpsLive.replace("%d", String(cameraFps)) : copy.scan.fpsTarget}</span>
           </div>
+          <button
+            type="button"
+            className="capture-sound-toggle"
+            onClick={() => {
+              const next = !soundOn;
+              setSoundOn(next);
+              // Built here rather than in the effect below because this click is a user
+              // gesture and the effect is not -- an AudioContext created outside one is born
+              // suspended, so turning sound back on mid-scan would leave it mute.
+              if (next && runningRef.current) voiceRef.current = createCaptureVoice(voiceLangRef.current);
+            }}
+            aria-pressed={soundOn}
+            aria-label={soundOn ? copy.scan.voiceOn : copy.scan.voiceOff}
+            title={soundOn ? copy.scan.voiceOn : copy.scan.voiceOff}
+          >
+            {soundOn ? <Volume2 size={15} /> : <VolumeX size={15} />}
+          </button>
           {flash && <div className="capture-flash" />}
           {phase === "loading" && (
             <div className="capture-loading" role="status"><span />{copy.scan.loading}</div>

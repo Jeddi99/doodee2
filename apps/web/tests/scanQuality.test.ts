@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import {
-  CANDIDATE_TARGET,
   candidateScore,
   captureSteps,
   faceCropRect,
@@ -45,9 +45,34 @@ const observation = (yaw = 0, pitch = 0, roll = 0, extra: Partial<FaceObservatio
 });
 
 test("uses the standard three-view scan from doodee2", () => {
-  assert.equal(CANDIDATE_TARGET, 5);
   assert.deepEqual(captureSteps.map((step) => step.id), ["front", "left_profile", "right_profile"]);
   assert.deepEqual(captureSteps.map((step) => step.label), ["Front", "Left 90°", "Right 90°"]);
+});
+
+test("the profile steps ask for a shorter, looser hold than the front step", () => {
+  // Front is corrected while watching the guidance. The profiles are held blind, with the screen
+  // behind the user's cheek — demanding the same steadiness of both is what made them hard.
+  const [front, left, right] = captureSteps;
+  assert.equal(front.hold.candidates, 5);
+  assert.equal(left.hold.candidates, 3);
+  assert.deepEqual(left.hold, right.hold);
+  assert.ok(left.hold.yawTolerance > front.hold.yawTolerance);
+  assert.ok(left.hold.positionTolerance > front.hold.positionTolerance);
+});
+
+test("the browser's pose windows are the server's", () => {
+  // The backend re-validates every pose and throws the whole scan away when a measured view is
+  // outside its window, so a window widened on only one side means captures the camera accepts
+  // and the server destroys. `backend/doodee/tests.py` checks the same contract from its end
+  // against real photographs; this is the cheap half that fails the moment the two drift.
+  const targets = JSON.parse(
+    readFileSync(new URL("../../../backend/doodee/pose_targets.json", import.meta.url), "utf8"),
+  );
+  for (const step of captureSteps) {
+    assert.deepEqual([...step.yaw], targets[step.id].yaw, `${step.id} yaw`);
+    assert.deepEqual([...step.pitch], targets[step.id].pitch, `${step.id} pitch`);
+    assert.deepEqual([...step.roll], targets[step.id].roll, `${step.id} roll`);
+  }
 });
 
 test("reads MediaPipe transformation matrices in calibrated coordinates", () => {
