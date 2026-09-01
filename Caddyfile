@@ -1,0 +1,73 @@
+# Reverse proxy for the production API. Runs on the VPS host, not in compose: the three gunicorn
+# services in compose.prod.yaml publish to 127.0.0.1 only, and this is what stands in front of
+# them. Without it nothing is reachable from the internet at all — that is deliberate, so a
+# misconfigured deploy fails closed rather than exposing a plaintext Django.
+#
+#   sudo caddy validate --config /etc/caddy/Caddyfile
+#   sudo systemctl reload caddy
+#
+# The web app itself is not here. doodee.app and www.doodee.app are served by Vercel; this
+# handles api.doodee.app alone, which is why CORS matters in production and does not in dev.
+
+api.doodee.app {
+	# TLS is not optional for this domain. `.app` is on the browsers' HSTS preload list, so a
+	# request to http:// is rewritten to https:// before it ever leaves the browser — there is
+	# no plaintext fallback to fall back to. Caddy obtains and renews the Let's Encrypt
+	# certificate on its own; the only requirements are that port 80 and 443 reach this host
+	# and that the A record already resolves.
+
+	log {
+		output file /var/log/caddy/api.doodee.app.log
+		# The Authorization header carries a Firebase ID token. Caddy does not log headers by
+		# default, and nothing here asks it to.
+	}
+
+	# Chat first, because it is the reason these are separate processes. An LLM turn occupies a
+	# gunicorn thread for seconds (chat.py: REQUEST_TIMEOUT_SECONDS = 20), and mixed in with
+	# ordinary traffic a burst of chat would starve every other endpoint of threads. chat-api is
+	# a separate container with its own pool (2 workers x 15 threads) so that starvation is
+	# contained to chat.
+	@chat path /api/v1/chat/*
+	handle @chat {
+		# Longer than gunicorn's own 60s timeout on that container, so the backend's timeout is
+		# the one that fires and the client gets Django's error rather than a bare 502.
+		reverse_proxy 127.0.0.1:8002 {
+			transport http {
+				response_header_timeout 90s
+			}
+		}
+	}
+
+	# The legacy multipart upload lane. Exactly one method and one path: POST /api/v1/scans/
+	# sends 3-7 photographs in the request body, and compose.prod.yaml gives it a container of
+	# its own with 1 worker x 2 threads precisely so those large bodies cannot pin memory in the
+	# process serving everything else. Note this is NOT /api/v1/scans/uploads/ — current clients
+	# call that to get signed URLs and then PUT the bytes straight to Supabase, never through
+	# here. `path` without a wildcard matches that one path and no sub-path.
+	@legacy_upload {
+		method POST
+		path /api/v1/scans/
+	}
+	handle @legacy_upload {
+		# Seven photographs, generous but bounded. Caddy rejects a larger body itself rather
+		# than streaming megabytes to a Django that will only refuse them.
+		request_body {
+			max_size 60MB
+		}
+		reverse_proxy 127.0.0.1:8003
+	}
+
+	# Everything else: the API proper and /admin.
+	handle {
+		# 10MB is well above any JSON this API accepts and well below anything that would
+		# matter; the upload path that needs more is matched above.
+		request_body {
+			max_size 10MB
+		}
+		reverse_proxy 127.0.0.1:8001
+	}
+
+	# Caddy sets X-Forwarded-Proto, X-Forwarded-For and X-Forwarded-Host on every proxied
+	# request. settings.py trusts the first of those via SECURE_PROXY_SSL_HEADER, which is what
+	# lets the admin's CSRF check see the request as the https one the browser actually made.
+}
