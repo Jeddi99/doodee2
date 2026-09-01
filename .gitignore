@@ -1,4 +1,10 @@
 .env
+# Every other .env flavour too — .env.production, .env.local, .env.staging. The bare `.env`
+# above matches that one filename and nothing else, so a second environment file would have
+# been committed with real keys in it the first time anyone made one.
+.env.*
+# …except the example, which is deliberately in git and therefore must never hold a real value.
+!.env.example
 firebase-service-account.json
 .venv/
 __pycache__/
