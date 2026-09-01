@@ -11,7 +11,7 @@ import { createFaceDetectorOutput, type Face } from 'react-native-vision-camera-
 import { useResizer } from 'react-native-vision-camera-resizer';
 import { scheduleOnRN } from 'react-native-worklets';
 import {
-  advanceCaptureTimer, evaluateCapture, SCAN_VIEWS, startCaptureTimer,
+  advanceCaptureTimer, evaluateCapture, holdMsFor, SCAN_VIEWS, startCaptureTimer,
   type CaptureTimer, type FaceObservation, type QualityStatus, type ScanView,
   pollUntilSettled,
 } from '@doodee/shared';
@@ -169,8 +169,12 @@ export default function Home() {
       stable, at: now,
     };
     previousRef.current = observation;
-    const nextQuality = evaluateCapture(SCAN_VIEWS[viewIndexRef.current], observation);
-    const nextTimer = advanceCaptureTimer(timerRef.current, nextQuality, now);
+    const view = SCAN_VIEWS[viewIndexRef.current];
+    const nextQuality = evaluateCapture(view, observation);
+    // Per-view dwell rather than one flat hold. A profile is held with the screen out of
+    // sight, so the pose cannot be verified while it is being held; asking for the front
+    // view's dwell there is what made the side views hard to shoot alone.
+    const nextTimer = advanceCaptureTimer(timerRef.current, nextQuality, now, holdMsFor(view));
     timerRef.current = nextTimer;
     setQuality(nextQuality);
     setTimer(nextTimer);

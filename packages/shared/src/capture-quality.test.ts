@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import poseTargets from '../../../backend/doodee/pose_targets.json' with { type: 'json' };
-import { advanceCaptureTimer, CLOSER_HINT_BELOW, evaluateCapture, getFramingHint, getPoseGuidance, startCaptureTimer, type FaceObservation } from './capture-quality.ts';
+import { advanceCaptureTimer, CLOSER_HINT_BELOW, DEFAULT_HOLD_MS, evaluateCapture, getFramingHint, getPoseGuidance, holdMsFor, startCaptureTimer, type FaceObservation } from './capture-quality.ts';
 import type { ScanView } from './api.ts';
 
 const valid: FaceObservation = {
@@ -90,15 +90,35 @@ test('the basal view asks for chin up and never sends the subject the other way'
   assert.equal(getPoseGuidance('front', { yaw: 0, pitch: 30, roll: 0 })!.direction, 'up');
 });
 
-test('capture requires half a second held and fallback appears after six', () => {
+test('capture requires the hold to elapse and fallback appears after three seconds', () => {
   let state = startCaptureTimer(0);
   state = advanceCaptureTimer(state, 'ready', 100);
-  assert.equal(advanceCaptureTimer(state, 'ready', 599).shouldCapture, false);
-  assert.equal(advanceCaptureTimer(state, 'ready', 600).shouldCapture, true);
-  state = advanceCaptureTimer(state, 'off_center', 601);
+  assert.equal(advanceCaptureTimer(state, 'ready', 399).shouldCapture, false);
+  assert.equal(advanceCaptureTimer(state, 'ready', 400).shouldCapture, true);
+  state = advanceCaptureTimer(state, 'off_center', 401);
   assert.equal(state.validSince, null);
-  assert.equal(advanceCaptureTimer(state, 'off_center', 5_999).fallbackAvailable, false);
-  assert.equal(advanceCaptureTimer(state, 'off_center', 6_000).fallbackAvailable, true);
+  assert.equal(advanceCaptureTimer(state, 'off_center', 2_999).fallbackAvailable, false);
+  assert.equal(advanceCaptureTimer(state, 'off_center', 3_000).fallbackAvailable, true);
+});
+
+test('a profile shoots on a far shorter dwell than a front view', () => {
+  // The point of the difference: a side view is held with the screen out of sight, so the pose
+  // cannot be verified while it is being held. Asking for the front view's half second there is
+  // what made the side views unshootable alone.
+  assert.ok(holdMsFor('left_profile') < holdMsFor('front'));
+  assert.equal(holdMsFor('left_profile'), holdMsFor('right_profile'));
+  assert.equal(holdMsFor('front'), DEFAULT_HOLD_MS);
+
+  const held = (view: ScanView, at: number) => {
+    let state = advanceCaptureTimer(startCaptureTimer(0), 'ready', 0, holdMsFor(view));
+    state = advanceCaptureTimer(state, 'ready', at, holdMsFor(view));
+    return state.shouldCapture;
+  };
+  assert.equal(held('left_profile', 119), false);
+  assert.equal(held('left_profile', 120), true);
+  // The same instant is still too early for the front view, which keeps the steadier hold.
+  assert.equal(held('front', 180), false);
+  assert.equal(held('front', 300), true);
 });
 
 test('a small but acceptable face is advised closer, never rejected for it', () => {
