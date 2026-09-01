@@ -605,6 +605,43 @@ class ProcedureSelectionTest(TestCase):
         self.assertEqual(kwargs["presets"], specs)
 
     @patch("doodee.canonical_pipeline.simulate_scan_views")
+    def test_the_requested_view_is_the_one_handed_back(self, render):
+        """A chin projection asked for from the side must not be answered with the front.
+
+        The fused model renders all three regardless; only the choice of which is *the* image
+        was hardcoded to the front for catalog specs.
+        """
+        from doodee.simulation_engine import simulate_canonical
+
+        def rendered(name):
+            return {"encoded": name.encode(), "before_encoded": b"png", "focus_boxes": {},
+                    "yaw": 0., "max_shift_px": 1., "held_back": 0., "source_object": f"private/{name}"}
+
+        render.return_value = {
+            "views": {name: rendered(name) for name in ("front", "left_profile", "right_profile")},
+            "legacy_view": "front", "measurements": [], "related_procedures": [],
+            "model_version": "canonical-3d-fusion-lab-v1",
+        }
+        selections = [{"procedure_id": "1.1"}]
+        output, _m, _f, extra = simulate_canonical(self.scan, selections, lambda name: b"",
+                                                   view="left_profile")
+        self.assertEqual((output, extra["legacy_view"]), (b"left_profile", "left_profile"))
+
+        # An unrenderable name falls back rather than raising: every view was rendered and the
+        # engine's own choice is still a true answer.
+        _o, _m, _f, extra = simulate_canonical(self.scan, selections, lambda name: b"", view="behind")
+        self.assertEqual(extra["legacy_view"], "front")
+
+    def test_the_requested_view_is_recorded_so_the_worker_renders_the_same_one(self):
+        from doodee.simulation_engine import simulation_columns
+
+        selections = [{"procedure_id": "1.1"}]
+        specs, _targets = self.resolve(selections)
+        self.assertEqual(simulation_columns(selections, specs, "left_profile")["parameters"]["view"],
+                         "left_profile")
+        self.assertNotIn("view", simulation_columns(selections, specs)["parameters"])
+
+    @patch("doodee.canonical_pipeline.simulate_scan_views")
     def test_a_selection_naming_no_known_procedure_never_reaches_the_renderer(self, render):
         from doodee.simulation_engine import simulate_canonical
 
@@ -670,6 +707,18 @@ class ProcedureSimulationApiTest(TestCase):
         """`preset` is read by the client to caption the render; a catalog row must not be null."""
         response = self.preview(selections=[{"procedure_id": "1.1"}])
         self.assertEqual(response.data["preset"]["id"], "1.1")
+
+    @patch("doodee.views.process_simulation.delay")
+    def test_the_angle_the_client_asks_for_reaches_the_row(self, delay):
+        response = self.preview(selections=[{"procedure_id": "1.1"}], view="left_profile")
+        self.assertEqual(response.status_code, 202, response.data)
+        self.assertEqual(Simulation.objects.get(id=response.data["id"]).parameters["view"],
+                         "left_profile")
+
+    def test_an_angle_that_is_not_rendered_is_refused_rather_than_ignored(self):
+        response = self.preview(selections=[{"procedure_id": "1.1"}], view="behind")
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("unknown_view", json.dumps(response.data))
 
     def test_a_stack_the_fused_renderer_cannot_run_is_refused_before_any_quota_is_spent(self):
         fast = Scan.objects.create(

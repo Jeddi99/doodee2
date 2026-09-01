@@ -55,7 +55,8 @@ from .reference_scoring import REFERENCE_POPULATIONS
 from .percentile import score_card as build_score_card
 from .development_plan import build as build_development_plan
 from .simulation_engine import (
-    has_profile_images, related_union, simulate, simulation_columns, source_for_scan, validate_selections,
+    CANONICAL_VIEWS, has_profile_images, related_union, simulate, simulation_columns,
+    source_for_scan, validate_selections,
 )
 from .storage import delete_image, download_image, signed_upload_url, signed_url, upload_image
 from .tasks import cleanup_scan, process_scan, process_simulation, request_scan_deletion
@@ -321,6 +322,21 @@ def _selections_from(data):
             raise ValidationError({"selections": "conflicting_selection_fields"})
         return data["selections"]
     return [{"region": data.get("region"), "preset_id": data.get("preset_id")}]
+
+
+def _requested_view(data):
+    """Which of the three renders the client wants back, or None for the engine's own choice.
+
+    Only the fused engine renders more than one, so this is silently None for a legacy stack --
+    there the source view follows from the preset and asking for another would be asking for an
+    image that was never made.
+    """
+    view = data.get("view")
+    if view is None:
+        return None
+    if view not in CANONICAL_VIEWS:
+        raise ValidationError({"view": "unknown_view"})
+    return view
 
 
 def _resolve_stack(scan, data):
@@ -859,9 +875,9 @@ class SimulationViewSet(viewsets.GenericViewSet, mixins.RetrieveModelMixin):
             return Response({"detail": "simulation_requires_entitlement"}, status=status.HTTP_403_FORBIDDEN)
         if not _heavy_queue_available():
             return _queue_busy_response()
-        allowed_fields = {"scan_id", "region", "preset_id", "selections", "simulation_consent_version"}
+        allowed_fields = {"scan_id", "region", "preset_id", "selections", "view", "simulation_consent_version"}
         if set(request.data) - allowed_fields:
-            raise ValidationError({"detail": "Only scan_id, selections (or region and preset_id), and simulation_consent_version are accepted"})
+            raise ValidationError({"detail": "Only scan_id, selections (or region and preset_id), view and simulation_consent_version are accepted"})
         consent_version = str(request.data.get("simulation_consent_version", "")).strip()
         if not consent_version:
             raise ValidationError({"simulation_consent_version": "Separate simulation consent is required"})
@@ -898,7 +914,7 @@ class SimulationViewSet(viewsets.GenericViewSet, mixins.RetrieveModelMixin):
             selections=selections,
             # The first item is mirrored into the old single-value columns so existing readers
             # — the serializer's `preset`, the admin, saved rows from before stacking — still work.
-            **simulation_columns(selections, presets),
+            **simulation_columns(selections, presets, _requested_view(request.data)),
             model_version="local-mediapipe-opencv-1",
             related_procedures=related_union(presets),
             expires_at=now + timedelta(days=30),
@@ -916,9 +932,9 @@ class SimulationViewSet(viewsets.GenericViewSet, mixins.RetrieveModelMixin):
             return Response({"detail": "Simulation is temporarily unavailable"}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
         if _simulation_locked(request.user):
             return Response({"detail": "simulation_requires_entitlement"}, status=status.HTTP_403_FORBIDDEN)
-        allowed_fields = {"scan_id", "region", "preset_id", "selections", "simulation_consent_version"}
+        allowed_fields = {"scan_id", "region", "preset_id", "selections", "view", "simulation_consent_version"}
         if set(request.data) - allowed_fields:
-            raise ValidationError({"detail": "Only scan_id, selections (or region and preset_id), and simulation_consent_version are accepted"})
+            raise ValidationError({"detail": "Only scan_id, selections (or region and preset_id), view and simulation_consent_version are accepted"})
         consent_version = str(request.data.get("simulation_consent_version", "")).strip()
         if not consent_version:
             raise ValidationError({"simulation_consent_version": "Separate simulation consent is required"})
@@ -970,7 +986,7 @@ class SimulationViewSet(viewsets.GenericViewSet, mixins.RetrieveModelMixin):
             _restore_preview(request.user)
         simulation = Simulation.objects.create(
             scan=scan, kind=Simulation.Kind.PREVIEW, idempotency_key=key, selections=selections,
-            **simulation_columns(selections, presets),
+            **simulation_columns(selections, presets, _requested_view(request.data)),
             model_version="local-mediapipe-opencv-1", related_procedures=related_union(presets),
             expires_at=timezone.now() + timedelta(hours=1),
         )

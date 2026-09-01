@@ -294,7 +294,7 @@ def validate_selections(scan, selections, has_profile_images):
     return presets, targets
 
 
-def simulation_columns(selections, presets):
+def simulation_columns(selections, presets, view=None):
     """The `region`, `preset_id` and `parameters` one stack writes onto its Simulation row.
 
     One function because those three columns are one decision and there are two call sites --
@@ -319,6 +319,11 @@ def simulation_columns(selections, presets):
                 # a catalog procedure is a pipeline, not one number, and writing a stand-in
                 # would put a value in the permanent record that nothing computed.
                 "sliders": procedure_catalog.compile_warp_sliders(presets, levels),
+                # Which of the three renders to hand back as *the* image. The fused model
+                # produces all three either way; without this the answer was always the front,
+                # so a chin projection -- the whole point of which is the side view -- could be
+                # asked for and then shown from the one angle that cannot show it.
+                **({"view": view} if view else {}),
             },
         }
     return {
@@ -554,7 +559,7 @@ def _canonical_presets(selections):
     return None if any(p is None for p in presets) else presets
 
 
-def simulate_canonical(scan, selections, download_fn, output_format=".png", max_side=1280):
+def simulate_canonical(scan, selections, download_fn, output_format=".png", max_side=1280, view=None):
     """Render one simulation through the fused three-view model.
 
     Returns `(output, measurements, focus, extra)` where the first three match what
@@ -603,10 +608,14 @@ def simulate_canonical(scan, selections, download_fn, output_format=".png", max_
         output_format=output_format,
         max_side=max_side,
     )
-    primary = result["views"][result["legacy_view"]]
+    # The pipeline picks a view from the presets' own source view, which for catalog specs is
+    # always the front. An explicit request wins over that; an unrenderable one is ignored
+    # rather than raised, because every view was rendered and any of them is a true answer.
+    legacy_view = view if view in result["views"] else result["legacy_view"]
+    primary = result["views"][legacy_view]
     extra = {
         "model_version": result["model_version"],
-        "legacy_view": result["legacy_view"],
+        "legacy_view": legacy_view,
         "related_procedures": result["related_procedures"],
         "views": {
             name: {"yaw": view["yaw"], "max_shift_px": view["max_shift_px"],

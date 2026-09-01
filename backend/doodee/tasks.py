@@ -210,6 +210,7 @@ def process_simulation(simulation_id):
         if engine_for_selections(simulation.scan, selections) == "canonical":
             output, measurements, _focus, extra = simulate_canonical(
                 simulation.scan, selections, download_image, output_format=output_format,
+                view=(simulation.parameters or {}).get("view"),
             )
             source, source_view = extra["before_encoded"], extra["legacy_view"]
             source_type, source_extension = f"image/{after_extension}", after_extension
