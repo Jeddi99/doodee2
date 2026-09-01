@@ -3,15 +3,9 @@ import {
   ArrowLeft,
   ArrowRight,
   Check,
-  CheckCircle2,
   ChevronDown,
   Globe,
   LoaderCircle,
-  Lock,
-  ShieldCheck,
-  SlidersHorizontal,
-  Sparkles,
-  Zap,
 } from "lucide-react";
 import { Link, useNavigate } from "react-router-dom";
 import Brand from "../Brand";
@@ -100,7 +94,13 @@ export default function LoginPage() {
   };
 
   return (
-    <main className="login-page login-page--split">
+    // Single-column layout. The two-column `login-page--split` variant, with the
+    // marketing hero down the left, was built for a page that also carried an
+    // e-mail form and needed the height. With Google as the only control there
+    // is nothing to fill it, so this returns to the original centred card — the
+    // CSS for which never went away (`.login-header`, `.login-layout`,
+    // `.login-panel`, `.google-button`, `.referral`, `.login-legal`).
+    <main className="login-page">
       {busy && (
         <div className="login-transition" role="status" aria-live="assertive" aria-label={t.preparing}>
           <div className="login-transition__logo" aria-hidden="true">
@@ -114,79 +114,12 @@ export default function LoginPage() {
         </div>
       )}
 
-      {/* LEFT SIDE: Brand Showcase & Trust Badges */}
-      <section className="login-hero-brand">
-        <div className="login-hero-brand__content">
-          <div className="login-hero-brand__top">
-            <Brand />
-            <span className="login-hero-badge">
-              <Sparkles size={13} />
-              AI Aesthetics Standard
-            </span>
-          </div>
-
-          <div className="login-hero-brand__titles">
-            <h1>{t.heroTitle}</h1>
-            <p>{t.heroSubtitle}</p>
-          </div>
-
-          <div className="login-hero-features">
-            <div className="login-hero-feature-card">
-              <div className="login-hero-feature-card__icon">
-                <SlidersHorizontal size={20} />
-              </div>
-              <div>
-                <strong>{t.feature1Title}</strong>
-                <p>{t.feature1Desc}</p>
-              </div>
-            </div>
-
-            <div className="login-hero-feature-card">
-              <div className="login-hero-feature-card__icon">
-                <ShieldCheck size={20} />
-              </div>
-              <div>
-                <strong>{t.feature2Title}</strong>
-                <p>{t.feature2Desc}</p>
-              </div>
-            </div>
-
-            <div className="login-hero-feature-card">
-              <div className="login-hero-feature-card__icon">
-                <Sparkles size={20} />
-              </div>
-              <div>
-                <strong>{t.feature3Title}</strong>
-                <p>{t.feature3Desc}</p>
-              </div>
-            </div>
-          </div>
-
-          <div className="login-hero-trust-bar">
-            <div className="trust-item">
-              <CheckCircle2 size={15} />
-              <span>{t.trust1}</span>
-            </div>
-            <div className="trust-item">
-              <Lock size={15} />
-              <span>{t.trust2}</span>
-            </div>
-            <div className="trust-item">
-              <Zap size={15} />
-              <span>{t.trust3}</span>
-            </div>
-          </div>
-        </div>
-      </section>
-
-      {/* RIGHT SIDE: Auth Form Container */}
-      <section className="login-card-container">
-        <header className="login-top-nav">
-          <Link className="login-back-btn" to="/">
-            <ArrowLeft size={16} />
-            <span>{t.back}</span>
-          </Link>
-
+      <header className="login-header">
+        <Brand />
+        <div className="login-header__actions">
+          {/* Kept although the reference design has no language control: it is
+              the only one on this page, and dropping it strands anyone whose
+              browser opened the app in the other language. */}
           <button
             type="button"
             className="doodee-lang-toggle"
@@ -197,31 +130,25 @@ export default function LoginPage() {
             <Globe size={15} />
             <span>{locale.toUpperCase()}</span>
           </button>
-        </header>
+          <Link className="login-back" to="/">
+            <ArrowLeft size={16} />
+            <span>{t.back}</span>
+          </Link>
+        </div>
+      </header>
 
+      <div className="login-layout">
         <div className="login-panel" aria-labelledby="login-title">
-          <div className="login-panel__heading">
-            <h1 id="login-title">
-              {t.titleLead}{" "}
-              <span className="brand-accent">DOODEE</span>
-            </h1>
-            {/* One line for both cases. There is no separate sign-up any more:
-                Google creates the account on first sign-in, so "welcome back"
-                would be wrong for half the people reading it. */}
-            <p className="login-panel__subtitle">
-              {th
-                ? "ใช้บัญชี Google ของคุณ ครั้งแรกระบบจะสร้างบัญชีให้อัตโนมัติ"
-                : "Use your Google account — we'll create one for you on first sign-in"}
-            </p>
-          </div>
+          {/* Two spans, not one: `.login-panel h1 > span` staggers them in. */}
+          <h1 id="login-title">
+            <span>{t.titleLead}</span> <span>DOODEE</span>
+          </h1>
 
           {/* Google is the only way in. The e-mail/password form and the
-              sign-in/sign-up tab switcher were removed: Google sign-in both
-              signs in and registers, so a second credential path was extra
-              surface to secure (password reset, strength rules, verification
-              mail) for no additional reach. lib/firebase still exports
-              emailSignIn/emailSignUp/sendPasswordReset — nothing here calls
-              them. */}
+              sign-in/sign-up tabs were removed: Google sign-in both signs in
+              and registers, so a second credential path was extra surface to
+              secure for no additional reach. lib/firebase still exports
+              emailSignIn/emailSignUp/sendPasswordReset — nothing calls them. */}
           <button
             className="google-button"
             type="button"
@@ -242,21 +169,9 @@ export default function LoginPage() {
             </div>
           )}
 
-          {/* The sign-up tab carried a terms checkbox. Without it the consent
-              still has to be stated, so it becomes the standard notice — the
-              copy already existed in both locales and was never rendered. */}
-          <p className="login-legal">
-            {t.legalLead}{" "}
-            <a href="#terms" target="_blank" rel="noreferrer">
-              {t.terms}
-            </a>{" "}
-            {t.legalMid}{" "}
-            <a href="#privacy" target="_blank" rel="noreferrer">
-              {t.privacy}
-            </a>
-          </p>
-
-          {/* Referral Code Accordion */}
+          {/* Not a sign-in method: the code is redeemed in afterSignIn()
+              against the account Google just created. `.referral` carries the
+              rules above and below it. */}
           <div className={`referral ${showReferral ? "referral--open" : ""}`}>
             <button
               className="referral-toggle"
@@ -311,13 +226,21 @@ export default function LoginPage() {
             </form>
           </div>
 
-          {/* Security Assurance Badge */}
-          <div className="login-security-badge">
-            <Lock size={13} />
-            <span>{t.securityBadge}</span>
-          </div>
+          {/* The sign-up tab carried a terms checkbox. Without it the consent
+              still has to be stated, so it becomes the standard notice — copy
+              that already existed in both locales and was never rendered. */}
+          <p className="login-legal">
+            {t.legalLead}{" "}
+            <a href="#terms" target="_blank" rel="noreferrer">
+              {t.terms}
+            </a>{" "}
+            {t.legalMid}{" "}
+            <a href="#privacy" target="_blank" rel="noreferrer">
+              {t.privacy}
+            </a>
+          </p>
         </div>
-      </section>
+      </div>
     </main>
   );
 }

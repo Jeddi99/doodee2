@@ -7613,6 +7613,15 @@ footer {
 .login-header .brand {
   color: #0b0e14;
 }
+
+/* The header's right-hand group. `.login-header` is a space-between flex, so
+   the toggle and the back link need their own row to sit together at the end
+   rather than being spread apart by it. */
+.login-header__actions {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
 .login-header .brand svg path {
   stroke-dasharray: 112;
   stroke-dashoffset: 112;
@@ -14048,163 +14057,9 @@ body[data-locale="th"] .eyebrow {
    DOODEE LUXURY SPLIT-SCREEN AUTHENTICATION PAGE
    ========================================================================== */
 
-.login-page--split {
-  min-height: 100vh;
-  display: grid;
-  grid-template-columns: minmax(420px, 1.15fr) minmax(420px, 1fr);
-  background: radial-gradient(circle at 10% 20%, rgba(8, 123, 255, 0.08), transparent 45%),
-              radial-gradient(circle at 90% 80%, rgba(0, 212, 255, 0.06), transparent 50%),
-              linear-gradient(135deg, #f7faff 0%, #eaf2fc 100%);
-  overflow-x: hidden;
-}
-
 /* LEFT SIDE: HERO BRAND SHOWCASE */
-.login-hero-brand {
-  position: relative;
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-  padding: 60px 80px;
-  background: linear-gradient(145deg, rgba(8, 123, 255, 0.05) 0%, rgba(255, 255, 255, 0.4) 100%);
-  border-right: 1px solid rgba(22, 40, 66, 0.08);
-  backdrop-filter: blur(20px);
-}
-
-.login-hero-brand__content {
-  max-width: 540px;
-  display: flex;
-  flex-direction: column;
-  gap: 32px;
-}
-
-.login-hero-brand__top {
-  display: flex;
-  align-items: center;
-  gap: 16px;
-}
-
-.login-hero-badge {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  background: linear-gradient(135deg, rgba(8, 123, 255, 0.12), rgba(0, 212, 255, 0.1));
-  color: #087bff;
-  font-size: 11.5px;
-  font-weight: 700;
-  padding: 4px 12px;
-  border-radius: 999px;
-  border: 1px solid rgba(8, 123, 255, 0.2);
-  letter-spacing: 0.02em;
-}
-
-.login-hero-brand__titles h1 {
-  font-size: 2.35rem;
-  font-weight: 800;
-  line-height: 1.22;
-  color: #0f172a;
-  letter-spacing: -0.03em;
-  margin-bottom: 12px;
-}
-
-.login-hero-brand__titles p {
-  font-size: 1.02rem;
-  line-height: 1.6;
-  color: #475569;
-  font-weight: 400;
-}
-
-.login-hero-features {
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-}
-
-.login-hero-feature-card {
-  display: flex;
-  align-items: flex-start;
-  gap: 16px;
-  padding: 16px 20px;
-  background: rgba(255, 255, 255, 0.7);
-  border: 1px solid rgba(255, 255, 255, 0.9);
-  border-radius: 18px;
-  box-shadow: 0 4px 20px rgba(15, 23, 42, 0.03);
-  transition: all 0.25s cubic-bezier(0.16, 1, 0.3, 1);
-}
-
-.login-hero-feature-card:hover {
-  transform: translateY(-2px);
-  background: rgba(255, 255, 255, 0.92);
-  border-color: rgba(8, 123, 255, 0.3);
-  box-shadow: 0 8px 30px rgba(8, 123, 255, 0.08);
-}
-
-.login-hero-feature-card__icon {
-  width: 42px;
-  height: 42px;
-  min-width: 42px;
-  border-radius: 12px;
-  background: linear-gradient(135deg, rgba(8, 123, 255, 0.12), rgba(8, 123, 255, 0.04));
-  color: #087bff;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.login-hero-feature-card strong {
-  display: block;
-  font-size: 14.5px;
-  font-weight: 700;
-  color: #0f172a;
-  margin-bottom: 3px;
-}
-
-.login-hero-feature-card p {
-  font-size: 12.5px;
-  line-height: 1.45;
-  color: #64748b;
-  margin: 0;
-}
-
-.login-hero-trust-bar {
-  display: flex;
-  align-items: center;
-  gap: 20px;
-  padding-top: 10px;
-  border-top: 1px solid rgba(22, 40, 66, 0.08);
-}
-
-.trust-item {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  color: #475569;
-  font-size: 11.5px;
-  font-weight: 600;
-}
-
-.trust-item svg {
-  color: #087bff;
-}
 
 /* RIGHT SIDE: AUTH FORM CONTAINER */
-.login-card-container {
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-  align-items: center;
-  padding: 40px 48px;
-  position: relative;
-}
-
-.login-top-nav {
-  position: absolute;
-  top: 24px;
-  left: 48px;
-  right: 48px;
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-}
 
 .login-back-btn {
   display: inline-flex;
@@ -14240,29 +14095,10 @@ body[data-locale="th"] .eyebrow {
   margin-bottom: 24px;
 }
 
-.login-panel__heading {
-  text-align: center;
-  margin-bottom: 24px;
-}
-
-.login-panel__heading h1 {
-  font-size: 1.85rem;
-  font-weight: 800;
-  color: #0f172a;
-  letter-spacing: -0.03em;
-  margin-bottom: 6px;
-}
-
 .brand-accent {
   background: linear-gradient(135deg, #087bff 0%, #0056c6 100%);
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
-}
-
-.login-panel__subtitle {
-  font-size: 13px;
-  color: #64748b;
-  margin: 0;
 }
 
 /* TAB SWITCHER */
@@ -14358,31 +14194,9 @@ body[data-locale="th"] .eyebrow {
 /* PASSWORD MATCH BADGE */
 
 /* SECURITY BADGE */
-.login-security-badge {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  font-size: 11px;
-  color: #94a3b8;
-  margin-top: 20px;
-}
 
 /* RESPONSIVE */
 @media (max-width: 1024px) {
-  .login-page--split {
-    grid-template-columns: 1fr;
-  }
-  .login-hero-brand {
-    display: none;
-  }
-  .login-card-container {
-    padding: 24px 20px;
-  }
-  .login-top-nav {
-    left: 20px;
-    right: 20px;
-  }
   .login-panel {
     padding: 28px 20px;
     margin-top: 56px;
