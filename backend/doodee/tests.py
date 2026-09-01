@@ -102,6 +102,38 @@ class StorageHeadersTest(SimpleTestCase):
             self.assertEqual(_headers(), {"apikey": "legacy.jwt", "Authorization": "Bearer legacy.jwt"})
 
 
+class BrowserPreflightTest(SimpleTestCase):
+    """The only test here that behaves like a browser.
+
+    Everything else calls the API through the DRF test client, which does not issue preflights
+    and is not bound by CORS. That gap let the API demand a header the browser was forbidden to
+    send: scan upload, simulation, preview and chat all require `Idempotency-Key`, and the
+    library's default allow-list does not contain it, so all four were unreachable from the web
+    app while 696 server-side tests passed.
+    """
+
+    def test_the_browser_may_send_the_idempotency_key_the_api_demands(self):
+        for path in (
+            "/api/v1/scans/uploads/",
+            "/api/v1/simulations/",
+            "/api/v1/simulations/preview/",
+            "/api/v1/chat/",
+        ):
+            with self.subTest(path=path):
+                response = self.client.options(
+                    path,
+                    HTTP_ORIGIN="http://localhost:5173",
+                    HTTP_ACCESS_CONTROL_REQUEST_METHOD="POST",
+                    HTTP_ACCESS_CONTROL_REQUEST_HEADERS="authorization,content-type,idempotency-key",
+                )
+                allowed = response.get("access-control-allow-headers", "").lower()
+                self.assertIn("idempotency-key", allowed)
+                # The defaults have to survive alongside it -- an allow-list that replaced them
+                # would break every ordinary authenticated request instead.
+                self.assertIn("authorization", allowed)
+                self.assertIn("content-type", allowed)
+
+
 @override_settings(SIMULATION_ENABLED=True)
 class ScanApiTest(TestCase):
     def setUp(self):

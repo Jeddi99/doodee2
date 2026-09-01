@@ -3,6 +3,7 @@ import os
 
 import dj_database_url
 from celery.schedules import crontab
+from corsheaders.defaults import default_headers
 
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -98,6 +99,16 @@ if DEBUG:
         r"^http://localhost:\d+$",
         r"^http://127\.0\.0\.1:\d+$",
     ]
+# Scan upload, simulation, preview and chat all *require* `Idempotency-Key` (see views.py), so
+# the browser has to be allowed to send it. Left to the library default it is not: the preflight
+# answers 200 while omitting the header, the browser refuses to issue the real request, and
+# `fetch` throws exactly as it does for an unreachable host — which is what the web client then
+# reports. The API demanded a header no browser was permitted to send, and every server-side
+# test passed anyway, because a DRF test client does not run preflights.
+#
+# Extending the library's defaults rather than restating them, so a header it adds later is not
+# silently dropped here.
+CORS_ALLOW_HEADERS = (*default_headers, "idempotency-key")
 # On by default so the feature is usable out of the box. data.md still requires clinician,
 # privacy and validation review before any public medical launch, so a real deployment must
 # set SIMULATION_ENABLED=false deliberately until those are done.
