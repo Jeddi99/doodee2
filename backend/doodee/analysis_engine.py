@@ -10,7 +10,9 @@ from .skin_engine import analyze_skin
 
 # 2026.4 rescales landmark x into height units before measuring. Scores from earlier versions
 # carry the photo's aspect ratio in every width-over-height ratio and are not comparable.
-FORMULA_VERSION = "2026.4-isotropic"
+# 2026.5 adds angles, feature-against-feature ratios and the profile E-line to the catalog. No
+# 2026.4 formula changed, so its values are still readable, but a 2026.4 scan holds fewer keys.
+FORMULA_VERSION = "2026.5-extended"
 ANTHROPOMETRY_SOURCE = "https://pubmed.ncbi.nlm.nih.gov/37487528/"
 POSE_TARGETS = json.loads((Path(__file__).parent / "pose_targets.json").read_text())
 SCAN_VIEW_MODES = {
@@ -40,10 +42,46 @@ FRONT_METRICS = (
     ("alar_width_ratio", "nose", 98, 327, "width"),
     ("mouth_width_ratio", "lips_mouth", 61, 291, "width"),
     ("philtrum_ratio", "lips_mouth", 2, 0, "height"),
+    ("lip_fullness_ratio", "lips_mouth", 0, 17, "height"),
     ("jaw_width_ratio", "jaw_chin", 172, 397, "width"),
     ("chin_height_ratio", "jaw_chin", 17, 152, "height"),
     ("chin_width_ratio", "jaw_chin", 176, 400, "width"),
     ("zygomatic_width_ratio", "cheeks", 116, 345, "width"),
+)
+
+# Ratios and angles measured against another feature rather than against the whole face, plus the
+# left-against-right differences. Listed apart from FRONT_METRICS because each takes two distances
+# or three points rather than one landmark pair, so they cannot be expressed as a row above.
+EXTRA_FRONT_METRIC_KEYS = (
+    "right_eye_aspect_ratio", "left_eye_aspect_ratio", "upper_lower_lip_ratio",
+    "eye_width_asymmetry", "brow_gap_asymmetry", "mandible_asymmetry",
+    "bizygomatic_to_upper_face_ratio", "facial_thirds_balance", "eye_separation_ratio",
+    "nose_proportion_ratio", "mouth_to_nose_ratio", "chin_philtrum_ratio",
+    "cheekbone_prominence_ratio",
+    "right_canthal_tilt_deg", "left_canthal_tilt_deg",
+    "right_brow_tilt_deg", "left_brow_tilt_deg",
+    "right_gonial_angle_deg", "left_gonial_angle_deg",
+    "alar_asymmetry", "lip_corner_asymmetry",
+)
+
+#: Measured once per profile and prefixed with the view name.
+PROFILE_METRIC_KEYS = (
+    "nose_projection_ratio", "facial_convexity_ratio",
+    "upper_lip_eline_ratio", "lower_lip_eline_ratio",
+    "mentolabial_angle_deg", "chin_projection_ratio",
+)
+
+#: Every key `measure()` can emit. Checked against the real output on every run rather than
+#: trusted, because it is the thing three other places are pinned to: the labels in
+#: `apps/web/src/data/faceMetrics.js`, the rows in `metric_catalog.py`, and the test that holds
+#: those two together. A hand-kept list that nothing verifies drifts, and the way it drifts is
+#: silent — a raw key like `some_new_ratio` in front of a user, or a label for a metric that
+#: stopped being produced.
+METRIC_KEYS = frozenset(
+    ("face_width_to_height",)
+    + tuple(key for key, *_ in FRONT_METRICS)
+    + EXTRA_FRONT_METRIC_KEYS
+    + tuple(f"{view}_{key}" for view in PROFILE_VIEWS for key in PROFILE_METRIC_KEYS)
 )
 
 
@@ -128,12 +166,18 @@ def pose_from_matrix(matrix):
 # in, which upstream's commits call "Crop the capture to the face so the scan
 # can actually be finished" and "Put pose angles in one coordinate space".
 #
-# Deliberately NOT ported from that file: the new metrics (_tilt_degrees,
-# _facing, _signed_point_line_distance), its inline _skin_metrics, the
-# client-landmark path, and the FORMULA_VERSION bump to 2026.5-extended. Those
-# change what the numbers mean, which would invalidate stored scans and every
-# score card, development plan and chat answer derived from them. This repo's
-# skin work stays in skin_engine.py / skin_vision.py where it already lives.
+# The extended metrics (_tilt_degrees, _facing, _signed_point_line_distance) and
+# the FORMULA_VERSION bump to 2026.5-extended were held back here for a while,
+# because they change what the numbers mean and invalidate stored scans along
+# with every score card, development plan and chat answer derived from them.
+# They are in now: six stored scans locally and none in production is the
+# cheapest this will ever be, and the assessment screen needs the angles.
+#
+# Still deliberately NOT ported: that file's inline `_skin_metrics` and the
+# client-landmark path. Its four `skin_observation` metrics are a cruder version
+# of what `skin_engine.py` already computes here -- LAB, band-pass texture,
+# per-region speculars -- so taking them would be a downgrade wearing the
+# clothes of a merge.
 # ---------------------------------------------------------------------------
 
 def rotation_from_matrix(matrix):
@@ -328,6 +372,47 @@ def _point_line_distance(points, point, line_a, line_b):
     return abs(float(np.cross(line, p - a))) / length
 
 
+def _tilt_degrees(points, medial, lateral):
+    """How far the lateral end of a feature rises above its medial end, in degrees.
+
+    Positive means the outer end sits higher — an upward canthal tilt, an upward brow. The run
+    is taken as |dx| so the left and right sides report the same sign for the same shape rather
+    than mirroring each other, and y is subtracted the other way round because image y grows
+    downward. Meaningful only on the front view: on a turned head the run is foreshortened.
+    """
+    run = abs(points[lateral, 0] - points[medial, 0])
+    rise = points[medial, 1] - points[lateral, 1]
+    if run <= 0:
+        raise ValueError("invalid_face_dimensions")
+    return degrees(atan2(rise, run))
+
+
+def _facing(points):
+    """+1 when the profile looks toward increasing x, -1 when it looks the other way.
+
+    The nose tip is the most forward point of a profile and the nasion is behind it, so the sign
+    of that gap is which way the face is pointing. Needed because a raw 2D cross product changes
+    sign between a left and a right profile for the same anatomy.
+    """
+    return 1.0 if points[1, 0] >= points[168, 0] else -1.0
+
+
+def _signed_point_line_distance(points, point, line_a, line_b, facing):
+    """Distance from a point to a line, positive when the point is in front of it.
+
+    Used for the E-line, where "the lip sits behind the line" and "in front of it" are different
+    findings; `_point_line_distance` above collapses both to the same number.
+    """
+    import numpy as np
+
+    p, a, b = points[point, :2], points[line_a, :2], points[line_b, :2]
+    line = b - a
+    length = float(np.linalg.norm(line))
+    if length <= 0:
+        raise ValueError("invalid_face_dimensions")
+    return -float(np.cross(line, p - a)) * facing / length
+
+
 def _pose_error(view, pose):
     target = POSE_TARGETS[view]
     corrections = {}
@@ -371,12 +456,14 @@ def _validate_pose_set(poses, scan_mode=DEFAULT_SCAN_MODE):
     return advisories
 
 
-def _metric(key, category, value, confidence=0.72, source=ANTHROPOMETRY_SOURCE):
+def _metric(key, category, value, confidence=0.72, source=ANTHROPOMETRY_SOURCE, unit="ratio"):
     return {
         "key": key,
         "category": category,
         "value": round(float(value), 5),
-        "unit": "ratio",
+        # Degrees are read against the reference means directly; a ratio is not. Carried on the
+        # metric because the client renders the two differently and cannot tell from the key.
+        "unit": unit,
         "confidence": confidence,
         "status": "experimental",
         "formula_version": FORMULA_VERSION,
@@ -444,6 +531,8 @@ def analyze_images(images, age_band="adult", scan_mode=DEFAULT_SCAN_MODE, refere
     for key, category, a, b, denominator in FRONT_METRICS:
         metrics.append(_metric(key, category, _ratio(_distance(front, a, b), width if denominator == "width" else height)))
 
+    bizygomatic = _distance(front, 116, 345)
+    thirds = [_ratio(_distance(front, a, b), height) for a, b in ((10, 168), (168, 2), (2, 152))]
     metrics.extend((
         _metric("right_eye_aspect_ratio", "eyes", _ratio(_distance(front, 159, 145), _distance(front, 33, 133))),
         _metric("left_eye_aspect_ratio", "eyes", _ratio(_distance(front, 386, 374), _distance(front, 362, 263))),
@@ -451,6 +540,33 @@ def analyze_images(images, age_band="adult", scan_mode=DEFAULT_SCAN_MODE, refere
         _metric("eye_width_asymmetry", "symmetry", abs(_distance(front, 33, 133) - _distance(front, 362, 263)) / width, 0.68),
         _metric("brow_gap_asymmetry", "symmetry", abs(_distance(front, 105, 159) - _distance(front, 334, 386)) / height, 0.65),
         _metric("mandible_asymmetry", "symmetry", abs(_distance(front, 234, 152) - _distance(front, 454, 152)) / width, 0.65),
+
+        # Feature measured against another feature rather than against the whole face. These are
+        # the proportions clinicians quote — a nose against its own length, a mouth against the
+        # nose over it — and they cannot be read off the width/height ratios above.
+        _metric("bizygomatic_to_upper_face_ratio", "harmony", _ratio(bizygomatic, _distance(front, 168, 0)), 0.66),
+        # Distance from an even three-way split, so 0 is balanced and larger is less balanced.
+        _metric("facial_thirds_balance", "harmony", max(abs(third - 1 / 3) for third in thirds), 0.66),
+        _metric("eye_separation_ratio", "eyes", _ratio(_distance(front, 133, 362), bizygomatic), 0.68),
+        _metric("nose_proportion_ratio", "nose", _ratio(_distance(front, 98, 327), _distance(front, 168, 2)), 0.68),
+        _metric("mouth_to_nose_ratio", "lips_mouth", _ratio(_distance(front, 61, 291), _distance(front, 98, 327)), 0.68),
+        _metric("chin_philtrum_ratio", "jaw_chin", _ratio(_distance(front, 17, 152), _distance(front, 2, 0)), 0.64),
+        _metric("cheekbone_prominence_ratio", "cheeks", _ratio(bizygomatic, _distance(front, 172, 397)), 0.64),
+
+        # Angles. Degrees, not ratios, so they are read against the reference means directly.
+        _metric("right_canthal_tilt_deg", "eyes", _tilt_degrees(front, 133, 33), 0.62, unit="degree"),
+        _metric("left_canthal_tilt_deg", "eyes", _tilt_degrees(front, 362, 263), 0.62, unit="degree"),
+        _metric("right_brow_tilt_deg", "eyes", _tilt_degrees(front, 107, 70), 0.58, unit="degree"),
+        _metric("left_brow_tilt_deg", "eyes", _tilt_degrees(front, 336, 300), 0.58, unit="degree"),
+        # A front-view stand-in for the gonial angle, which is properly read off a lateral
+        # radiograph. It tracks how square the jaw looks from the front and nothing about bone.
+        _metric("right_gonial_angle_deg", "jaw_chin", angle(front, 234, 172, 152), 0.5, unit="degree"),
+        _metric("left_gonial_angle_deg", "jaw_chin", angle(front, 454, 397, 152), 0.5, unit="degree"),
+
+        # Left-against-right differences: 0 is symmetric, and each is measured from a midline
+        # point so a head turned a few degrees moves both sides together instead of one.
+        _metric("alar_asymmetry", "symmetry", abs(_distance(front, 98, 1) - _distance(front, 327, 1)) / width, 0.6),
+        _metric("lip_corner_asymmetry", "symmetry", abs(_distance(front, 61, 1) - _distance(front, 291, 1)) / width, 0.6),
     ))
 
     has_profiles = all(view in points for view in PROFILE_VIEWS)
@@ -458,11 +574,29 @@ def analyze_images(images, age_band="adult", scan_mode=DEFAULT_SCAN_MODE, refere
         for view in PROFILE_VIEWS:
             profile = points[view]
             profile_height = _distance(profile, 10, 152)
+            facing = _facing(profile)
             metrics.append(_metric(f"{view}_nose_projection_ratio", "side_profile", _ratio(_distance(profile, 168, 1), profile_height), 0.58))
             metrics.append(_metric(f"{view}_facial_convexity_ratio", "side_profile", _ratio(_point_line_distance(profile, 1, 10, 152), profile_height), 0.58))
+            # Ricketts' aesthetic line: nose tip to chin, with each lip reported as how far it
+            # sits in front of that line. Signed on purpose — a lip ahead of the line and a lip
+            # behind it are opposite findings, and an absolute distance shows them as the same.
+            metrics.append(_metric(f"{view}_upper_lip_eline_ratio", "side_profile", _signed_point_line_distance(profile, 0, 1, 152, facing) / profile_height, 0.52))
+            metrics.append(_metric(f"{view}_lower_lip_eline_ratio", "side_profile", _signed_point_line_distance(profile, 17, 1, 152, facing) / profile_height, 0.52))
+            # Vertex 200 is the midline point in the labiomental fold, between the lower lip
+            # border and the chin — the soft-tissue stand-in for the B point this angle uses.
+            metrics.append(_metric(f"{view}_mentolabial_angle_deg", "side_profile", angle(profile, 17, 200, 152), 0.5, unit="degree"))
+            metrics.append(_metric(f"{view}_chin_projection_ratio", "side_profile", _ratio(_point_line_distance(profile, 152, 168, 2), profile_height), 0.52))
 
-    if len(metrics) > 30:
-        raise AssertionError("Core metric catalog must stay at or below 30")
+    # A ceiling, not a target. It exists so a metric cannot be added without someone deciding it
+    # is worth a row in front of a user; every key here also has to be named in
+    # `apps/web/src/data/faceMetrics.js` and placed in `metric_catalog.py`.
+    if len(metrics) > 60:
+        raise AssertionError("Core metric catalog must stay at or below 60")
+    emitted = {item["key"] for item in metrics}
+    if emitted - METRIC_KEYS:
+        raise AssertionError(f"metric not declared in METRIC_KEYS: {sorted(emitted - METRIC_KEYS)}")
+    if has_profiles and METRIC_KEYS - emitted:
+        raise AssertionError(f"declared metric never emitted: {sorted(METRIC_KEYS - emitted)}")
 
     analysis_tier = scan_mode
     missing_optional_views = [view for view in SCAN_VIEW_MODES["full"] if view not in images]

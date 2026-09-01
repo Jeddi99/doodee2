@@ -4,6 +4,7 @@ import hashlib
 import hmac
 import json
 import os
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import cv2
@@ -331,26 +332,17 @@ class PromoCodeTest(TestCase):
 
 
 class MetricCatalogTest(SimpleTestCase):
-    """The metric keys the web app has written labels for.
+    """The metric keys this engine emits, and the ones it is allowed to emit.
 
-    `apps/web/src/data/faceMetrics.js` names every metric in Thai and English and records which
-    landmark pair it measures. Adding a metric here without adding it there would put a raw key like
-    `some_new_ratio` in front of a user, so the two catalogues are pinned to each other. Changing
-    either side means changing both — and, if a formula changes rather than a name, bumping
-    FORMULA_VERSION so old scans are not silently reinterpreted.
+    The other half of this pin — that `apps/web/src/data/faceMetrics.js` names every one of them —
+    lives in `apps/web/src/data/faceMetrics.test.js`, because `apps/web` is not mounted into the
+    api container and a check that cannot run where the suite runs is not a check. That direction
+    follows the pattern already used for the capture thresholds: the JS side reads the Python file.
+
+    What used to be here was a third copy of the key list, and it went stale in both directions at
+    once: missing `lip_fullness_ratio`, and still claiming three `visible_*` keys were produced
+    long after the skin work moved into `skin_engine.py` and stopped emitting them.
     """
-
-    WEB_LABELLED_METRICS = {
-        "alar_width_ratio", "brow_gap_asymmetry", "chin_height_ratio", "chin_width_ratio",
-        "eye_width_asymmetry", "face_width_to_height", "intercanthal_ratio", "jaw_width_ratio",
-        "left_brow_eye_gap_ratio", "left_eye_aspect_ratio", "left_eye_width_ratio",
-        "left_profile_facial_convexity_ratio", "left_profile_nose_projection_ratio",
-        "lower_face_height_ratio", "mandible_asymmetry", "midface_height_ratio", "mouth_width_ratio",
-        "nose_length_ratio", "philtrum_ratio", "right_brow_eye_gap_ratio", "right_eye_aspect_ratio",
-        "right_eye_width_ratio", "right_profile_facial_convexity_ratio",
-        "right_profile_nose_projection_ratio", "upper_face_height_ratio", "upper_lower_lip_ratio",
-        "visible_redness", "visible_texture", "visible_tone_unevenness", "zygomatic_width_ratio",
-    }
 
     WEB_LABELLED_REFERENCE = {
         "alar_width", "chin_height", "eye_fissure", "facial_convexity_angle", "intercanthal",
@@ -358,16 +350,27 @@ class MetricCatalogTest(SimpleTestCase):
         "nasolabial_angle", "upper_lip_length", "upper_vermillion",
     }
 
-    def test_every_produced_metric_key_has_a_label_on_the_web(self):
-        from .analysis_engine import FRONT_METRICS
+    def test_the_declared_keys_are_built_from_the_tables_that_emit_them(self):
+        from .analysis_engine import (
+            EXTRA_FRONT_METRIC_KEYS, FRONT_METRICS, METRIC_KEYS, PROFILE_METRIC_KEYS, PROFILE_VIEWS,
+        )
 
-        produced = {"face_width_to_height", *(key for key, *_ in FRONT_METRICS),
-                    "right_eye_aspect_ratio", "left_eye_aspect_ratio", "upper_lower_lip_ratio",
-                    "eye_width_asymmetry", "brow_gap_asymmetry", "mandible_asymmetry",
-                    "visible_tone_unevenness", "visible_redness", "visible_texture"}
-        for view in ("left_profile", "right_profile"):
-            produced |= {f"{view}_nose_projection_ratio", f"{view}_facial_convexity_ratio"}
-        self.assertEqual(produced, self.WEB_LABELLED_METRICS)
+        self.assertEqual(len(METRIC_KEYS), 1 + len(FRONT_METRICS) + len(EXTRA_FRONT_METRIC_KEYS)
+                         + len(PROFILE_VIEWS) * len(PROFILE_METRIC_KEYS),
+                         "a key is named twice, so one metric has no row of its own")
+        self.assertLessEqual(len(METRIC_KEYS), 60, "the catalog ceiling in analyze_images")
+
+    def test_the_engine_refuses_to_emit_a_key_it_has_not_declared(self):
+        """Checked against the real output on every run, not only when someone runs the tests.
+
+        A test alone catches it for whoever runs the suite. The assert in `analyze_images` catches
+        it on the first scan, which is the case that reaches a user.
+        """
+        from . import analysis_engine
+
+        source = Path(analysis_engine.__file__).read_text()
+        self.assertIn("emitted - METRIC_KEYS", source)
+        self.assertIn("METRIC_KEYS - emitted", source)
 
     def test_every_scored_reference_key_has_a_label_on_the_web(self):
         self.assertEqual(set(CATEGORIES), self.WEB_LABELLED_REFERENCE)
@@ -378,9 +381,11 @@ class MetricCatalogTest(SimpleTestCase):
         `alar_width_ratio` divides by face width; `alar_width` divides by n-gn. Presenting them as one
         number would show a value that matches neither.
         """
+        from .analysis_engine import METRIC_KEYS
+
         shared = {"midface_height", "lower_face_height", "intercanthal", "alar_width", "chin_height"}
         self.assertTrue(shared <= set(CATEGORIES))
-        self.assertTrue({f"{name}_ratio" for name in shared} <= self.WEB_LABELLED_METRICS)
+        self.assertTrue({f"{name}_ratio" for name in shared} <= set(METRIC_KEYS))
 
 
 class ProcedureNamesEnTest(TestCase):

@@ -35,6 +35,23 @@ CATEGORIES = {
     "chin_height": "chin", "facial_convexity_angle": "chin",
 }
 ANGLE_KEYS = {"nasofrontal_angle", "nasolabial_angle", "facial_convexity_angle"}
+
+# Which photograph each scored observation was read off. This is the same split
+# `analysis_engine` makes when it builds `observations`: everything measured on `front`, and the
+# three angles averaged across the two profiles. A key added to one table and not the other would
+# be scored and then left out of both view totals, so the assert below catches that rather than
+# letting a metric go quietly missing from the per-view scores.
+VIEW_OF = {
+    "midface_height": "front", "lower_face_height": "front",
+    "intercanthal": "front", "eye_fissure": "front",
+    "alar_width": "front", "upper_lip_length": "front",
+    "upper_vermillion": "front", "lower_vermillion": "front",
+    "chin_height": "front",
+    "nasofrontal_angle": "side", "nasolabial_angle": "side", "facial_convexity_angle": "side",
+}
+SCORED_VIEWS = ("front", "side")
+if set(VIEW_OF) != set(CATEGORIES):
+    raise RuntimeError("VIEW_OF and CATEGORIES must name the same observations")
 UNSUPPORTED_CATEGORIES = ("brows", "cheeks", "jaw", "smile", "neck", "skin")
 
 # The published cohort is Thai only. Other populations are recorded and flagged so future
@@ -143,10 +160,42 @@ def angle(points, a, b, c):
     return degrees(acos(max(-1, min(1, float(left @ right) / denominator))))
 
 
+def views_from_metrics(metrics):
+    """Per-view scores from a list of scored metrics.
+
+    Averaged over the metrics of that view, not over its categories. Category averages exist to
+    stop a category with six metrics outweighing one with two in the overall score; within a
+    single view there is no such imbalance to correct, and going through categories would give
+    the side score — three angles spread across two categories — the wrong weights entirely.
+
+    Derived here rather than only at scoring time so a scan analysed before per-view scoring
+    existed still gets its two scores. Every stored scan already carries its metrics by key,
+    which is all this needs, and re-running the worker over old scans to add a number already
+    implied in them would change the measurements as a side effect.
+
+    `view` is read off the metric when present and looked up by key otherwise, so both the fresh
+    shape and the stored one work.
+    """
+    # One pass, bucketed. Read once per view it walked the whole metric list per view, and this
+    # runs for every completed scan in the database whenever a score screen is opened.
+    by_view = {view: [] for view in SCORED_VIEWS}
+    for item in metrics:
+        score = item.get("score")
+        if not isinstance(score, (int, float)):
+            continue
+        bucket = by_view.get(item.get("view") or VIEW_OF.get(item.get("key")))
+        if bucket is not None:
+            bucket.append(score)
+    return [
+        {"key": view, "score": round(sum(scores) / len(scores)), "metric_count": len(scores)}
+        for view, scores in by_view.items() if scores
+    ]
+
+
 def score_observations(observations, profile="neutral", reference_age_band="18_35", age_band="adult", reference_population=REFERENCE_POPULATION):
     if age_band == "minor":
         return {
-            "status": "minor_not_scored", "overall_score": None, "categories": [], "metrics": [],
+            "status": "minor_not_scored", "overall_score": None, "categories": [], "views": [], "metrics": [],
             "unsupported_categories": list(UNSUPPORTED_CATEGORIES),
         }
 
@@ -163,7 +212,8 @@ def score_observations(observations, profile="neutral", reference_age_band="18_3
             reference_value, reference_sd, unit = mean / denominator_mean, sd / denominator_mean, "ratio"
         score, z = metric_score(observed, reference_value, reference_sd)
         results.append({
-            "key": key, "category": CATEGORIES[key], "observed": round(float(observed), 5),
+            "key": key, "category": CATEGORIES[key], "view": VIEW_OF[key],
+            "observed": round(float(observed), 5),
             "reference": round(reference_value, 5), "normalized_deviation": z, "score": score,
             "unit": unit, "status": "experimental_reference_similarity",
         })
@@ -176,7 +226,7 @@ def score_observations(observations, profile="neutral", reference_age_band="18_3
     overall = round(sum(item["score"] for item in categories) / len(categories)) if categories else None
     return {
         "status": "experimental_reference_similarity", "overall_score": overall,
-        "categories": categories, "metrics": results,
+        "categories": categories, "views": views_from_metrics(results), "metrics": results,
         "coverage": {"scored_metrics": len(results), "available_reference_metrics": len(CATEGORIES), "scored_categories": len(categories)},
         "unsupported_categories": list(UNSUPPORTED_CATEGORIES),
         "reference": {"profile": profile, "population": "Thai adults", "age_range": "18-35", "sample_size": 240, "source": SOURCE_URL, "version": REFERENCE_VERSION},
