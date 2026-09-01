@@ -569,6 +569,57 @@ if any(procedure.quantity_notes_th and len(procedure.quantity_notes_th) != 5 for
     raise RuntimeError("procedure quantity notes must cover all five intensity levels")
 
 
+# --------------------------------------------------------------------------------------------
+# Which procedures move which measured proportion.
+#
+# THIS TABLE IS A CLINICAL MAPPING AND IS MEANT TO BE REVIEWED AS ONE. Everything else in this
+# file describes what a procedure does to an image; this says what it does to a number a person
+# was scored on, which is the step where a measurement turns into something a user reads as a
+# suggestion. It is deliberately one table in one place rather than a field spread across
+# `metric_catalog`, so reviewing it means reading eleven lines rather than auditing 85 rows.
+#
+# Only the twelve measurements `reference_scoring` has a published mean for can appear here — a
+# procedure attached to a measurement with no reference has nothing to be "off" from.
+#
+# `direction` is which way the procedure moves the measurement, and it is why the rows are not
+# simply "nose procedures for nose measurements": alar reduction only narrows, lip filler only
+# adds. Offering a narrowing procedure to someone already below the reference is the specific
+# mistake this field exists to prevent. "either" is for procedures that reshape in both
+# directions depending on how they are performed.
+#
+# Seven of the twelve are absent on purpose. `midface_height`, `lower_face_height`,
+# `upper_lip_length`, `intercanthal`, `nasofrontal_angle`, `nasolabial_angle` and
+# `facial_convexity_angle` have nothing in this catalogue that moves them, and inventing a row
+# so the screen looks complete would be inventing a treatment.
+# --------------------------------------------------------------------------------------------
+
+#: "lower" narrows/shortens the measurement, "raise" widens/lengthens it, "either" does both.
+MEASUREMENT_PROCEDURES = MappingProxyType({
+    "alar_width": (("5.3", "lower"), ("5.4", "either"), ("5.1", "either")),
+    "eye_fissure": (("6.4", "raise"), ("6.5", "raise"), ("6.3", "raise")),
+    "upper_vermillion": (("4.4", "raise"), ("14.5", "raise"), ("14.6", "either")),
+    "lower_vermillion": (("4.4", "raise"), ("14.6", "either")),
+    "chin_height": (("7.2", "either"), ("4.5", "raise")),
+})
+
+if any(ref not in BY_SOURCE_REF for refs in MEASUREMENT_PROCEDURES.values() for ref, _ in refs):
+    raise RuntimeError("MEASUREMENT_PROCEDURES names a procedure that is not in the catalog")
+if any(direction not in {"raise", "lower", "either"}
+       for refs in MEASUREMENT_PROCEDURES.values() for _, direction in refs):
+    raise RuntimeError("unknown direction in MEASUREMENT_PROCEDURES")
+
+
+def procedures_for_measurement(key: str, direction: str | None = None) -> tuple[ProcedureSpec, ...]:
+    """The procedures that move one measured proportion, optionally only one way.
+
+    `direction` is the way the measurement needs to go — "lower" for a value above the reference
+    that should come down. A procedure marked "either" is offered whichever way is asked for.
+    """
+    rows = MEASUREMENT_PROCEDURES.get(key, ())
+    return tuple(BY_SOURCE_REF[ref] for ref, moves in rows
+                 if direction is None or moves in ("either", direction))
+
+
 def resolve_procedure(procedure_id: object) -> ProcedureSpec | None:
     """Resolve the numeric public ID, with the retired slug retained as an input-only alias."""
     key = str(procedure_id or "").strip()

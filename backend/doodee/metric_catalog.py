@@ -17,6 +17,12 @@ file is where it is written down.
 the engine turns its characteristics into `not_measured` here rather than leaving a row that
 claims a number nobody computes.
 
+Which procedure addresses which measurement is deliberately NOT here. It used to be, as a
+`procedures=` field on each row pointing at the geometric preset ids, and spreading a clinical
+judgement across 85 rows made it something nobody could review. It lives in
+`procedure_catalog.MEASUREMENT_PROCEDURES` now — one table, eleven lines, with the direction
+each procedure moves the measurement.
+
 An entry being `not_measured` is a product statement, not a to-do. `note_th`/`note_en` say why,
 and the reason is usually that a single 2D photo does not carry the information — no amount of
 work on this file changes that. Those notes are meant to be shown, not hidden: telling someone
@@ -33,8 +39,7 @@ def _profile(name):
     return tuple(f"{view}_{name}" for view in PROFILE_VIEWS)
 
 
-def _item(number, id, group, name_th, name_en, metrics=(), reference=(), skin_signals=(),
-          procedures=(), note_th=None, note_en=None):
+def _item(number, id, group, name_th, name_en, metrics=(), reference=(), skin_signals=(), note_th=None, note_en=None):
     return {
         "number": number,
         "id": id,
@@ -49,7 +54,6 @@ def _item(number, id, group, name_th, name_en, metrics=(), reference=(), skin_si
         # `metrics` would make `catalog_for` — which is handed a scan's metric keys — report a
         # skin row as available on a scan that never looked at skin.
         "skin_signals": tuple(skin_signals),
-        "procedures": tuple(procedures),
         "status": "measured" if metrics or reference or skin_signals else "not_measured",
         "note_th": note_th,
         "note_en": note_en,
@@ -96,11 +100,10 @@ CATALOG = (
 
     # --- Eyes ---------------------------------------------------------------------------
     _item(11, "eye_shape", "eyes", "รูปทรงดวงตา", "Eye shape",
-          metrics=("right_eye_aspect_ratio", "left_eye_aspect_ratio", "right_canthal_tilt_deg", "left_canthal_tilt_deg"),
-          procedures=("eyes-open", "eyes-soft")),
+          metrics=("right_eye_aspect_ratio", "left_eye_aspect_ratio", "right_canthal_tilt_deg", "left_canthal_tilt_deg")),
     _item(12, "eye_size", "eyes", "ขนาดดวงตา", "Eye size",
           metrics=("right_eye_width_ratio", "left_eye_width_ratio", "right_eye_aspect_ratio", "left_eye_aspect_ratio"),
-          reference=("eye_fissure",), procedures=("eyes-open", "eyes-soft")),
+          reference=("eye_fissure",)),
     _item(13, "eye_width", "eyes", "ความกว้างดวงตา", "Eye width",
           metrics=("right_eye_width_ratio", "left_eye_width_ratio"), reference=("eye_fissure",)),
     _item(14, "eye_spacing", "eyes", "ระยะห่างระหว่างดวงตา", "Eye spacing",
@@ -108,10 +111,9 @@ CATALOG = (
     _item(15, "intercanthal_distance", "eyes", "ระยะระหว่างหัวตา", "Intercanthal distance",
           metrics=("intercanthal_ratio",), reference=("intercanthal",)),
     _item(16, "canthal_tilt", "eyes", "ความเอียงหางตา", "Canthal tilt",
-          metrics=("right_canthal_tilt_deg", "left_canthal_tilt_deg"),
-          procedures=("outer-corner-lift", "outer-corner-lower")),
+          metrics=("right_canthal_tilt_deg", "left_canthal_tilt_deg")),
     _item(17, "eye_aspect_ratio", "eyes", "อัตราส่วนความสูงต่อความกว้างของตา", "Eye aspect ratio",
-          metrics=("right_eye_aspect_ratio", "left_eye_aspect_ratio"), procedures=("eyes-open", "eyes-soft")),
+          metrics=("right_eye_aspect_ratio", "left_eye_aspect_ratio")),
     _item(18, "eye_symmetry", "eyes", "ความสมมาตรของดวงตาสองข้าง", "Eye symmetry",
           metrics=("eye_width_asymmetry",)),
     _item(19, "upper_eyelid_exposure", "eyes", "การเปิดของเปลือกตาบน", "Upper-eyelid exposure",
@@ -130,37 +132,32 @@ CATALOG = (
 
     # --- Eyebrows -----------------------------------------------------------------------
     _item(23, "eyebrow_position", "brows", "ตำแหน่งคิ้ว", "Eyebrow position",
-          metrics=("right_brow_eye_gap_ratio", "left_brow_eye_gap_ratio"),
-          procedures=("brow-lift", "brow-lower")),
+          metrics=("right_brow_eye_gap_ratio", "left_brow_eye_gap_ratio")),
     _item(24, "eyebrow_height", "brows", "ความสูงของคิ้ว", "Eyebrow height",
-          metrics=("right_brow_eye_gap_ratio", "left_brow_eye_gap_ratio"),
-          procedures=("brow-lift", "brow-lower")),
+          metrics=("right_brow_eye_gap_ratio", "left_brow_eye_gap_ratio")),
     _item(25, "eyebrow_shape", "brows", "รูปทรงคิ้ว", "Eyebrow shape",
           note_th="ต้องรู้ตำแหน่งจุดสูงสุดของส่วนโค้ง แต่จุดคิ้วของ mesh เกาะตามสันกระดูกเบ้าตา ไม่ได้เกาะขอบคิ้วที่กันหรือเขียนไว้",
           note_en="Needs where the arch peaks, and the mesh's brow points follow the bony ridge rather than the edge of the brow as it was plucked or drawn."),
     _item(26, "eyebrow_tilt", "brows", "ความเอียงของคิ้ว", "Eyebrow tilt",
-          metrics=("right_brow_tilt_deg", "left_brow_tilt_deg"),
-          procedures=("brow-tail-lift", "brow-tail-lower")),
+          metrics=("right_brow_tilt_deg", "left_brow_tilt_deg")),
     _item(27, "brow_to_eye_distance", "brows", "ระยะจากคิ้วถึงตา", "Brow-to-eye distance",
-          metrics=("right_brow_eye_gap_ratio", "left_brow_eye_gap_ratio", "brow_gap_asymmetry"),
-          procedures=("brow-lift", "brow-lower")),
+          metrics=("right_brow_eye_gap_ratio", "left_brow_eye_gap_ratio", "brow_gap_asymmetry")),
 
     # --- Nose ---------------------------------------------------------------------------
     _item(28, "nose_width", "nose", "ความกว้างจมูก", "Nose width",
-          metrics=("alar_width_ratio",), reference=("alar_width",), procedures=("nose-narrow", "nose-wide")),
+          metrics=("alar_width_ratio",), reference=("alar_width",)),
     _item(29, "nose_length", "nose", "ความยาวจมูก", "Nose length",
           metrics=("nose_length_ratio",), reference=("midface_height",)),
     _item(30, "nose_to_face_width", "nose", "อัตราส่วนความกว้างจมูกต่อใบหน้า", "Nose-to-face width ratio",
-          metrics=("alar_width_ratio",), procedures=("nose-narrow", "nose-wide")),
+          metrics=("alar_width_ratio",)),
     _item(31, "nose_proportion", "nose", "สัดส่วนจมูก (กว้างต่อยาว)", "Nose proportion",
           metrics=("nose_proportion_ratio",)),
     _item(32, "alar_width", "nose", "ความกว้างฐานปีกจมูก", "Alar width",
-          metrics=("alar_width_ratio",), reference=("alar_width",), procedures=("nose-narrow", "nose-wide")),
+          metrics=("alar_width_ratio",), reference=("alar_width",)),
     _item(33, "nose_symmetry", "nose", "ความสมมาตรของจมูก", "Nose symmetry",
           metrics=("alar_asymmetry",)),
     _item(34, "nasal_tip_projection", "nose", "การยื่นของปลายจมูก (จากภาพด้านข้าง)", "Nasal tip projection",
-          metrics=_profile("nose_projection_ratio"),
-          procedures=("nose-tip-projection", "nose-tip-retraction")),
+          metrics=_profile("nose_projection_ratio")),
     _item(35, "nasofrontal_angle", "nose", "มุมหน้าผาก-จมูก", "Nasofrontal angle",
           reference=("nasofrontal_angle",)),
     _item(36, "nasolabial_angle", "nose", "มุมจมูก-ริมฝีปาก", "Nasolabial angle",
@@ -168,18 +165,17 @@ CATALOG = (
 
     # --- Lips / mouth -------------------------------------------------------------------
     _item(37, "mouth_width", "lips", "ความกว้างปาก", "Mouth width",
-          metrics=("mouth_width_ratio",), procedures=("lip-wide", "lip-narrow")),
+          metrics=("mouth_width_ratio",)),
     _item(38, "lip_width", "lips", "ความกว้างริมฝีปาก", "Lip width",
-          metrics=("mouth_width_ratio",), procedures=("lip-wide", "lip-narrow")),
+          metrics=("mouth_width_ratio",)),
     _item(39, "upper_lip_height", "lips", "ความหนาริมฝีปากบน", "Upper-lip height",
-          reference=("upper_vermillion",), procedures=("lip-volume", "lip-thin")),
+          reference=("upper_vermillion",)),
     _item(40, "lower_lip_height", "lips", "ความหนาริมฝีปากล่าง", "Lower-lip height",
-          reference=("lower_vermillion",), procedures=("lip-volume", "lip-thin")),
+          reference=("lower_vermillion",)),
     _item(41, "upper_lower_lip_ratio", "lips", "อัตราส่วนริมฝีปากบนต่อล่าง", "Upper/lower lip ratio",
           metrics=("upper_lower_lip_ratio",)),
     _item(42, "lip_fullness", "lips", "ความอิ่มของริมฝีปาก", "Lip fullness",
-          metrics=("lip_fullness_ratio",), reference=("upper_vermillion", "lower_vermillion"),
-          procedures=("lip-volume", "lip-thin")),
+          metrics=("lip_fullness_ratio",), reference=("upper_vermillion", "lower_vermillion")),
     _item(43, "lip_symmetry", "lips", "ความสมมาตรของริมฝีปาก", "Lip symmetry",
           metrics=("lip_corner_asymmetry",)),
     _item(44, "mouth_to_nose_proportion", "lips", "สัดส่วนปากต่อจมูก", "Mouth-to-nose proportion",
@@ -191,23 +187,21 @@ CATALOG = (
 
     # --- Jaw / chin ---------------------------------------------------------------------
     _item(47, "jaw_width", "jaw_chin", "ความกว้างกราม", "Jaw width",
-          metrics=("jaw_width_ratio",), procedures=("jaw-narrow", "jaw-wide")),
+          metrics=("jaw_width_ratio",)),
     _item(48, "jaw_to_face_width", "jaw_chin", "อัตราส่วนความกว้างกรามต่อใบหน้า", "Jaw-to-face width ratio",
-          metrics=("jaw_width_ratio",), procedures=("jaw-narrow", "jaw-wide")),
+          metrics=("jaw_width_ratio",)),
     _item(49, "jaw_shape", "jaw_chin", "รูปทรงกราม", "Jaw shape",
-          metrics=("jaw_width_ratio", "chin_width_ratio", "right_gonial_angle_deg", "left_gonial_angle_deg"),
-          procedures=("jaw-narrow", "jaw-wide", "jaw-angle-lift")),
+          metrics=("jaw_width_ratio", "chin_width_ratio", "right_gonial_angle_deg", "left_gonial_angle_deg")),
     _item(50, "gonial_angle", "jaw_chin", "มุมกราม", "Gonial angle",
           metrics=("right_gonial_angle_deg", "left_gonial_angle_deg"),
-          procedures=("jaw-angle-lift", "jaw-angle-lower"),
           note_th="วัดจากภาพหน้าตรงเป็นค่าประมาณ มุมกรามจริงอ่านจากฟิล์มเอกซเรย์ด้านข้าง ค่านี้บอกได้แค่ว่ากรามดูเหลี่ยมแค่ไหนจากด้านหน้า",
           note_en="A front-view approximation. The real gonial angle is read off a lateral radiograph; this only tracks how square the jaw looks from the front."),
     _item(51, "chin_width", "jaw_chin", "ความกว้างคาง", "Chin width",
           metrics=("chin_width_ratio",)),
     _item(52, "chin_height", "jaw_chin", "ความสูงคาง", "Chin height",
-          metrics=("chin_height_ratio",), reference=("chin_height",), procedures=("chin-long", "chin-short")),
+          metrics=("chin_height_ratio",), reference=("chin_height",)),
     _item(53, "chin_projection", "jaw_chin", "การยื่นของคาง", "Chin projection",
-          metrics=_profile("chin_projection_ratio"), procedures=("chin-projection", "chin-retraction")),
+          metrics=_profile("chin_projection_ratio")),
     _item(54, "chin_to_philtrum_ratio", "jaw_chin", "อัตราส่วนคางต่อร่องริมฝีปากบน", "Chin-to-philtrum ratio",
           metrics=("chin_philtrum_ratio",)),
     _item(55, "mandibular_projection", "jaw_chin", "การยื่นของขากรรไกรล่าง", "Mandibular projection",
@@ -218,12 +212,11 @@ CATALOG = (
 
     # --- Cheek / midface ----------------------------------------------------------------
     _item(57, "cheekbone_width", "cheeks", "ความกว้างโหนกแก้ม", "Cheekbone width",
-          metrics=("zygomatic_width_ratio",), procedures=("cheek-wide", "cheek-narrow")),
+          metrics=("zygomatic_width_ratio",)),
     _item(58, "bizygomatic_width", "cheeks", "ความกว้างระหว่างโหนกแก้ม", "Bizygomatic width",
-          metrics=("zygomatic_width_ratio", "bizygomatic_to_upper_face_ratio"),
-          procedures=("cheek-wide", "cheek-narrow")),
+          metrics=("zygomatic_width_ratio", "bizygomatic_to_upper_face_ratio")),
     _item(59, "cheekbone_prominence", "cheeks", "ความเด่นของโหนกแก้ม", "Cheekbone prominence",
-          metrics=("cheekbone_prominence_ratio",), procedures=("cheek-wide", "cheek-narrow", "cheek-lift")),
+          metrics=("cheekbone_prominence_ratio",)),
     _item(60, "midface_projection", "cheeks", "การยื่นของกลางใบหน้า", "Midface projection",
           note_th="จุดสูงสุดของโหนกแก้มไม่ได้อยู่บนแนวกลางใบหน้า ในภาพด้านข้างจึงตกอยู่ฝั่งไกลที่ mesh ประมาณเอา ไม่ได้มองเห็นจริง",
           note_en="The malar high point is not on the midline, so on a profile photo it falls on the far side, where the mesh infers rather than sees."),
@@ -246,9 +239,9 @@ CATALOG = (
           note_th="วัดจากจุด landmark ที่ร่องใต้ริมฝีปาก ซึ่งตื้นกว่าจุด B ที่ใช้ทางคลินิก ค่าที่ได้จึงสูงกว่าช่วง 120-130 องศาที่อ้างในตำราอย่างเป็นระบบ ใช้เทียบการเปลี่ยนแปลงของหน้าเดียวกันได้ แต่ห้ามเทียบกับค่าในตำราตรง ๆ",
           note_en="Taken at a landmark in the labiomental fold, which is shallower than the clinical B point, so it reads systematically higher than the 120-130 degrees textbooks quote. Usable for comparing one face against itself, not against a published figure."),
     _item(68, "chin_projection_profile", "side_profile", "การยื่นของคาง (ด้านข้าง)", "Chin projection",
-          metrics=_profile("chin_projection_ratio"), procedures=("chin-projection", "chin-retraction")),
+          metrics=_profile("chin_projection_ratio")),
     _item(69, "nose_projection", "side_profile", "การยื่นของจมูก", "Nose projection",
-          metrics=_profile("nose_projection_ratio"), procedures=("nose-tip-projection", "nose-tip-retraction")),
+          metrics=_profile("nose_projection_ratio")),
     _item(70, "lip_projection", "side_profile", "การยื่นของริมฝีปาก", "Lip projection",
           metrics=_profile("upper_lip_eline_ratio") + _profile("lower_lip_eline_ratio")),
     _item(71, "e_line", "side_profile", "เส้น E-line (Ricketts)", "E-line / Ricketts aesthetic line",

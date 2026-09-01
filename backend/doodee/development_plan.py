@@ -22,8 +22,8 @@ length, camera height and head tilt change apparent nose width, face length and 
 more than most people expect. Saying so is both true and the most useful thing here, so it leads.
 """
 
-from .procedures import PROCEDURES
 from .reference_scoring import CATEGORIES
+from .reference_scoring import CATEGORIES as REFERENCE_CATEGORIES
 
 
 SCORED_STATUS = "experimental_reference_similarity"
@@ -57,10 +57,13 @@ METRIC_LABELS = {
     "facial_convexity_angle": ("มุมความโค้งของใบหน้าด้านข้าง", "Facial convexity angle"),
 }
 
-# Which PROCEDURES region a scored category corresponds to. `proportions` (midface and lower-face
-# height) has none: nothing in the catalog moves overall face proportions, and inventing a
-# mapping so the row looks complete would be inventing a treatment.
-CATEGORY_REGIONS = {"eyes": "eyes", "nose": "nose", "lips": "lips", "chin": "chin"}
+# Which measurements a scored category is made of, inverted from the scorer's own table rather
+# than written again. `proportions` (midface and lower-face height) reaches nothing: no procedure
+# in the catalogue moves overall face proportions, and inventing a mapping so the row looks
+# complete would be inventing a treatment.
+CATEGORY_KEYS = {}
+for _key, _category in REFERENCE_CATEGORIES.items():
+    CATEGORY_KEYS.setdefault(_category, []).append(_key)
 
 # Reversible, no clinician, honest. Everything here is either a photographic fact or ordinary
 # grooming; nothing claims to change a measurement of the face itself, because nothing on this
@@ -167,27 +170,26 @@ OUTSIDE_COHORT_EN = (
 
 
 def _procedures_toward_reference(category, z):
-    """Catalog entries in this region that move the measurement back toward the reference.
+    """Procedures that move this category's measurements back toward the reference.
 
     Direction matters, and getting it backwards would be worse than saying nothing: a positive z
-    means the measurement is larger than the reference mean, so only presets with a negative
-    delta point the right way.
+    means the measurement is larger than the reference mean, so only procedures that bring it
+    down point the right way. That judgement is not made here — it is read off
+    `procedure_catalog.MEASUREMENT_PROCEDURES`, the one table that says which procedure moves
+    which measurement and which way, so this and the findings screen cannot disagree.
 
     Named as related, never recommended. Every item carries the disclaimer that says so.
     """
-    region = CATEGORY_REGIONS.get(category)
-    if not region or not z:
+    from .procedure_catalog import procedures_for_measurement
+
+    if not z:
         return []
-    wanted = -1 if z > 0 else 1
+    needed = "lower" if z > 0 else "raise"
     names = []
-    for preset in PROCEDURES:
-        if preset["region"] != region:
-            continue
-        if (preset["delta"] > 0) != (wanted > 0):
-            continue
-        for name in preset["related_procedures"]:
-            if name not in names:
-                names.append(name)
+    for key in CATEGORY_KEYS.get(category, ()):
+        for spec in procedures_for_measurement(key, needed):
+            if spec.name_th not in names:
+                names.append(spec.name_th)
     return names[:3]
 
 

@@ -215,43 +215,24 @@ def severity_for(z):
 
 
 @lru_cache(maxsize=1)
-def _procedures_by_id():
-    """The simulatable procedures this deployment offers, by the id `metric_catalog` cites.
-
-    Upstream this returns `{}` — a stub left when the catalogue it joined to went away, which
-    quietly made every finding report that nothing could be done about it. Wired to the real
-    table here.
-
-    These are the geometric preset ids (`nose-narrow`), not the clinical catalogue's source
-    refs. When `procedures.py` is deleted and the clinical catalogue becomes the only one, this
-    and the `procedures=` fields in `metric_catalog` both have to be re-pointed — and
-    `FindingProcedureLinkTest` goes red until they are, which is the intended alarm.
-    """
-    from .procedures import PROCEDURES
-
-    return {preset["id"]: {"id": preset["id"], "name_th": preset["name_th"],
-                           "name_en": preset["name_en"], "region": preset["region"]}
-            for preset in PROCEDURES}
-
-
 @lru_cache(maxsize=1)
 def _procedures_by_reference_key():
-    """Metric key -> the procedures that can move it, gathered from *every* catalogue entry citing it.
+    """Metric key -> the procedures that can move it, from the one clinical mapping.
 
-    Not from the naming entry alone, which is the index `_catalog_by_reference_key` builds for a
-    different purpose. The two answer different questions and the difference is not academic: the
-    entry that *is* `eye_fissure` lists no procedure, while "eye aperture" cites the same measurement
-    and lists two. Reading only the naming entry marked the eye and both lip measurements as having
-    nothing available -- three of the five measurements this catalogue can actually simulate.
+    That mapping lives in `procedure_catalog.MEASUREMENT_PROCEDURES` — one reviewable table
+    rather than a `procedures=` field spread across 85 catalogue rows, because saying which
+    procedure addresses which measurement is the step where a number turns into something a
+    person reads as a suggestion, and it should be readable in one sitting.
+
+    Direction is not applied here. `findings_for` knows which way this face's measurement needs
+    to move and asks for that half; this returns everything so the cache holds one answer.
     """
-    by_id = _procedures_by_id()
-    found = {}
-    for item in CATALOG:
-        for key in item.get("reference", ()):
-            for procedure_id in item.get("procedures", ()):
-                if procedure_id in by_id:
-                    found.setdefault(key, {})[procedure_id] = by_id[procedure_id]
-    return {key: list(procedures.values()) for key, procedures in found.items()}
+    from .procedure_catalog import MEASUREMENT_PROCEDURES, procedures_for_measurement
+
+    return {key: [{"id": spec.source_ref, "name_th": spec.name_th,
+                   "name_en": spec.public()["name_en"], "technique": spec.public()["technique"]}
+                  for spec in procedures_for_measurement(key)]
+            for key in MEASUREMENT_PROCEDURES}
 
 
 def _category_headroom(items, category, key):
@@ -300,7 +281,8 @@ def findings_for(reference_scores):
     by_category = {}
     for item in metrics:
         by_category.setdefault(item.get("category"), []).append(item)
-    procedures_by_key = _procedures_by_reference_key()
+    from .procedure_catalog import procedures_for_measurement
+
     strengths, improvements, unnamed = [], [], []
     for metric in metrics:
         item = index.get(metric["key"])
@@ -313,7 +295,15 @@ def findings_for(reference_scores):
         verdict = verdict_for(metric["key"], direction, severity)
         # The procedures this deployment can actually simulate for this measurement. Joined here
         # rather than on the client so the screen cannot offer one the catalogue has dropped.
-        procedures = procedures_by_key.get(metric["key"], [])
+        # Only the procedures that move this measurement the way it needs to go. A value above
+        # the reference needs to come down, and offering a widening procedure for it is the one
+        # mistake the direction field exists to prevent.
+        needed = "lower" if z > 0 else "raise"
+        procedures = [
+            {"id": spec.source_ref, "name_th": spec.name_th,
+             "name_en": spec.public()["name_en"], "technique": spec.public()["technique"]}
+            for spec in procedures_for_measurement(metric["key"], needed)
+        ]
         headroom = _category_headroom(by_category.get(metric.get("category"), ()), metric.get("category"), metric["key"])
         finding = {
             "key": metric["key"],
@@ -347,7 +337,7 @@ def findings_for(reference_scores):
             # reads as a verdict rather than as information.
             "actionable": bool(procedures),
             "procedures": [
-                {"id": procedure["id"], "region": procedure["region"],
+                {"id": procedure["id"], "technique": procedure["technique"],
                  "name_th": procedure["name_th"], "name_en": procedure["name_en"],
                  # Kept on the procedure as well as the parent finding so a report generator can
                  # summarise one proposed procedure without losing which face measurement led to it.

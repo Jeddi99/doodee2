@@ -581,34 +581,34 @@ class FindingsTest(TestCase):
         self.assertEqual([item["key"] for item in result["improvements"]],
                          ["nasofrontal_angle", "nasolabial_angle"])
 
-    def test_a_finding_only_offers_procedures_this_deployment_can_render(self):
+    def test_a_finding_offers_only_procedures_that_move_it_the_way_it_needs_to_go(self):
         """Upstream's `_procedures_by_id` returns `{}`, which silently told every finding that
-        nothing could be done about it. Wired to the real table here, so this asserts it is."""
-        from .findings import _procedures_by_id, findings_for
-
-        self.assertTrue(_procedures_by_id(), "the procedure join is stubbed out again")
-        finding = findings_for(self.scores(("alar_width", 2.2)))["improvements"][0]
-        self.assertTrue(finding["actionable"])
-        self.assertTrue(all(item["id"] in _procedures_by_id() for item in finding["procedures"]))
-        self.assertEqual(finding["procedures"][0]["reference_measurement"]["key"], "alar_width")
-
-    def test_a_measurement_with_nothing_to_offer_says_so_rather_than_inventing_one(self):
+        nothing could be done about it. Wired to the clinical mapping here — and direction-aware,
+        which is the mistake the mapping's `direction` field exists to prevent: alar reduction
+        only narrows, so it must not be offered to a nose already narrower than the reference."""
         from .findings import findings_for
+        from .procedure_catalog import resolve_procedure
 
-        finding = findings_for(self.scores(("nasofrontal_angle", 2.2)))["improvements"][0]
+        wide = findings_for(self.scores(("alar_width", 2.4)))["improvements"][0]
+        narrow = findings_for(self.scores(("alar_width", -2.4)))["improvements"][0]
+        self.assertTrue(wide["actionable"])
+        self.assertIn("5.3", [item["id"] for item in wide["procedures"]], "alar reduction narrows")
+        self.assertNotIn("5.3", [item["id"] for item in narrow["procedures"]],
+                         "and must not be offered to widen")
+        self.assertTrue(all(resolve_procedure(item["id"]) for item in wide["procedures"]))
+        self.assertEqual(wide["procedures"][0]["reference_measurement"]["key"], "alar_width")
+
+    def test_a_measurement_nothing_in_the_catalogue_moves_names_nothing(self):
+        """Seven of the twelve scored measurements are in that position. Inventing a row so the
+        screen looks complete would be inventing a treatment."""
+        from .findings import findings_for
+        from .procedure_catalog import MEASUREMENT_PROCEDURES
+
+        unmapped = sorted(set(CATEGORIES) - set(MEASUREMENT_PROCEDURES))
+        self.assertEqual(len(unmapped), 7)
+        finding = findings_for(self.scores((unmapped[0], 2.2)))["improvements"][0]
         self.assertEqual(finding["procedures"], [])
         self.assertFalse(finding["actionable"])
-
-    def test_the_four_brow_procedures_the_catalogue_cites_are_known_to_be_unrenderable(self):
-        """Recorded rather than left to be discovered: brows are in `UNSUPPORTED_CATEGORIES`,
-        so `metric_catalog` cites four presets `procedures.py` does not carry. They are dropped
-        silently today, which is right — never offer what cannot be rendered — but silent."""
-        from .findings import _procedures_by_id
-        from .metric_catalog import CATALOG
-
-        cited = {key for item in CATALOG for key in item["procedures"]}
-        self.assertEqual(sorted(cited - set(_procedures_by_id())),
-                         ["brow-lift", "brow-lower", "brow-tail-lift", "brow-tail-lower"])
 
 
 class ScoreDistributionTest(TestCase):
@@ -3784,10 +3784,14 @@ class DevelopmentPlanTest(TestCase):
 
     def test_procedures_named_are_the_ones_pointing_back_toward_the_reference(self):
         """Getting the direction backwards would be worse than naming nothing at all."""
+        from .procedure_catalog import resolve_procedure
+
+        narrowing = resolve_procedure("5.3").name_th   # ตัดปีกจมูก — only ever narrows
         wider_than_reference = self.build([self.metric("alar_width", "nose", 2.0)])["items"][0]
-        self.assertIn("Alar base reduction", wider_than_reference["related_procedures"])
+        self.assertIn(narrowing, wider_than_reference["related_procedures"])
         narrower = self.build([self.metric("alar_width", "nose", -2.0)])["items"][0]
-        self.assertNotIn("Alar base reduction", narrower["related_procedures"])
+        self.assertNotIn(narrowing, narrower["related_procedures"])
+        self.assertTrue(narrower["related_procedures"], "widening it is still addressable")
 
     def test_a_category_with_no_catalog_entry_names_no_procedure_rather_than_inventing_one(self):
         item = self.build([self.metric("midface_height", "proportions", 2.0)])["items"][0]
