@@ -1,20 +1,16 @@
-import { FormEvent, useMemo, useState } from "react";
+import { FormEvent, useState } from "react";
 import {
   ArrowLeft,
   ArrowRight,
   Check,
   CheckCircle2,
   ChevronDown,
-  Eye,
-  EyeOff,
   Globe,
   LoaderCircle,
   Lock,
-  Mail,
   ShieldCheck,
   SlidersHorizontal,
   Sparkles,
-  User,
   Zap,
 } from "lucide-react";
 import { Link, useNavigate } from "react-router-dom";
@@ -23,7 +19,7 @@ import { useLocale } from "../useLocale";
 import { canSubmitCode, normalizeCode } from "../lib/promoCode";
 import { redeemCode } from "../lib/api";
 import { errorMessage } from "../lib/apiError";
-import { authErrorKey, formProblem } from "../lib/authForm";
+import { authErrorKey } from "../lib/authForm";
 
 function GoogleMark() {
   return (
@@ -49,7 +45,6 @@ function GoogleMark() {
 }
 
 type ReferralState = "idle" | "error" | "saved";
-type Mode = "signin" | "signup";
 
 export default function LoginPage() {
   const { locale, chooseLocale, copy } = useLocale();
@@ -63,56 +58,8 @@ export default function LoginPage() {
   const [referralError, setReferralError] = useState("");
   const [googleBusy, setGoogleBusy] = useState(false);
   const [signInError, setSignInError] = useState("");
-  const [mode, setMode] = useState<Mode>("signin");
-  const [displayName, setDisplayName] = useState("");
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
-  const [confirmPassword, setConfirmPassword] = useState("");
-  const [showPassword, setShowPassword] = useState(false);
-  const [showConfirmPassword, setShowConfirmPassword] = useState(false);
-  const [acceptedTerms, setAcceptedTerms] = useState(false);
-  const [emailBusy, setEmailBusy] = useState(false);
-  const [notice, setNotice] = useState("");
 
-  const busy = googleBusy || emailBusy;
-
-  // Password strength calculation
-  const pwdStrength = useMemo(() => {
-    const minLen = password.length >= 8;
-    const hasNum = /\d/.test(password);
-    const hasLetter = /[a-zA-Z]/.test(password);
-    const hasSpecial = /[^a-zA-Z0-9]/.test(password);
-
-    let score = 0;
-    if (minLen) score++;
-    if (hasNum) score++;
-    if (hasLetter) score++;
-    if (hasSpecial && password.length >= 10) score++;
-
-    // Annotated, or TS narrows `label` to the literal type of t.pwdWeak and rejects
-    // every reassignment below it.
-    let label: string = t.pwdWeak;
-    let colorClass = "is-weak";
-    if (score === 2) {
-      label = t.pwdFair;
-      colorClass = "is-fair";
-    } else if (score === 3) {
-      label = t.pwdGood;
-      colorClass = "is-good";
-    } else if (score >= 4) {
-      label = t.pwdStrong;
-      colorClass = "is-strong";
-    }
-
-    return {
-      score,
-      label,
-      colorClass,
-      minLen,
-      hasNum,
-      hasLetter,
-    };
-  }, [password, t]);
+  const busy = googleBusy;
 
   const messageFor = (key: string) =>
     (t as Record<string, string>)[`err${key.charAt(0).toUpperCase()}${key.slice(1)}`] || t.errGeneric;
@@ -142,7 +89,6 @@ export default function LoginPage() {
     if (busy) return;
     setGoogleBusy(true);
     setSignInError("");
-    setNotice("");
     try {
       const { googleSignIn } = await import("../lib/firebase");
       await googleSignIn();
@@ -151,74 +97,6 @@ export default function LoginPage() {
       setSignInError(messageFor(authErrorKey(error)) || t.signInFailed);
       setGoogleBusy(false);
     }
-  };
-
-  const submitEmail = async (event: FormEvent) => {
-    event.preventDefault();
-    if (busy) return;
-    setNotice("");
-
-    if (mode === "signup") {
-      if (!displayName.trim()) {
-        setSignInError(t.errName);
-        return;
-      }
-      if (password !== confirmPassword) {
-        setSignInError(t.errPasswordMismatch);
-        return;
-      }
-      if (!acceptedTerms) {
-        setSignInError(t.errTerms);
-        return;
-      }
-    }
-
-    const problem = formProblem({ email, password, confirmPassword, displayName, mode });
-    if (problem) {
-      if (problem === "name") setSignInError(t.errName);
-      else if (problem === "email") setSignInError(t.errEmail);
-      else if (problem === "passwordMismatch") setSignInError(t.errPasswordMismatch);
-      else setSignInError(t.errShort);
-      return;
-    }
-    setEmailBusy(true);
-    setSignInError("");
-    try {
-      const { emailSignIn, emailSignUp } = await import("../lib/firebase");
-      await (mode === "signup" ? emailSignUp(email, password, displayName) : emailSignIn(email, password));
-      await afterSignIn();
-    } catch (error) {
-      setSignInError(messageFor(authErrorKey(error)));
-      setEmailBusy(false);
-    }
-  };
-
-  const resetPassword = async () => {
-    if (busy) return;
-    setSignInError("");
-    setNotice("");
-    const { isEmail } = await import("../lib/authForm");
-    if (!isEmail(email)) {
-      setSignInError(t.errEmail);
-      return;
-    }
-    try {
-      const { sendPasswordReset } = await import("../lib/firebase");
-      await sendPasswordReset(email);
-    } catch (error) {
-      const key = authErrorKey(error);
-      if (key === "methodDisabled" || key === "tooMany" || key === "network") {
-        setSignInError(messageFor(key));
-        return;
-      }
-    }
-    setNotice(t.resetSent);
-  };
-
-  const switchMode = (next: Mode) => {
-    setMode(next);
-    setSignInError("");
-    setNotice("");
   };
 
   return (
@@ -324,45 +202,26 @@ export default function LoginPage() {
         <div className="login-panel" aria-labelledby="login-title">
           <div className="login-panel__heading">
             <h1 id="login-title">
-              {mode === "signup"
-                ? (th ? "สร้างบัญชีใหม่ " : "Create account ")
-                : (th ? "เข้าสู่ระบบ " : "Sign in to ")}
+              {t.titleLead}{" "}
               <span className="brand-accent">DOODEE</span>
             </h1>
+            {/* One line for both cases. There is no separate sign-up any more:
+                Google creates the account on first sign-in, so "welcome back"
+                would be wrong for half the people reading it. */}
             <p className="login-panel__subtitle">
-              {mode === "signup"
-                ? (th ? "เริ่มต้นวิเคราะห์โครงสร้างใบหน้าของคุณวันนี้ ฟรี" : "Start your facial harmony journey today — free")
-                : (th ? "ยินดีต้อนรับกลับเข้าสู่แดชบอร์ดความงามของคุณ" : "Welcome back to your personalized aesthetic dashboard")}
+              {th
+                ? "ใช้บัญชี Google ของคุณ ครั้งแรกระบบจะสร้างบัญชีให้อัตโนมัติ"
+                : "Use your Google account — we'll create one for you on first sign-in"}
             </p>
           </div>
 
-          {/* Tab Switcher */}
-          <div className="auth-tabs" role="tablist" aria-label="Authentication Mode">
-            <button
-              type="button"
-              role="tab"
-              id="tab-signin"
-              aria-controls="auth-form"
-              aria-selected={mode === "signin"}
-              className={mode === "signin" ? "is-active" : ""}
-              onClick={() => switchMode("signin")}
-            >
-              {t.tabSignIn}
-            </button>
-            <button
-              type="button"
-              role="tab"
-              id="tab-signup"
-              aria-controls="auth-form"
-              aria-selected={mode === "signup"}
-              className={mode === "signup" ? "is-active" : ""}
-              onClick={() => switchMode("signup")}
-            >
-              {t.tabSignUp}
-            </button>
-          </div>
-
-          {/* Google SSO Button */}
+          {/* Google is the only way in. The e-mail/password form and the
+              sign-in/sign-up tab switcher were removed: Google sign-in both
+              signs in and registers, so a second credential path was extra
+              surface to secure (password reset, strength rules, verification
+              mail) for no additional reach. lib/firebase still exports
+              emailSignIn/emailSignUp/sendPasswordReset — nothing here calls
+              them. */}
           <button
             className="google-button"
             type="button"
@@ -377,229 +236,25 @@ export default function LoginPage() {
             <ArrowRight size={17} />
           </button>
 
-          <div className="auth-divider">
-            <span>{t.or}</span>
-          </div>
-
-          {/* Main Auth Form */}
-          <form
-            id="auth-form"
-            className="auth-form"
-            onSubmit={submitEmail}
-            noValidate
-            role="tabpanel"
-            aria-labelledby={mode === "signup" ? "tab-signup" : "tab-signin"}
-          >
-            {/* Full Name / Display Name on Sign Up */}
-            {mode === "signup" && (
-              <div className="auth-field-group">
-                <label htmlFor="auth-name">
-                  <span>{t.displayName}</span>
-                </label>
-                <div className="auth-input-wrapper">
-                  <User className="auth-input-icon" size={17} />
-                  <input
-                    id="auth-name"
-                    type="text"
-                    autoComplete="name"
-                    value={displayName}
-                    placeholder={t.displayNamePlaceholder}
-                    disabled={busy}
-                    onChange={(event) => {
-                      setDisplayName(event.target.value);
-                      setSignInError("");
-                    }}
-                    required
-                  />
-                </div>
-              </div>
-            )}
-
-            <div className="auth-field-group">
-              <label htmlFor="auth-email">
-                <span>{t.email}</span>
-              </label>
-              <div className="auth-input-wrapper">
-                <Mail className="auth-input-icon" size={17} />
-                <input
-                  id="auth-email"
-                  type="email"
-                  inputMode="email"
-                  autoComplete="email"
-                  value={email}
-                  placeholder={t.emailPlaceholder}
-                  disabled={busy}
-                  onChange={(event) => {
-                    setEmail(event.target.value);
-                    setSignInError("");
-                  }}
-                  required
-                />
-              </div>
+          {signInError && (
+            <div className="login-alert is-error" role="alert">
+              <p>{signInError}</p>
             </div>
+          )}
 
-            <div className="auth-field-group">
-              <div className="auth-label-row">
-                <label htmlFor="auth-password">{t.password}</label>
-                {mode === "signin" && (
-                  <button
-                    type="button"
-                    className="auth-forgot-link"
-                    onClick={resetPassword}
-                    disabled={busy}
-                  >
-                    {t.forgot}
-                  </button>
-                )}
-              </div>
-              <div className="auth-input-wrapper">
-                <Lock className="auth-input-icon" size={17} />
-                <input
-                  id="auth-password"
-                  type={showPassword ? "text" : "password"}
-                  autoComplete={mode === "signup" ? "new-password" : "current-password"}
-                  value={password}
-                  placeholder={t.passwordPlaceholder}
-                  disabled={busy}
-                  onChange={(event) => {
-                    setPassword(event.target.value);
-                    setSignInError("");
-                  }}
-                  required
-                />
-                <button
-                  type="button"
-                  className="auth-eye-btn"
-                  disabled={busy}
-                  onClick={() => setShowPassword(!showPassword)}
-                  aria-label={showPassword ? t.hidePassword : t.showPassword}
-                >
-                  {showPassword ? <EyeOff size={17} /> : <Eye size={17} />}
-                </button>
-              </div>
-            </div>
-
-            {/* Password Strength Meter in Sign Up mode */}
-            {mode === "signup" && password.length > 0 && (
-              <div className="password-strength-box" aria-live="polite">
-                <div className="password-strength-box__bar">
-                  <div
-                    className={`strength-bar-fill ${pwdStrength.colorClass}`}
-                    style={{ width: `${Math.max(15, (pwdStrength.score / 4) * 100)}%` }}
-                  />
-                </div>
-                <div className="password-strength-box__details">
-                  <span className="strength-label">
-                    {th ? "ระดับความปลอดภัย:" : "Security:"}{" "}
-                    <strong className={pwdStrength.colorClass}>{pwdStrength.label}</strong>
-                  </span>
-                  <div className="strength-rules">
-                    <span className={pwdStrength.minLen ? "is-valid" : ""}>
-                      {pwdStrength.minLen ? <Check size={12} /> : "•"} {t.ruleLength}
-                    </span>
-                    <span className={pwdStrength.hasLetter ? "is-valid" : ""}>
-                      {pwdStrength.hasLetter ? <Check size={12} /> : "•"} {t.ruleLetter}
-                    </span>
-                    <span className={pwdStrength.hasNum ? "is-valid" : ""}>
-                      {pwdStrength.hasNum ? <Check size={12} /> : "•"} {t.ruleNumber}
-                    </span>
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {/* Confirm Password in Sign Up mode */}
-            {mode === "signup" && (
-              <div className="auth-field-group">
-                <div className="auth-label-row">
-                  <label htmlFor="auth-confirm-password">{t.confirmPassword}</label>
-                  {confirmPassword.length > 0 && (
-                    <span
-                      className={`password-match-badge ${
-                        password === confirmPassword ? "is-match" : "is-mismatch"
-                      }`}
-                    >
-                      {password === confirmPassword ? <Check size={12} /> : "✗"}{" "}
-                      {password === confirmPassword ? t.passwordsMatch : t.passwordsMismatch}
-                    </span>
-                  )}
-                </div>
-                <div className="auth-input-wrapper">
-                  <Lock className="auth-input-icon" size={17} />
-                  <input
-                    id="auth-confirm-password"
-                    type={showConfirmPassword ? "text" : "password"}
-                    autoComplete="new-password"
-                    value={confirmPassword}
-                    placeholder={t.confirmPasswordPlaceholder}
-                    disabled={busy}
-                    onChange={(event) => {
-                      setConfirmPassword(event.target.value);
-                      setSignInError("");
-                    }}
-                    required
-                  />
-                  <button
-                    type="button"
-                    className="auth-eye-btn"
-                    disabled={busy}
-                    onClick={() => setShowConfirmPassword(!showConfirmPassword)}
-                    aria-label={showConfirmPassword ? t.hidePassword : t.showPassword}
-                  >
-                    {showConfirmPassword ? <EyeOff size={17} /> : <Eye size={17} />}
-                  </button>
-                </div>
-              </div>
-            )}
-
-            {/* Terms and Privacy Checkbox in Sign Up mode */}
-            {mode === "signup" && (
-              <label className="auth-checkbox-label">
-                <input
-                  type="checkbox"
-                  checked={acceptedTerms}
-                  onChange={(e) => {
-                    setAcceptedTerms(e.target.checked);
-                    setSignInError("");
-                  }}
-                  disabled={busy}
-                />
-                <span>
-                  {th ? "ฉันยอมรับ " : "I agree to the "}
-                  <a href="#terms" target="_blank" rel="noreferrer">
-                    {t.terms}
-                  </a>
-                  {th ? " และ " : " and "}
-                  <a href="#privacy" target="_blank" rel="noreferrer">
-                    {t.privacy}
-                  </a>
-                </span>
-              </label>
-            )}
-
-            {/* Error or Notice Alert */}
-            {signInError && (
-              <div className="login-alert is-error" role="alert">
-                <p>{signInError}</p>
-              </div>
-            )}
-            {notice && (
-              <div className="login-alert is-saved" role="status">
-                <p>{notice}</p>
-              </div>
-            )}
-
-            <button className="auth-submit-btn" type="submit" disabled={busy} aria-busy={emailBusy}>
-              {emailBusy ? (
-                <>
-                  <LoaderCircle className="auth-spinner" size={18} />
-                  <span>{t.busy}</span>
-                </>
-              ) : (
-                <span>{mode === "signup" ? t.submitSignUp : t.submitSignIn}</span>
-              )}
-            </button>
-          </form>
+          {/* The sign-up tab carried a terms checkbox. Without it the consent
+              still has to be stated, so it becomes the standard notice — the
+              copy already existed in both locales and was never rendered. */}
+          <p className="login-legal">
+            {t.legalLead}{" "}
+            <a href="#terms" target="_blank" rel="noreferrer">
+              {t.terms}
+            </a>{" "}
+            {t.legalMid}{" "}
+            <a href="#privacy" target="_blank" rel="noreferrer">
+              {t.privacy}
+            </a>
+          </p>
 
           {/* Referral Code Accordion */}
           <div className={`referral ${showReferral ? "referral--open" : ""}`}>
