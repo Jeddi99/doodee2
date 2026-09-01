@@ -262,6 +262,15 @@ def process_simulation(simulation_id):
         )
         if extra:
             simulation.model_version = extra["model_version"]
+            # How much of each frame moved. Kept beside the render rather than recomputed on
+            # read: the two source images it was measured between are not both stored, so this
+            # is the only moment the number can be taken.
+            simulation.parameters = {
+                **(simulation.parameters or {}),
+                "visibility": {name: view["visible_percent"]
+                               for name, view in extra["views"].items()
+                               if "visible_percent" in view},
+            }
         simulation.status, simulation.progress = Simulation.Status.COMPLETED, 100
         simulation.error_code = simulation.error_message = ""
     except ValueError as exc:

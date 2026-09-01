@@ -620,8 +620,9 @@ def simulate_canonical(scan, selections, download_fn, output_format=".png", max_
         "views": {
             name: {"yaw": view["yaw"], "max_shift_px": view["max_shift_px"],
                    "held_back": view["held_back"], "source_object": view["source_object"],
-                   # Read by the worker, which does not store a view nothing moved in.
-                   "changed": view["changed"]}
+                   # Read by the worker, which does not store a view nothing moved in, and
+                   # records the rest so the screen can say how much this actually did.
+                   "changed": view["changed"], "visible_percent": view["visible_percent"]}
             for name, view in result["views"].items()
         },
         "encoded_views": {name: view["encoded"] for name, view in result["views"].items()},

@@ -68,13 +68,14 @@ class SimulationSerializer(serializers.ModelSerializer):
     before_url = serializers.SerializerMethodField()
     after_url = serializers.SerializerMethodField()
     preset = serializers.SerializerMethodField()
+    visibility = serializers.SerializerMethodField()
 
     class Meta:
         model = Simulation
         fields = (
             "id", "scan_id", "status", "progress", "kind", "region", "preset", "selections", "source_view", "measurements",
             "related_procedures", "model_version", "before_url", "after_url", "error_code", "error_message",
-            "expires_at", "created_at", "started_at", "finished_at",
+            "visibility", "expires_at", "created_at", "started_at", "finished_at",
         )
         read_only_fields = fields
 
@@ -92,6 +93,18 @@ class SimulationSerializer(serializers.ModelSerializer):
 
     def get_after_url(self, obj):
         return self._url(obj, "after_object")
+
+    def get_visibility(self, obj):
+        """How much of each rendered frame actually moved, as a percentage, per view.
+
+        Sent because a correct render and a broken one look identical to someone whose face the
+        procedure barely touches. The client says so in words rather than the catalog's
+        strengths being raised until every row looks like it did something.
+
+        `{}` on rows rendered before this was recorded, and on the single-image engine, which
+        does not measure it — the client treats an absent number as "no claim", not as zero.
+        """
+        return (obj.parameters or {}).get("visibility") or {}
 
     def get_preset(self, obj):
         """Whichever catalog this row's `preset_id` came from.

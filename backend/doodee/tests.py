@@ -589,6 +589,7 @@ class ProcedureSelectionTest(TestCase):
         render.return_value = {
             "views": {"front": {"encoded": b"png", "before_encoded": b"png", "focus_boxes": {},
                                 "yaw": 0., "max_shift_px": 1., "held_back": 0., "changed": True,
+                                "visible_percent": 2.5,
                                 "source_object": "private/front"}},
             "legacy_view": "front", "measurements": [], "related_procedures": [],
             "model_version": "canonical-3d-fusion-lab-v1",
@@ -616,7 +617,7 @@ class ProcedureSelectionTest(TestCase):
         def rendered(name):
             return {"encoded": name.encode(), "before_encoded": b"png", "focus_boxes": {},
                     "yaw": 0., "max_shift_px": 1., "held_back": 0., "changed": True,
-                    "source_object": f"private/{name}"}
+                    "visible_percent": 2.5, "source_object": f"private/{name}"}
 
         render.return_value = {
             "views": {name: rendered(name) for name in ("front", "left_profile", "right_profile")},
@@ -718,8 +719,9 @@ class UnchangedViewTest(TestCase):
             b"after-front", [], {},
             {"model_version": "canonical-3d-fusion-lab-v1", "legacy_view": "front",
              "related_procedures": ["ยกกระชับอัลเทอร่า / ไฮฟู"],
-             "views": {"front": {"changed": True}, "left_profile": {"changed": False},
-                       "right_profile": {"changed": True}},
+             "views": {"front": {"changed": True, "visible_percent": 3.9},
+                       "left_profile": {"changed": False, "visible_percent": 0.0},
+                       "right_profile": {"changed": True, "visible_percent": 0.11}},
              "before_encoded": b"before-front",
              "encoded_views": {"front": b"after-front", "left_profile": b"after-left",
                                "right_profile": b"after-right"}},
@@ -732,6 +734,43 @@ class UnchangedViewTest(TestCase):
                          self.simulation.error_message)
         self.assertEqual(sorted(self.simulation.view_objects), ["front", "right_profile"])
         self.assertNotIn("left_profile", self.simulation.view_objects)
+
+    @patch("doodee.tasks.upload_image")
+    @patch("doodee.tasks.download_image", return_value=b"source")
+    @patch("doodee.tasks.simulate_canonical")
+    def test_how_much_each_view_moved_is_recorded_and_served(self, canonical, download, upload):
+        """A correct render nobody can see must be able to say so.
+
+        The alternative to saying it is raising the catalog's strengths until every row looks
+        like it did something, which claims a result the sources do not support. So the number
+        is measured where the two images still exist, kept on the row, and served.
+        """
+        canonical.return_value = (
+            b"after-front", [], {},
+            {"model_version": "canonical-3d-fusion-lab-v1", "legacy_view": "front",
+             "related_procedures": [],
+             "views": {"front": {"changed": True, "visible_percent": 0.115},
+                       "left_profile": {"changed": True, "visible_percent": 0.091},
+                       "right_profile": {"changed": True, "visible_percent": 0.051}},
+             "before_encoded": b"before-front",
+             "encoded_views": {"front": b"after-front", "left_profile": b"after-left",
+                               "right_profile": b"after-right"}},
+        )
+        from .serializers import SimulationSerializer
+        from .tasks import process_simulation
+
+        process_simulation(str(self.simulation.id))
+        self.simulation.refresh_from_db()
+        self.assertEqual(self.simulation.parameters["visibility"],
+                         {"front": 0.115, "left_profile": 0.091, "right_profile": 0.051})
+        self.assertEqual(SimulationSerializer(self.simulation).data["visibility"]["front"], 0.115)
+
+    def test_a_row_that_never_measured_it_makes_no_claim(self):
+        """Absent is not zero: `{}` under a perfectly good legacy render must not read as
+        "nothing changed"."""
+        from .serializers import SimulationSerializer
+
+        self.assertEqual(SimulationSerializer(self.simulation).data["visibility"], {})
 
 
 class ProcedureEvidenceGapTest(SimpleTestCase):

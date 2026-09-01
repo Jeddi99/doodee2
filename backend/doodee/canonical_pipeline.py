@@ -1156,6 +1156,18 @@ def _download_views(download_fn, object_names):
     return [future.result() for future in futures]
 
 
+#: Per-channel difference below which two photographs read as the same image. Three levels out
+#: of 255 is under the noise of the JPEG the camera produced, so counting anything smaller would
+#: report sensor grain as a treatment result.
+VISIBLE_DELTA = 3
+
+#: Fraction of the frame under which a render, however correct, reads as "nothing happened".
+#: A judgement call, not a measured threshold: it was set from a sweep of all 72 supported
+#: procedures on a real scan, where the rows a person could not tell apart from the original all
+#: fell below half a percent and the ones they could all sat above one and a half.
+FAINT_FRACTION = .005
+
+
 def _region_indices(region):
     """The landmarks a focus box is drawn around, from whichever table names this region.
 
@@ -1245,7 +1257,15 @@ def simulate_scan_views(scan, sliders, download_fn, *, selections=None, presets=
             if refine:
                 after = _refine_views(after, moved, surface_specs, surface_levels,
                                       view["name"], amplify)
-        changed = not np.array_equal(after, view["image"])
+        # How much of the frame moved, not merely whether any byte did. A procedure can be
+        # applied exactly as the catalog describes it and still be invisible -- flattening a fold
+        # on a face whose fold is already shallow is close to a no-op -- and from the user's side
+        # that is indistinguishable from a broken render. The number is carried to the screen so
+        # the picture can say which one it is, rather than the strengths being raised to make
+        # every row look like it did something.
+        difference = np.abs(after.astype(np.int16) - view["image"].astype(np.int16)).max(axis=2)
+        changed = bool(difference.any())
+        visible = float((difference > VISIBLE_DELTA).mean())
         ok_before, encoded_before = cv2.imencode(output_format, view["image"])
         ok_after, encoded_after = cv2.imencode(output_format, after)
         if not ok_before or not ok_after:
@@ -1263,6 +1283,9 @@ def simulate_scan_views(scan, sliders, download_fn, *, selections=None, presets=
             # is invisible from an angle that cannot see it -- tattoo removal on a cheek does
             # nothing to the opposite profile -- and that is a correct render, not a failure.
             "changed": changed,
+            # And how much, as a percentage of the frame. Rounded to three places because the
+            # interesting range is a fraction of one percent.
+            "visible_percent": round(visible * 100, 3),
             "focus_boxes": {
                 region: _focus_box(view["points"], indices, view["image"].shape)
                 for region, indices in ((name, _region_indices(name)) for name in regions)

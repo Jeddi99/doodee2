@@ -576,3 +576,20 @@
   .simulation-compare { aspect-ratio: 1 / 1; }
   .simulation-save { position: sticky; bottom: 10px; z-index: 5; }
 }
+
+/* The note that says a correct render is one the user cannot see. Amber rather than the ordinary
+   grey note: it is answering "is this broken?", and a person scanning the page for that answer
+   should not have to read every grey box to find it. */
+.simulation-note[role='status'] {
+  background: #fff4df;
+  color: #8b5c16;
+}
+.simulation-note[role='status'] button {
+  margin-left: 8px;
+  border: 0;
+  background: transparent;
+  padding: 0;
+  color: var(--dd-blue-strong);
+  font-weight: 700;
+  text-decoration: underline;
+}

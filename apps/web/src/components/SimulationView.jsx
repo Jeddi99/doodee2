@@ -6,6 +6,7 @@ import { createSimulation, getProcedureCategories, getProcedures, getScan, getSc
 import { statusPollInterval } from '../lib/pollInterval.js';
 import { daysRemaining } from '../lib/promoCode';
 import { describeSimulationError } from '../lib/simulationError';
+import { describeVisibility } from '../lib/simulationVisibility';
 import { emptyQueue, request as queueRequest, settle } from '../lib/previewQueue';
 import {
   MAX_PROCEDURES, clearUnlockedProcedures, emptyProcedureStack,
@@ -337,6 +338,14 @@ export default function SimulationView({ lang = 'th', onNavigate }) {
   // A saved image is the same framing as the preview it came from, so its box still applies.
   // Aim at whichever region was touched last; it is the one the user is looking for.
   const focusBox = preview?.focus_boxes?.[lastTouched] || preview?.focus_box || null;
+  // How much of this angle actually moved. A procedure applied exactly as the catalog describes
+  // it can still change almost nothing on a particular face, and that is indistinguishable from
+  // a broken render unless the screen says which one it is.
+  const visibility = describeVisibility(preview?.visibility, activeView);
+  // Offered only when there is one thing in the picture and it has somewhere left to go: with a
+  // stack, there is no telling which row is the faint one, and at level 5 there is no answer.
+  const raisable = items.length === 1 && items[0].procedure?.intensity_levels && items[0].level < 5
+    ? items[0] : null;
   const vipDaysLeft = daysRemaining(session.data?.vip_expires_at);
 
   // A stack is tied to one scan's landmarks, so it means nothing against a different scan.
@@ -481,7 +490,21 @@ export default function SimulationView({ lang = 'th', onNavigate }) {
                   <span>{isTh ? 'ไม่ต้องกดปุ่มสร้างอีกต่อไป' : 'No generate button needed.'}</span>
                 </div>}
           {renderingView && beforeUrl && <p className="simulation-note" role="status">{isTh ? 'กำลังสร้างภาพ…' : 'Rendering…'}</p>}
+          {!isReference && preview && (
+            <VisibilityNote
+              visibility={visibility}
+              raisable={raisable}
+              isTh={isTh}
+              onRaise={() => changeIntensity(raisable.id, 5)}
+            />
+          )}
           {!isReference && <EvidenceList measurements={preview?.measurements} isTh={isTh} />}
+          {/* A picture with no numbers beside it looks like numbers that failed to load. */}
+          {!isReference && preview && preview.measurements?.length === 0 && (
+            <p className="simulation-note">{isTh
+              ? 'หัตถการนี้ทำงานกับพื้นผิวและสีผิว ยังไม่มีงานวิจัยที่ระบุปริมาณหรือระยะเป็นมิลลิเมตรไว้ จึงไม่มีบรรทัดตัวเลขกำกับภาพนี้'
+              : 'This procedure works on skin surface and tone. No published study gives it a dose or a millimetre figure, so there are no numbers beside this image.'}</p>
+          )}
           {target && <div className="simulation-measurement"><span>{isTh ? 'ค่าของคุณ → ค่าเฉลี่ยกลุ่มอ้างอิง' : 'Yours → reference mean'}</span><strong>{target.observed_ratio} → {target.reference_ratio}</strong><b>{target.change_percent > 0 ? '+' : ''}{target.change_percent}%</b></div>}
           {target?.capped && <p className="simulation-note">{isTh ? `ภาพนี้แสดงการปรับเท่าที่เพดานความปลอดภัยอนุญาต ไม่ใช่ทั้ง ${Math.abs(target.change_percent)}%` : `This image shows only as much change as the safety ceiling allows, not the full ${Math.abs(target.change_percent)}%.`}</p>}
         </section>
@@ -678,6 +701,40 @@ function ProcedureGrid({ procedures, stack, disabled, isTh, onChoose }) {
         })}
       </div>
     </div>
+  );
+}
+
+/**
+ * Says out loud when a correct render is one the user cannot see.
+ *
+ * Of the 72 renderable procedures, 19 change under half a percent of the frame at the strongest
+ * setting — flattening a fold on a face whose fold is shallow is close to a no-op. Silence there
+ * reads as a broken feature, and the alternative fix is to raise the catalog's strengths until
+ * every row looks like it did something, which is claiming a result the sources do not support.
+ *
+ * The percentage is shown rather than only a verdict: it is the evidence for the sentence, and a
+ * person comparing two procedures can see that 0.1% and 3% are not the same kind of nothing.
+ */
+function VisibilityNote({ visibility, raisable, isTh, onRaise }) {
+  if (visibility.level === 'clear' || visibility.level === 'unmeasured') return null;
+  const amount = visibility.percent < 0.01
+    ? (isTh ? 'แทบไม่ต่างเลย' : 'almost nothing')
+    : (isTh ? `ต่างจากเดิม ${visibility.percent}% ของพื้นที่ภาพ` : `${visibility.percent}% of the frame`);
+  if (visibility.level === 'elsewhere') {
+    const other = angleName(visibility.elsewhere, isTh);
+    return (
+      <p className="simulation-note" role="status">{isTh
+        ? `มุมนี้${amount} — หัตถการนี้เห็นได้ที่มุม${other} ลองสลับไปดู`
+        : `This angle shows ${amount}. The change is visible in the ${other.toLowerCase()} view — switch to it.`}</p>
+    );
+  }
+  return (
+    <p className="simulation-note" role="status">{isTh
+      ? `ภาพนี้${amount} ซึ่งน้อยจนแทบมองไม่ออก — ไม่ใช่ข้อผิดพลาด แต่แปลว่าบนใบหน้าของคุณ หัตถการนี้ทำให้เปลี่ยนไปน้อยมาก`
+      : `This render differs by ${amount}, too little to see. Not an error: on your face, this procedure changes very little.`}
+      {raisable && (
+        <button onClick={onRaise}>{isTh ? 'ลองระดับแรงสุด' : 'Try the strongest setting'}</button>
+      )}</p>
   );
 }
 
