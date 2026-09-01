@@ -94,9 +94,20 @@ class SimulationSerializer(serializers.ModelSerializer):
         return self._url(obj, "after_object")
 
     def get_preset(self, obj):
+        """Whichever catalog this row's `preset_id` came from.
+
+        The column holds a legacy preset slug on older rows and a catalog source ref like "1.1"
+        on new ones. Looking in only one place would answer `null` for half the rows, and the
+        client uses this to name what it is showing.
+        """
+        from . import procedure_catalog
         from .procedures import get_preset
 
-        return get_preset(obj.preset_id)
+        preset = get_preset(obj.preset_id)
+        if preset:
+            return preset
+        procedure = procedure_catalog.resolve_procedure(obj.preset_id)
+        return procedure.public() if procedure else None
 
 
 class ChatMessageSerializer(serializers.ModelSerializer):

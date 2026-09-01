@@ -421,6 +421,272 @@ class ProcedureNamesEnTest(TestCase):
             self.assertEqual(spec.public()["name_en"], spec.name_th)
 
 
+class ProcedureCatalogApiTest(TestCase):
+    """`/procedures/` serves the clinical catalog, not the 24 geometric presets it used to.
+
+    The two share no ids, so this is a breaking change made deliberately and in one commit with
+    the frontend. What is asserted here is the part a client depends on: the closed set of keys,
+    that out-of-scope rows are hidden unless asked for, and that an id containing a dot resolves
+    at all -- the route used the `slug` converter, whose character class has no dot in it, so
+    every real id answered 404.
+    """
+
+    def setUp(self):
+        self.user = User.objects.create_user("catalog-reader")
+        self.client = APIClient()
+        self.client.force_authenticate(self.user)
+
+    def test_the_list_is_the_renderable_catalog(self):
+        from doodee.procedure_catalog import PROCEDURES
+
+        response = self.client.get("/api/v1/procedures/")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(response.data), len([p for p in PROCEDURES if p.supported]))
+        self.assertTrue(all(row["available"] for row in response.data))
+        row = next(item for item in response.data if item["id"] == "1.1")
+        self.assertEqual(row["category_id"], 1)
+        self.assertEqual(row["name_en"], "Ultherapy / HIFU lift")
+        self.assertTrue(row["regions"] and row["views"])
+
+    def test_the_audit_view_returns_every_row_including_the_ones_out_of_scope(self):
+        """The 20 body rows are the evidence that they were considered and ruled out."""
+        from doodee.procedure_catalog import PROCEDURES
+
+        response = self.client.get("/api/v1/procedures/?include_unavailable=true")
+        self.assertEqual(len(response.data), len(PROCEDURES))
+        self.assertTrue(any(not row["available"] for row in response.data))
+
+    def test_a_category_can_be_named_by_key_or_by_number(self):
+        by_key = self.client.get("/api/v1/procedures/?category=filler")
+        by_number = self.client.get("/api/v1/procedures/?category=4")
+        self.assertEqual(by_key.status_code, 200)
+        self.assertTrue(by_key.data)
+        self.assertEqual([row["id"] for row in by_key.data], [row["id"] for row in by_number.data])
+
+    def test_an_unknown_category_is_refused_rather_than_answered_with_everything(self):
+        response = self.client.get("/api/v1/procedures/?category=knees")
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("unknown_procedure_category", json.dumps(response.data))
+
+    def test_one_procedure_resolves_by_its_dotted_id(self):
+        response = self.client.get("/api/v1/procedures/1.1/")
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(response.data["id"], "1.1")
+
+    def test_the_retired_slug_still_resolves_as_an_input_alias(self):
+        response = self.client.get("/api/v1/procedures/hifu-lift/")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["id"], "1.1")
+
+    def test_an_unknown_procedure_is_a_404(self):
+        self.assertEqual(self.client.get("/api/v1/procedures/99.9/").status_code, 404)
+
+    def test_the_categories_endpoint_lists_only_headings_with_something_behind_them(self):
+        from doodee.procedure_catalog import facial_categories
+
+        response = self.client.get("/api/v1/procedures/categories/")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual([row["key"] for row in response.data], list(facial_categories()))
+        self.assertNotIn("breast", [row["key"] for row in response.data])
+        self.assertTrue(all(row["name_th"] and row["name_en"] for row in response.data))
+
+
+class ProcedureSelectionTest(TestCase):
+    """A stack that names catalog procedures, resolved before anything is rendered or charged.
+
+    The invariants the legacy stack had are the ones asserted here against the new catalog:
+    the whole stack resolves or none of it does, a row that cannot be rendered is refused rather
+    than dropped, and the intensity level is bounded. The one genuinely new rule is that a
+    catalog procedure has no legacy fallback, so a scan the fused renderer cannot run is refused
+    outright instead of being handed a renderer that would return most of the face unchanged.
+    """
+
+    def setUp(self):
+        self.user = User.objects.create_user("procedure-picker")
+        self.scan = Scan.objects.create(
+            user=self.user, age_band="adult", scan_mode="standard", status="completed",
+            image_objects={"front": "private/front", "left_profile": "private/left",
+                           "right_profile": "private/right"},
+            expires_at=timezone.now() + timedelta(days=1),
+        )
+        self.fast_scan = Scan.objects.create(
+            user=self.user, age_band="adult", scan_mode="fast", status="completed",
+            image_objects={"front": "private/front"}, expires_at=timezone.now() + timedelta(days=1),
+        )
+
+    def resolve(self, selections, scan=None):
+        from doodee.simulation_engine import validate_selections
+
+        return validate_selections(scan or self.scan, selections, True)
+
+    def test_a_procedure_stack_resolves_to_specs_in_the_order_given(self):
+        specs, targets = self.resolve([{"procedure_id": "1.1", "intensity_level": 4},
+                                       {"procedure_id": "4.1"}])
+        self.assertEqual([spec.source_ref for spec in specs], ["1.1", "4.1"])
+        # Reference targets belong to the legacy catalog; nothing here computes one.
+        self.assertEqual(targets, [None, None])
+
+    def test_the_fused_renderer_is_required_and_its_absence_is_said_out_loud(self):
+        with self.assertRaisesRegex(ValueError, "canonical_required"):
+            self.resolve([{"procedure_id": "1.1"}], scan=self.fast_scan)
+
+    def test_that_stack_always_routes_to_the_canonical_engine(self):
+        from doodee.simulation_engine import engine_for_selections
+
+        self.assertEqual(engine_for_selections(self.scan, [{"procedure_id": "1.1"}]), "canonical")
+
+    def test_the_two_catalogs_cannot_be_mixed_in_one_stack(self):
+        with self.assertRaisesRegex(ValueError, "mixed_catalogs"):
+            self.resolve([{"procedure_id": "1.1"}, {"region": "jaw", "preset_id": "jaw-narrow"}])
+
+    def test_a_repeated_procedure_is_refused_rather_than_collapsed(self):
+        """Collapsing would pair every later selection with the wrong spec downstream."""
+        with self.assertRaisesRegex(ValueError, "duplicate_procedure"):
+            self.resolve([{"procedure_id": "1.1"}, {"procedure_id": "1.1"}])
+
+    def test_a_row_outside_the_face_is_refused_by_name(self):
+        with self.assertRaisesRegex(ValueError, "procedure_out_of_scope:1.7"):
+            self.resolve([{"procedure_id": "1.7"}])
+
+    def test_the_rest_of_the_stack_shape_is_still_closed(self):
+        for selections, code in (
+            ([], "empty_selections"),
+            ([{"procedure_id": "9.9"}], "unknown_procedure"),
+            ([{"procedure_id": "1.1", "region": "jaw"}], "invalid_selection"),
+            ([{"procedure_id": "1.1", "intensity_level": 0}], "invalid_intensity_level"),
+            ([{"procedure_id": "1.1", "intensity_level": 6}], "invalid_intensity_level"),
+            ([{"procedure_id": "1.1", "intensity_level": "3"}], "invalid_intensity_level"),
+            ([{"procedure_id": f"4.{index}"} for index in range(1, 9)], "too_many_selections"),
+        ):
+            with self.subTest(code=code), self.assertRaisesRegex(ValueError, code):
+                self.resolve(selections)
+
+    def test_the_row_records_the_procedures_and_the_sliders_but_no_invented_delta(self):
+        from doodee.simulation_engine import simulation_columns
+
+        selections = [{"procedure_id": "1.1", "intensity_level": 4}]
+        specs, _targets = self.resolve(selections)
+        columns = simulation_columns(selections, specs)
+        self.assertEqual(columns["preset_id"], "1.1")
+        self.assertEqual(columns["region"], specs[0].pipeline[0].region)
+        self.assertEqual(columns["parameters"]["procedures"],
+                         [{"procedure_id": "1.1", "intensity_level": 4, "name_th": specs[0].name_th}])
+        self.assertTrue(columns["parameters"]["sliders"])
+        self.assertNotIn("delta", columns["parameters"])
+
+    @patch("doodee.canonical_pipeline.simulate_scan_views")
+    def test_the_renderer_is_handed_compiled_sliders_and_a_level_per_procedure(self, render):
+        """The one seam where the catalog meets the fused engine.
+
+        A whole render is not exercised here -- that needs three real photographs -- but what
+        crosses this line is: the levels the client asked for, keyed by source ref because the
+        pipeline looks them up that way, and the sliders compiled from the pipelines rather than
+        read off a preset's `slider` key, which a catalog spec does not have.
+        """
+        from doodee.procedure_catalog import compile_warp_sliders, resolve_procedure
+        from doodee.simulation_engine import simulate_canonical
+
+        render.return_value = {
+            "views": {"front": {"encoded": b"png", "before_encoded": b"png", "focus_boxes": {},
+                                "yaw": 0., "max_shift_px": 1., "held_back": 0.,
+                                "source_object": "private/front"}},
+            "legacy_view": "front", "measurements": [], "related_procedures": [],
+            "model_version": "canonical-3d-fusion-lab-v1",
+        }
+        selections = [{"procedure_id": "1.1", "intensity_level": 5}, {"procedure_id": "4.1"}]
+        simulate_canonical(self.scan, selections, lambda name: b"")
+
+        specs = [resolve_procedure("1.1"), resolve_procedure("4.1")]
+        _args, kwargs = render.call_args
+        self.assertEqual(_args[1], compile_warp_sliders(specs, [5, 3]))
+        self.assertEqual(kwargs["selections"],
+                         [{"procedure_id": "1.1", "intensity_level": 5},
+                          {"procedure_id": "4.1", "intensity_level": 3}])
+        self.assertEqual(kwargs["presets"], specs)
+
+    @patch("doodee.canonical_pipeline.simulate_scan_views")
+    def test_a_selection_naming_no_known_procedure_never_reaches_the_renderer(self, render):
+        from doodee.simulation_engine import simulate_canonical
+
+        with self.assertRaisesRegex(ValueError, "invalid_preset"):
+            simulate_canonical(self.scan, [{"procedure_id": "99.9"}], lambda name: b"")
+        render.assert_not_called()
+
+    def test_the_legacy_stack_still_writes_the_columns_it_always_did(self):
+        from doodee.simulation_engine import simulation_columns
+
+        selections = [{"region": "jaw", "preset_id": "jaw-narrow"}]
+        presets, _targets = self.resolve(selections)
+        columns = simulation_columns(selections, presets)
+        self.assertEqual((columns["region"], columns["preset_id"]), ("jaw", "jaw-narrow"))
+        self.assertEqual(columns["parameters"]["delta"], -.05)
+
+
+class ProcedureSimulationApiTest(TestCase):
+    """The catalog reaching the queue: what a preview request records and answers with."""
+
+    def setUp(self):
+        self.user = User.objects.create_user("procedure-previewer")
+        self.user.groups.add(Group.objects.get_or_create(name="pro_member")[0])
+        self.client = APIClient()
+        self.client.force_authenticate(self.user)
+        cache.clear()
+        self.scan = Scan.objects.create(
+            user=self.user, age_band="adult", scan_mode="standard", status="completed",
+            image_objects={"front": "private/front", "left_profile": "private/left",
+                           "right_profile": "private/right"},
+            expires_at=timezone.now() + timedelta(days=1),
+        )
+
+    def preview(self, **changes):
+        payload = {"scan_id": str(self.scan.id), "simulation_consent_version": "2026.3-local"}
+        payload.update(changes)
+        return self.client.post("/api/v1/simulations/preview/", payload, format="json",
+                                HTTP_IDEMPOTENCY_KEY=os.urandom(8).hex())
+
+    STACK = [{"procedure_id": "1.1", "intensity_level": 4}, {"procedure_id": "4.1"}]
+
+    @patch("doodee.views.process_simulation.delay")
+    def test_a_procedure_stack_queues_and_is_echoed_back_unchanged(self, delay):
+        response = self.preview(selections=self.STACK)
+        self.assertEqual(response.status_code, 202, response.data)
+        self.assertEqual(response.data["selections"], self.STACK)
+        simulation = Simulation.objects.get(id=response.data["id"])
+        self.assertEqual(simulation.preset_id, "1.1")
+        self.assertEqual([item["procedure_id"] for item in simulation.parameters["procedures"]],
+                         ["1.1", "4.1"])
+
+    @patch("doodee.views.process_simulation.delay")
+    def test_the_related_procedures_are_the_procedures_themselves(self, delay):
+        """A catalog row already names the clinical work, so there is nothing to look up."""
+        from doodee.procedure_catalog import resolve_procedure
+
+        response = self.preview(selections=self.STACK)
+        self.assertEqual(response.data["related_procedures"],
+                         [resolve_procedure(ref).name_th for ref in ("1.1", "4.1")])
+
+    @patch("doodee.views.process_simulation.delay")
+    def test_the_serializer_names_the_procedure_a_saved_row_holds(self, delay):
+        """`preset` is read by the client to caption the render; a catalog row must not be null."""
+        response = self.preview(selections=[{"procedure_id": "1.1"}])
+        self.assertEqual(response.data["preset"]["id"], "1.1")
+
+    def test_a_stack_the_fused_renderer_cannot_run_is_refused_before_any_quota_is_spent(self):
+        fast = Scan.objects.create(
+            user=self.user, age_band="adult", scan_mode="fast", status="completed",
+            image_objects={"front": "private/front"}, expires_at=timezone.now() + timedelta(days=1),
+        )
+        response = self.client.post(
+            "/api/v1/simulations/preview/",
+            {"scan_id": str(fast.id), "simulation_consent_version": "2026.3-local",
+             "selections": [{"procedure_id": "1.1"}]},
+            format="json", HTTP_IDEMPOTENCY_KEY=os.urandom(8).hex(),
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("canonical_required", json.dumps(response.data))
+        self.assertEqual(Simulation.objects.count(), 0)
+
+
 class SimulationPolishSwitchTest(TestCase):
     """A face must not reach a paid endpoint because someone set a key.
 

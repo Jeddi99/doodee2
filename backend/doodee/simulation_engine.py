@@ -4,6 +4,8 @@ import cv2
 import numpy as np
 
 from .analysis_engine import PROFILE_VIEWS, _landmarks
+from . import procedure_catalog
+from .procedure_catalog import ProcedureSpec
 from .procedures import get_preset
 from .reference_scoring import MAX_REFERENCE_SHIFT, REFERENCE_TARGETS, reference_target
 
@@ -194,6 +196,9 @@ def _movement(points, preset, face_width, face_height, max_shift=DEFAULT_MAX_SHI
 
 MAX_SELECTIONS = 6
 
+#: Where a catalog procedure renders when the client names no level. The middle of the five.
+DEFAULT_INTENSITY_LEVEL = 3
+
 
 def has_profile_images(scan):
     """Profile presets depend on the stored photos, never on the scan mode name.
@@ -202,6 +207,43 @@ def has_profile_images(scan):
     presets the engine can actually render.
     """
     return any(scan.image_objects.get(view) for view in PROFILE_VIEWS)
+
+
+def is_procedure_selection(selection):
+    """Which catalog this selection names.
+
+    Presence of `procedure_id`, not absence of `preset_id`: a client that sends both is sending
+    two different things and gets `invalid_selection` from the shape check below rather than a
+    silent pick between them.
+    """
+    return isinstance(selection, dict) and "procedure_id" in selection
+
+
+def _validate_procedure_selections(scan, selections):
+    """Clinical-catalog selections, which only the fused renderer can express.
+
+    The legacy renderer warps one photograph by a per-region delta. A catalog procedure is a
+    pipeline of warps and surface work whose steps are defined per view, so there is no honest
+    legacy fallback for it -- falling back would hand the user a picture missing most of what
+    they asked for, which is the same failure `validate_selections` refuses a partial stack to
+    avoid. A scan without all three photographs is therefore refused here.
+
+    Returns `(specs, targets)` shaped like the legacy return so callers keep one unpacking;
+    targets are all None because a reference target belongs to the legacy catalog only.
+    """
+    if not canonical_available(scan):
+        raise ValueError("canonical_required")
+    for selection in selections:
+        level = selection.get("intensity_level", 3)
+        if isinstance(level, bool) or not isinstance(level, int) or level not in range(1, 6):
+            raise ValueError("invalid_intensity_level")
+    specs = procedure_catalog.validate_procedure_selections(selections)
+    # `validate_procedure_selections` dedups by source ref. Downstream the specs are zipped
+    # against the selections that produced them, so a collapsed pair would pair every later
+    # selection with the wrong spec -- refuse instead of rendering that.
+    if len(specs) != len(selections):
+        raise ValueError("duplicate_procedure")
+    return list(specs), [None] * len(specs)
 
 
 def validate_selections(scan, selections, has_profile_images):
@@ -216,6 +258,14 @@ def validate_selections(scan, selections, has_profile_images):
         raise ValueError("empty_selections")
     if len(selections) > MAX_SELECTIONS:
         raise ValueError("too_many_selections")
+    procedure = [is_procedure_selection(item) for item in selections]
+    if any(procedure):
+        # The two catalogs are stacked layers, not alternatives: one names a geometric outcome
+        # and the other the clinical work behind it. A stack mixing them would be asking for the
+        # same movement twice with no way to tell that is what it is doing.
+        if not all(procedure):
+            raise ValueError("mixed_catalogs")
+        return _validate_procedure_selections(scan, selections)
     presets, targets, seen = [], [], set()
     for selection in selections:
         if not isinstance(selection, dict) or set(selection) != {"region", "preset_id"}:
@@ -244,7 +294,52 @@ def validate_selections(scan, selections, has_profile_images):
     return presets, targets
 
 
+def simulation_columns(selections, presets):
+    """The `region`, `preset_id` and `parameters` one stack writes onto its Simulation row.
+
+    One function because those three columns are one decision and there are two call sites --
+    save and preview -- that would otherwise each have to know both catalogs. `region` and
+    `preset_id` mirror the first selection: they predate stacking, and the serializer, the admin
+    and every row saved before `selections` existed still read them.
+    """
+    if any(isinstance(preset, ProcedureSpec) for preset in presets):
+        levels = [int(s.get("intensity_level", DEFAULT_INTENSITY_LEVEL)) for s in selections]
+        return {
+            # The first part of the face the pipeline touches. The catalog's own region names,
+            # which are finer than the six the legacy catalog used -- `nose_alar`, not `nose`.
+            "region": presets[0].pipeline[0].region,
+            "preset_id": presets[0].source_ref,
+            "parameters": {
+                "procedures": [
+                    {"procedure_id": spec.source_ref, "intensity_level": level,
+                     "name_th": spec.name_th}
+                    for spec, level in zip(presets, levels)
+                ],
+                # What the renderer is actually handed. There is deliberately no `delta` here:
+                # a catalog procedure is a pipeline, not one number, and writing a stand-in
+                # would put a value in the permanent record that nothing computed.
+                "sliders": procedure_catalog.compile_warp_sliders(presets, levels),
+            },
+        }
+    return {
+        "region": selections[0]["region"],
+        "preset_id": selections[0]["preset_id"],
+        "parameters": {
+            "delta": presets[0]["delta"],
+            "deltas": [{"region": preset["region"], "preset_id": preset["id"],
+                        "delta": preset["delta"]} for preset in presets],
+        },
+    }
+
+
 def related_union(presets):
+    """The clinical names behind a stack. Catalog specs already are those names."""
+    if any(isinstance(preset, ProcedureSpec) for preset in presets):
+        return list(dict.fromkeys(preset.name_th for preset in presets))
+    return _legacy_related_union(presets)
+
+
+def _legacy_related_union(presets):
     """Every stacked region's procedures, in stack order, without repeats."""
     return list(dict.fromkeys(name for preset in presets for name in preset["related_procedures"]))
 
@@ -433,18 +528,26 @@ def canonical_available(scan):
 
 def engine_for_selections(scan, selections):
     """"canonical" or "legacy" — which renderer this request must use."""
+    # Not a preference. The legacy renderer has no way to express a catalog procedure, and
+    # `validate_selections` has already refused the stack if this scan cannot run the fused one.
+    if any(is_procedure_selection(s) for s in selections):
+        return "canonical"
     if any(str(s.get("preset_id", "")).startswith(REFERENCE_PRESET_PREFIX) for s in selections):
         return "legacy"
     return "canonical" if canonical_available(scan) else "legacy"
 
 
 def _canonical_presets(selections):
-    """Look each selection up in the canonical catalog, keyed by preset id.
+    """Look each selection up in whichever catalog it names.
 
-    Returns None if any selection has no canonical counterpart, so the caller
-    falls back whole rather than rendering a stack that quietly dropped one row —
-    the same reasoning `validate_selections` gives for refusing a partial stack.
+    Returns None if any selection has no counterpart, so the caller falls back whole rather
+    than rendering a stack that quietly dropped one row — the same reasoning
+    `validate_selections` gives for refusing a partial stack.
     """
+    if any(is_procedure_selection(s) for s in selections):
+        specs = [procedure_catalog.resolve_procedure(s.get("procedure_id")) for s in selections]
+        return None if any(spec is None for spec in specs) else specs
+
     from .geometry_controls import get_preset
 
     presets = [get_preset(s.get("preset_id")) for s in selections]
@@ -466,21 +569,34 @@ def simulate_canonical(scan, selections, download_fn, output_format=".png", max_
     if presets is None:
         raise ValueError("invalid_preset")
 
-    # This app's UI has no intensity control, so every selection renders at the
-    # catalog's own default rather than at whatever `sliders_for_selections`
-    # would read off a missing key. Kept as a named default so that adding the
-    # control later is a UI change and not a change of meaning here.
-    levelled = [
-        {**s, "intensity_level": s.get("intensity_level", preset["default_intensity_level"])}
-        for s, preset in zip(selections, presets)
-    ]
-    for s in levelled:
-        if s["intensity_level"] not in INTENSITY_SETTINGS:
+    if all(isinstance(preset, ProcedureSpec) for preset in presets):
+        levels = [int(s.get("intensity_level", DEFAULT_INTENSITY_LEVEL)) for s in selections]
+        if any(level not in INTENSITY_SETTINGS for level in levels):
             raise ValueError("invalid_intensity_level")
+        # Keyed by source ref rather than by whatever the client sent: the resolver accepts the
+        # retired slug as an input alias, and the pipeline looks the level up by ref.
+        levelled = [
+            {"procedure_id": spec.source_ref, "intensity_level": level}
+            for spec, level in zip(presets, levels)
+        ]
+        sliders = procedure_catalog.compile_warp_sliders(presets, levels)
+    else:
+        # This app's UI has no intensity control, so every selection renders at the
+        # catalog's own default rather than at whatever `sliders_for_selections`
+        # would read off a missing key. Kept as a named default so that adding the
+        # control later is a UI change and not a change of meaning here.
+        levelled = [
+            {**s, "intensity_level": s.get("intensity_level", preset["default_intensity_level"])}
+            for s, preset in zip(selections, presets)
+        ]
+        for s in levelled:
+            if s["intensity_level"] not in INTENSITY_SETTINGS:
+                raise ValueError("invalid_intensity_level")
+        sliders = sliders_for_selections(levelled, presets)
 
     result = simulate_scan_views(
         scan,
-        sliders_for_selections(levelled, presets),
+        sliders,
         download_fn,
         selections=levelled,
         presets=presets,

@@ -2,7 +2,7 @@ from django.urls import path
 from rest_framework.routers import DefaultRouter
 
 from .views import (
-    ChatViewSet, NotificationViewSet, OrderViewSet, ProcedureList, ScanViewSet, SimulationViewSet,
+    ChatViewSet, NotificationViewSet, OrderViewSet, ProcedureCategoryList, ProcedureList, ScanViewSet, SimulationViewSet,
     attribution_view, cancel_withdrawal, credits, delete_account, demo_scan, omise_webhook,
     pay_order, payout_account, plans, profile, redeem, referral_claim, referral_overview,
     register_push_token, session, skin_vision_consent, validate_coupon_view, visit, withdrawals,
@@ -33,7 +33,11 @@ urlpatterns = [
     # is one answer and four endpoints would be four loading states.
     path("profile/", profile),
     path("procedures/", ProcedureList.as_view()),
-    path("procedures/<slug:procedure_id>/", ProcedureList.as_view()),
+    # The 13 headings, so a client can group the list without hardcoding them.
+    path("procedures/categories/", ProcedureCategoryList.as_view()),
+    # `str`, not `slug`: catalog ids are source refs like "1.1", and the slug converter's
+    # character class has no dot in it, so a slug route answers 404 for every real id.
+    path("procedures/<str:procedure_id>/", ProcedureList.as_view()),
     path("orders/<int:order_id>/pay/", pay_order),
     # Unauthenticated by design — Omise has no Firebase token. Signature verified instead.
     path("webhooks/omise/", omise_webhook),

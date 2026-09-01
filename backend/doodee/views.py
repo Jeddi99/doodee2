@@ -40,7 +40,7 @@ from .omise import (
     verify_signature as verify_omise_signature,
 )
 from .demo_data import create_demo_scan
-from .procedures import PROCEDURES
+from . import procedure_catalog
 from .chat import (
     HISTORY_TURNS, MAX_QUESTION_CHARS, ChatUnavailable, chat_enabled, reply as chat_reply,
     scan_context, system_prompt, title_for,
@@ -54,7 +54,9 @@ from .analysis_engine import PROFILE_VIEWS, SCAN_VIEW_MODES, DEFAULT_SCAN_MODE, 
 from .reference_scoring import REFERENCE_POPULATIONS
 from .percentile import score_card as build_score_card
 from .development_plan import build as build_development_plan
-from .simulation_engine import has_profile_images, related_union, simulate, source_for_scan, validate_selections
+from .simulation_engine import (
+    has_profile_images, related_union, simulate, simulation_columns, source_for_scan, validate_selections,
+)
 from .storage import delete_image, download_image, signed_upload_url, signed_url, upload_image
 from .tasks import cleanup_scan, process_scan, process_simulation, request_scan_deletion
 
@@ -896,10 +898,7 @@ class SimulationViewSet(viewsets.GenericViewSet, mixins.RetrieveModelMixin):
             selections=selections,
             # The first item is mirrored into the old single-value columns so existing readers
             # — the serializer's `preset`, the admin, saved rows from before stacking — still work.
-            region=selections[0]["region"],
-            preset_id=selections[0]["preset_id"],
-            parameters={"delta": presets[0]["delta"],
-                        "deltas": [{"region": p["region"], "preset_id": p["id"], "delta": p["delta"]} for p in presets]},
+            **simulation_columns(selections, presets),
             model_version="local-mediapipe-opencv-1",
             related_procedures=related_union(presets),
             expires_at=now + timedelta(days=30),
@@ -971,11 +970,7 @@ class SimulationViewSet(viewsets.GenericViewSet, mixins.RetrieveModelMixin):
             _restore_preview(request.user)
         simulation = Simulation.objects.create(
             scan=scan, kind=Simulation.Kind.PREVIEW, idempotency_key=key, selections=selections,
-            region=selections[0]["region"], preset_id=selections[0]["preset_id"],
-            parameters={"delta": presets[0]["delta"], "deltas": [
-                {"region": item["region"], "preset_id": item["id"], "delta": item["delta"]}
-                for item in presets
-            ]},
+            **simulation_columns(selections, presets),
             model_version="local-mediapipe-opencv-1", related_procedures=related_union(presets),
             expires_at=timezone.now() + timedelta(hours=1),
         )
@@ -995,14 +990,49 @@ class SimulationViewSet(viewsets.GenericViewSet, mixins.RetrieveModelMixin):
 
 
 class ProcedureList(APIView):
+    """The clinical catalog the simulator renders from.
+
+    Serves `procedure_catalog`, not the 24-row `procedures` list this used to return. The two
+    are stacked layers rather than duplicates -- the old list names geometric outcomes ("narrower
+    alar base"), this one names what a clinic actually does ("alar base reduction") -- and they
+    share no ids, so a client written against one gets nothing from the other. That is why the
+    frontend changes in the same commit.
+
+    Unsupported rows are hidden by default: `include_unavailable=true` returns all 92 for the
+    audit against data.txt, which is the only reason the out-of-scope rows are kept at all.
+    """
+
     def get(self, request, procedure_id=None):
         if procedure_id:
-            procedure = next((item for item in PROCEDURES if item["id"] == procedure_id), None)
+            procedure = procedure_catalog.resolve_procedure(procedure_id)
             if not procedure:
                 raise NotFound("Procedure not found")
-            return Response(procedure)
-        region = request.query_params.get("region")
-        return Response([item for item in PROCEDURES if not region or item["region"] == region])
+            return Response(procedure.public())
+        include_unavailable = request.query_params.get("include_unavailable") == "true"
+        try:
+            return Response(procedure_catalog.public_catalog(
+                category=request.query_params.get("category"),
+                include_unavailable=include_unavailable,
+            ))
+        except ValueError as exc:
+            raise ValidationError({"category": str(exc)}) from exc
+
+
+class ProcedureCategoryList(APIView):
+    """The 13 headings, in catalog order, for a client that groups the list before showing it.
+
+    Derived from the same table rather than listed here, so a category that loses its last
+    renderable row stops being offered instead of opening onto an empty panel.
+    """
+
+    def get(self, request):
+        return Response([
+            {"id": procedure_catalog.CATEGORY_NUMBERS[key],
+             "key": key,
+             "name_th": procedure_catalog.CATEGORIES[key][0],
+             "name_en": procedure_catalog.CATEGORIES[key][1]}
+            for key in procedure_catalog.facial_categories()
+        ])
 
 
 @api_view(("DELETE",))
