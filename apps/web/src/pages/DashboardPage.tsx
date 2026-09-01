@@ -12,7 +12,8 @@ import {
 import { useNavigate } from "react-router-dom";
 import { useLocale } from "../useLocale";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { createDemoScan, getScan, getScans, getSession } from "../lib/api";
+import { createDemoScan, getPlans, getScan, getScans, getSession } from "../lib/api";
+import { baht } from "../lib/referral";
 import { errorMessage } from "../lib/apiError";
 import { dashboardGate } from "../lib/dashboardGate";
 import { statusPollInterval } from "../lib/pollInterval.js";
@@ -325,6 +326,60 @@ function InsightList({
   );
 }
 
+/* A locked score, shown as a blurred spinning reel rather than a dash.
+ *
+ * Ported from project-qijek. Presentational only — it renders no value, because
+ * there is none to render: `lib/dashboardData.ts` reports anything the backend
+ * could not score as locked instead of inventing a number, and this must not be
+ * the place that quietly invents one. The digits are decoration behind a blur,
+ * marked aria-hidden, with the real meaning carried by the aria-label. */
+/** The subset of GET /plans/ this screen reads. Mirrors PricingPanel's shape. */
+type PlanRow = {
+  code: string;
+  name_th: string;
+  name_en: string;
+  price_satang: number;
+  interval: string;
+  self_serve: boolean;
+};
+
+const lockedReelDigits = ["7", "2", "9", "4", "1", "8", "3", "6", "0", "5", "7"];
+
+function LockedNumber({
+  suffix = "/10",
+  compact = false,
+}: {
+  suffix?: string;
+  compact?: boolean;
+}) {
+  const { locale } = useLocale();
+  return (
+    <span
+      className={`locked-number ${compact ? "locked-number--compact" : ""}`}
+      aria-label={locale === "th" ? "คะแนนที่ยังไม่ปลดล็อก" : "Locked numeric result"}
+    >
+      <span className="locked-number__blur" aria-hidden="true">
+        <span className="locked-number__reel locked-number__reel--first">
+          <span>
+            {lockedReelDigits.map((digit, index) => (
+              <i key={`a-${index}`}>{digit}</i>
+            ))}
+          </span>
+        </span>
+        <span className="locked-number__dot">.</span>
+        <span className="locked-number__reel locked-number__reel--second">
+          <span>
+            {lockedReelDigits.map((digit, index) => (
+              <i key={`b-${index}`}>{digit}</i>
+            ))}
+          </span>
+        </span>
+      </span>
+      {suffix && <small aria-hidden="true">{suffix}</small>}
+    </span>
+  );
+}
+
 function Overview({
   openView,
   onUnlock,
@@ -495,14 +550,27 @@ function Overview({
                   key={item.id}
                   className={`doodee-pillar-card ${item.locked ? "is-locked" : ""}`}
                 >
+                  {/* Decorative sprite behind the card, one frame per pillar.
+                      aria-hidden and empty: it carries no information the card
+                      does not already state in text. */}
+                  <span
+                    className={`pillar-art pillar-art--${item.id}`}
+                    aria-hidden="true"
+                  />
                   <div className="doodee-pillar-card__head">
                     <div className="doodee-pillar-icon">
                       <span className={`pillar-mark pillar-mark--${item.id}`} />
                       <h4>{item.label}</h4>
                     </div>
-                    <strong className="doodee-pillar-score">
-                      {item.score}
-                      <small>/10</small>
+                    <strong className={`doodee-pillar-score${item.locked ? " locked-score-shell" : ""}`}>
+                      {item.locked ? (
+                        <LockedNumber />
+                      ) : (
+                        <>
+                          {item.score}
+                          <small>/10</small>
+                        </>
+                      )}
                     </strong>
                   </div>
 
@@ -968,7 +1036,24 @@ function MeasurementLibrary({ onUnlock }: { onUnlock: () => void }) {
   );
 }
 
-function UnlockModal({ onClose }: { onClose: () => void }) {
+function UnlockModal({
+  onClose,
+  openView,
+}: {
+  onClose: () => void;
+  openView: (view: AppView) => void;
+}) {
+  const { locale } = useLocale();
+  const th = locale !== "en";
+  // The price came over from project-qijek as a hardcoded "$19.99 / month".
+  // This product bills in THB and its plans live in Django, so a figure written
+  // here is wrong the moment pricing changes — and wrong today, in the wrong
+  // currency. PricingPanel already reads GET /plans/; the same source is used
+  // here so the two screens cannot disagree about what a plan costs.
+  const plans = useQuery({ queryKey: ["plans"], queryFn: getPlans });
+  const plan = (plans.data as PlanRow[] | undefined)
+    ?.filter((row) => row.interval !== "year" && row.self_serve && row.price_satang > 0)
+    .sort((a, b) => a.price_satang - b.price_satang)[0];
   const [stage, setStage] = useState<"unlocking" | "offer">("unlocking");
 
   useEffect(() => {
@@ -1028,9 +1113,18 @@ function UnlockModal({ onClose }: { onClose: () => void }) {
               </div>
             </div>
             <div className="unlock-price">
-              <strong>$19.99</strong>
-              <span>/ month</span>
-              <small>Monthly membership</small>
+              {plan ? (
+                <>
+                  <strong>{baht(plan.price_satang)}</strong>
+                  <span>/ {th ? "เดือน" : "month"}</span>
+                  <small>{th ? plan.name_th : plan.name_en}</small>
+                </>
+              ) : (
+                /* Never a stand-in number: an invented price is worse than no
+                   price. The plan list is one request away and the button below
+                   still reaches the real pricing screen. */
+                <small>{th ? "ดูราคาที่หน้าแพ็กเกจ" : "See plans for pricing"}</small>
+              )}
             </div>
             <ul>
               <li>
@@ -1050,7 +1144,17 @@ function UnlockModal({ onClose }: { onClose: () => void }) {
                 Treatment previews and consultation report
               </li>
             </ul>
-            <a href="/login">Start Complete <ArrowRight /></a>
+            {/* Was <a href="/login">, which sent an already-signed-in user back
+                to sign in. The purchase lives on the pricing screen. */}
+            <button
+              type="button"
+              onClick={() => {
+                onClose();
+                openView("pricing");
+              }}
+            >
+              {th ? "ดูแพ็กเกจ" : "See plans"} <ArrowRight />
+            </button>
             <button className="unlock-modal__free" type="button" onClick={onClose}>
               Continue with free analysis
             </button>
@@ -1267,9 +1371,11 @@ function Analysis({
                     <i style={{ width: `${metric.score * 10}%` }} />
                     <b style={{ left: `${metric.score * 10}%` }} />
                   </div>
-                  <em>{locked ? <LockKeyhole /> : metric.value}</em>
+                  <em className={locked ? "locked-metric-value" : undefined}>
+                    {locked ? <LockKeyhole /> : metric.value}
+                  </em>
                   <span className="ratio-score">
-                    {locked ? "?.?" : metric.score.toFixed(1)}
+                    {locked ? <LockedNumber suffix="" compact /> : metric.score.toFixed(1)}
                   </span>
                   <ChevronDown />
                 </button>
@@ -2060,7 +2166,9 @@ export default function DashboardPage({ view }: { view: AppView }) {
           aria-label="Close navigation"
         />
       )}
-      {unlockOpen && <UnlockModal onClose={() => setUnlockOpen(false)} />}
+      {unlockOpen && (
+        <UnlockModal onClose={() => setUnlockOpen(false)} openView={openView} />
+      )}
       {toast && (
         <div className="app-toast" role="status">
           <Check />

@@ -13598,6 +13598,10 @@ body[data-locale="th"] .eyebrow {
 }
 
 .doodee-pillar-card {
+  /* The containing block for `.pillar-art`, which is absolutely positioned and
+     would otherwise resolve against the page. */
+  position: relative;
+  overflow: hidden;
   display: flex;
   flex-direction: column;
   padding: 24px;
@@ -14862,4 +14866,140 @@ body[data-locale="th"] .eyebrow {
   position: relative;
   isolation: isolate;
   overflow: hidden;
+}
+
+/* ---------------------------------------------------------------------------
+ * Locked-score reel and pillar ornaments, from project-qijek.
+ *
+ * `.pillar-card` there is `.doodee-pillar-card` here — the same idea on a card
+ * this app has since grown a progress bar, a note and a footer link onto — so
+ * the selectors are retargeted rather than qijek's card being imported over it.
+ *
+ * `.doodee-pillar-card` must be a positioning context for `.pillar-art`, which
+ * is absolutely positioned. The landing re-sync shipped a bug by assuming that
+ * and leaving three renders stacked on the hero; it is asserted below instead.
+ * ------------------------------------------------------------------------- */
+
+.doodee-pillar-card > *:not(.pillar-art) {
+  position: relative;
+  z-index: 2;
+}
+
+.pillar-art {
+  display: block;
+  width: 54%;
+  aspect-ratio: 1;
+  position: absolute;
+  z-index: 0;
+  right: -7%;
+  bottom: -24%;
+  pointer-events: none;
+  background-image: url("/assets/app-pillar-ornaments-v1.webp");
+  background-repeat: no-repeat;
+  background-size: 400% 100%;
+  opacity: .46;
+  filter: saturate(.66) contrast(.94) drop-shadow(0 8px 14px rgba(44, 104, 159, .12));
+  transform: rotate(-4deg);
+}
+
+.pillar-art--harmony { background-position: 0 50%; }
+
+.pillar-art--angularity { background-position: 33.333% 50%; transform: rotate(5deg); }
+
+.pillar-art--dimorphism { background-position: 66.666% 50%; }
+
+.pillar-art--features { background-position: 100% 50%; transform: rotate(4deg); }
+
+.doodee-pillar-card:hover .pillar-art,
+.doodee-pillar-card.is-active .pillar-art {
+  opacity: .58;
+}
+
+/* Locked numerical previews */
+.locked-number {
+  display: inline-flex;
+  align-items: baseline;
+  gap: .12em;
+  min-width: 2.25em;
+  color: currentColor;
+  white-space: nowrap;
+  vertical-align: baseline;
+}
+
+.locked-number__blur {
+  display: inline-flex;
+  align-items: baseline;
+  gap: .02em;
+  opacity: .58;
+  filter: blur(4.2px);
+  contain: paint;
+  transform: translateZ(0);
+  backface-visibility: hidden;
+  user-select: none;
+}
+
+.locked-number__reel {
+  display: block;
+  width: .62em;
+  height: 1em;
+  overflow: hidden;
+  line-height: 1;
+  contain: paint;
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0%, #000 16%, #000 84%, transparent 100%);
+  mask-image: linear-gradient(to bottom, transparent 0%, #000 16%, #000 84%, transparent 100%);
+}
+
+.locked-number__reel > span {
+  display: flex;
+  flex-direction: column;
+  transform: translate3d(0, 0, 0);
+  backface-visibility: hidden;
+  will-change: transform;
+  animation: lockedNumberSlot 3.7s linear infinite;
+}
+
+.locked-number__reel--second > span {
+  animation-name: lockedNumberSlotSecond;
+}
+
+.locked-number__reel i {
+  height: 1em;
+  flex: 0 0 1em;
+  font: inherit;
+  font-style: normal;
+  line-height: 1;
+  text-align: center;
+}
+
+.locked-number__dot {
+  width: .06em;
+  overflow: hidden;
+  color: transparent;
+  line-height: 1;
+}
+
+.locked-number > small { opacity: .34; font-size: .34em; letter-spacing: 0; }
+
+.locked-number--compact { min-width: 2.15em; font-size: 14px; font-weight: 650; }
+
+.locked-number--compact .locked-number__blur { filter: blur(3.2px); }
+
+.doodee-pillar-card.is-locked strong.locked-score-shell {
+  filter: none;
+  opacity: 1;
+}
+
+.locked-metric-value,
+.locked-impact {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.locked-metric-value svg,
+.locked-impact svg {
+  width: 12px;
+  height: 12px;
+  opacity: .52;
 }
