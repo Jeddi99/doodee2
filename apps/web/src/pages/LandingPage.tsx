@@ -1353,7 +1353,9 @@ function Button({
 
 const LANDMARK_WIDTH = 1086;
 const LANDMARK_HEIGHT = 1448;
-const SAMPLE_FACE_SRC = "/assets/sample-face-front.png";
+// webp, matching project-qijek: 152 KB against the png's size, same image. The png stays
+// in public/assets because other screens still reference it.
+const SAMPLE_FACE_SRC = "/assets/sample-face-front.webp";
 const HAIRLINE_EXTENSION = 0.75;
 let faceLandmarkerPromise: Promise<FaceLandmarker> | null = null;
 
@@ -1886,6 +1888,22 @@ function TreatmentPreview({ locale }: { locale: Locale }) {
 
   return (
     <section className="treatment-preview section-shell" id="treatment-preview">
+      <img
+        className="treatment-preview__caustic"
+        src="/assets/science/caustic-light-v1.png"
+        alt=""
+        aria-hidden="true"
+        loading="lazy"
+        decoding="async"
+      />
+      <img
+        className="static-luxury-art static-luxury-art--membrane"
+        src="/assets/science/glass-membrane-v1.png"
+        alt=""
+        aria-hidden="true"
+        loading="lazy"
+        decoding="async"
+      />
       <div className="treatment-preview__intro">
         <p className="treatment-preview__eyebrow">
           {locale === "th" ? "ตัวอย่างภาพจำลอง" : "Treatment preview"}
@@ -2032,6 +2050,14 @@ function AppearanceEvidence({ locale }: { locale: Locale }) {
 
   return (
     <section className="appearance-evidence" id="research">
+      <img
+        className="static-luxury-art static-luxury-art--prisms"
+        src="/assets/science/crystal-prisms-v1.png"
+        alt=""
+        aria-hidden="true"
+        loading="lazy"
+        decoding="async"
+      />
       <div className="section-shell appearance-evidence__intro">
         <h2>
           {locale === "th"
@@ -2110,6 +2136,14 @@ function AppearanceEvidence({ locale }: { locale: Locale }) {
             {active.source}
             <ArrowRight size={16} />
           </a>
+          <img
+            className="evidence-detail__art"
+            src="/assets/science/cell-cluster-v1.png"
+            alt=""
+            aria-hidden="true"
+            loading="lazy"
+            decoding="async"
+          />
         </article>
       </div>
       <p className="section-shell appearance-evidence__note">
@@ -2165,6 +2199,14 @@ function NextSteps({ locale }: { locale: Locale }) {
   };
   return (
     <section className="next-steps section-shell" id="next-steps">
+      <img
+        className="static-luxury-art static-luxury-art--orbit"
+        src="/assets/science/glass-orbit-cluster-v1.png"
+        alt=""
+        aria-hidden="true"
+        loading="lazy"
+        decoding="async"
+      />
       <div className="next-steps__intro">
         <p>{locale === "th" ? "ลำดับที่เหมาะกับคุณ" : "OUR NEXT STEPS"}</p>
         <h2>
@@ -2320,6 +2362,14 @@ function ProgressTimeline({ locale }: { locale: Locale }) {
   };
   return (
     <section className="progress-plan section-shell" id="how">
+      <img
+        className="static-luxury-art static-luxury-art--topography"
+        src="/assets/science/topographic-wave-v1.png"
+        alt=""
+        aria-hidden="true"
+        loading="lazy"
+        decoding="async"
+      />
       <div className="progress-plan__heading">
         <h2>
           {locale === "th"
@@ -2390,6 +2440,14 @@ function ProgressTimeline({ locale }: { locale: Locale }) {
 function ClinicBridge({ locale }: { locale: Locale }) {
   return (
     <section className="clinic-bridge clinic-bridge--pilot" id="clinics">
+      <img
+        className="static-luxury-art static-luxury-art--microfluidic"
+        src="/assets/science/microfluidic-ribbon-v1.png"
+        alt=""
+        aria-hidden="true"
+        loading="lazy"
+        decoding="async"
+      />
       <div className="section-shell">
         <div className="clinic-bridge__intro">
           <div>
@@ -3020,6 +3078,23 @@ function LandingPage() {
           </button>
         </header>
 
+        <img
+          className="landing-science-art landing-science-art--dna"
+          src="/assets/science/dna-glass-v1.webp"
+          alt=""
+          aria-hidden="true"
+          fetchPriority="high"
+          decoding="async"
+        />
+        <img
+          className="static-luxury-art static-luxury-art--ring"
+          src="/assets/science/optical-ring-v1.webp"
+          alt=""
+          aria-hidden="true"
+          fetchPriority="high"
+          decoding="async"
+        />
+
         <section className="hero section-shell">
           <div className="hero-copy">
             <div className="hero-message">
@@ -3082,6 +3157,14 @@ function LandingPage() {
       <AppearanceEvidence locale={locale} />
 
       <section className="analysis-showcase section-shell" id="product">
+        <img
+          className="static-luxury-art static-luxury-art--molecule"
+          src="/assets/science/molecular-lattice-v1.png"
+          alt=""
+          aria-hidden="true"
+          loading="lazy"
+          decoding="async"
+        />
         <div className="analysis-transition">
           <h2>{copy.analysisTitle}</h2>
           <p>{copy.analysisBody}</p>
@@ -3092,6 +3175,15 @@ function LandingPage() {
         <ProductPreview locale={locale} />
       </section>
 
+      <div className="science-ribbon-divider" aria-hidden="true">
+        <img
+          src="/assets/science/chrome-ribbon-v1.png"
+          alt=""
+          loading="lazy"
+          decoding="async"
+        />
+      </div>
+
       <TreatmentPreview locale={locale} />
 
       <NextSteps locale={locale} />
@@ -3100,6 +3192,22 @@ function LandingPage() {
 
       <section className="trust" id="safety">
         <div className="section-shell">
+          <img
+            className="landing-science-art landing-science-art--collagen"
+            src="/assets/science/collagen-ribbon-v1.png"
+            alt=""
+            aria-hidden="true"
+            loading="lazy"
+            decoding="async"
+          />
+          <img
+            className="static-luxury-art static-luxury-art--pearls"
+            src="/assets/science/micro-pearls-v1.png"
+            alt=""
+            aria-hidden="true"
+            loading="lazy"
+            decoding="async"
+          />
           <div className="section-heading section-heading--center">
             <h2>{copy.safetyTitle}</h2>
           </div>
@@ -3124,6 +3232,14 @@ function LandingPage() {
       <DataWeUse locale={locale} />
 
       <section className="pricing section-shell" id="pricing">
+        <img
+          className="static-luxury-art static-luxury-art--arcs"
+          src="/assets/science/calibration-arcs-v1.png"
+          alt=""
+          aria-hidden="true"
+          loading="lazy"
+          decoding="async"
+        />
         <div className="section-heading">
           <h2>
             {copy.pricingTitle.split("\n").map((line, index) => (
@@ -3189,6 +3305,14 @@ function LandingPage() {
       <ContactSection locale={locale} />
 
       <section className="faq section-shell">
+        <img
+          className="static-luxury-art static-luxury-art--specimen"
+          src="/assets/science/crystal-specimen-v1.png"
+          alt=""
+          aria-hidden="true"
+          loading="lazy"
+          decoding="async"
+        />
         <div className="section-heading">
           <h2>
             {locale === "th" ? "คำถามที่พบบ่อย" : "Frequently asked questions"}

@@ -14581,3 +14581,285 @@ body[data-locale="th"] .eyebrow {
     overflow-x: auto;
   }
 }
+
+/* ---------------------------------------------------------------------------
+ * Landing decoration, re-synced from project-qijek (the design project this UI
+ * came from, deployed at project-qijek.vercel.app).
+ *
+ * The glass renders under /assets/science are purely decorative — every <img>
+ * that uses these classes is aria-hidden with an empty alt — so nothing here
+ * carries meaning a reader would miss if the image fails to load.
+ *
+ * Only the landing groups are taken. qijek's stylesheet also carries
+ * .locked-*, .pillar-art--*, .country-*, .capture-* and .asset-gate*, which
+ * style markup this app does not have on those screens.
+ * ------------------------------------------------------------------------- */
+
+/* Landing-only scientific art */
+.landing-science-art,
+.evidence-detail__art {
+  pointer-events: none;
+  user-select: none;
+  object-fit: contain;
+}
+
+.hero-stage > .landing-science-art--dna {
+  position: absolute;
+  z-index: 0;
+  top: 16%;
+  right: clamp(18px, 3vw, 54px);
+  width: clamp(230px, 25vw, 400px);
+  max-height: 68%;
+  opacity: .34;
+  filter: drop-shadow(0 28px 42px rgba(42, 78, 117, .12));
+  transform: rotate(7deg) translate3d(0, 0, 0);
+}
+
+.evidence-detail > .evidence-detail__art {
+  position: absolute;
+  z-index: 0;
+  right: -15%;
+  bottom: -18%;
+  width: 72%;
+  max-height: 64%;
+  opacity: .13;
+  filter: drop-shadow(0 24px 36px rgba(41, 77, 117, .12));
+  transform: rotate(-8deg);
+}
+
+.trust .landing-science-art--collagen {
+  position: absolute;
+  z-index: 0;
+  top: 4%;
+  right: -8%;
+  width: min(720px, 58vw);
+  opacity: .14;
+  filter: drop-shadow(0 28px 44px rgba(42, 78, 117, .12));
+  transform: rotate(-7deg);
+}
+
+@media (max-width: 900px) {
+  .hero-stage > .landing-science-art--dna {
+    top: 14%;
+    right: -42px;
+    width: clamp(190px, 38vw, 280px);
+    opacity: .18;
+  }
+  .evidence-detail > .evidence-detail__art { width: 62%; opacity: .1; }
+  .trust .landing-science-art--collagen { right: -18%; width: 84vw; opacity: .1; }
+}
+
+@media (max-width: 520px) {
+  .hero-stage > .landing-science-art--dna {
+    top: 13%;
+    right: -64px;
+    width: 210px;
+    opacity: .12;
+  }
+  .evidence-detail > .evidence-detail__art { right: -20%; bottom: -10%; width: 78%; opacity: .08; }
+  .trust .landing-science-art--collagen { top: 8%; right: -42%; width: 118vw; opacity: .075; }
+}
+
+.science-ribbon-divider {
+  position: relative;
+  z-index: 1;
+  width: min(1180px, 88vw);
+  height: clamp(38px, 6vw, 82px);
+  margin: clamp(-58px, -4vw, -34px) auto clamp(-22px, -1vw, -8px);
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.science-ribbon-divider::before,
+.science-ribbon-divider::after {
+  content: "";
+  position: absolute;
+  z-index: 1;
+  inset-block: 0;
+  width: 16%;
+  pointer-events: none;
+}
+
+.science-ribbon-divider::before {
+  left: 0;
+  background: linear-gradient(90deg, #edf6ff, transparent);
+}
+
+.science-ribbon-divider::after {
+  right: 0;
+  background: linear-gradient(270deg, #edf6ff, transparent);
+}
+
+.science-ribbon-divider img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  opacity: .55;
+  filter: drop-shadow(0 15px 24px rgba(39, 77, 119, .12));
+  transform: translate3d(0, 0, 0) scaleY(.72);
+}
+
+.treatment-preview__caustic {
+  position: absolute;
+  z-index: 0;
+  inset: 3% -5% auto;
+  width: 110%;
+  height: 92%;
+  object-fit: cover;
+  opacity: .13;
+  mix-blend-mode: multiply;
+  pointer-events: none;
+  user-select: none;
+  filter: saturate(.45) contrast(.9);
+}
+
+.static-luxury-art {
+  position: absolute;
+  z-index: 0;
+  object-fit: contain;
+  pointer-events: none;
+  user-select: none;
+  filter: contrast(1.18) drop-shadow(0 24px 38px rgba(39, 77, 119, .11));
+}
+
+.hero-stage > .landing-science-art--dna {
+  animation: none;
+}
+
+.hero-stage > .static-luxury-art--ring {
+  right: clamp(24px, 5vw, 86px);
+  bottom: 8%;
+  width: clamp(150px, 18vw, 270px);
+  opacity: .7;
+  transform: rotate(-13deg);
+}
+
+.appearance-evidence > .static-luxury-art--prisms {
+  left: -6%;
+  bottom: 3%;
+  width: clamp(210px, 24vw, 380px);
+  opacity: .7;
+  transform: rotate(-8deg);
+}
+
+.appearance-evidence > .section-shell,
+.analysis-showcase > :not(.static-luxury-art),
+.pricing > :not(.static-luxury-art) {
+  position: relative;
+  z-index: 1;
+}
+
+.analysis-showcase > .static-luxury-art--molecule {
+  left: -8%;
+  top: 19%;
+  width: clamp(220px, 28vw, 430px);
+  opacity: .7;
+  transform: rotate(11deg);
+}
+
+.treatment-preview > .static-luxury-art--membrane {
+  right: -1%;
+  bottom: -7%;
+  width: clamp(300px, 40vw, 610px);
+  opacity: .7;
+  transform: rotate(-9deg);
+}
+
+.trust .static-luxury-art--pearls {
+  left: -7%;
+  bottom: -10%;
+  width: clamp(240px, 29vw, 440px);
+  opacity: .7;
+  transform: rotate(8deg);
+}
+
+.pricing > .static-luxury-art--arcs {
+  right: -9%;
+  top: -5%;
+  width: min(680px, 51vw);
+  opacity: .7;
+}
+
+.next-steps > :not(.static-luxury-art),
+.progress-plan > :not(.static-luxury-art),
+.clinic-bridge > :not(.static-luxury-art),
+.faq > :not(.static-luxury-art) {
+  position: relative;
+  z-index: 1;
+}
+
+.next-steps > .static-luxury-art--orbit {
+  right: -7%;
+  top: 2%;
+  width: clamp(210px, 24vw, 360px);
+  opacity: .68;
+  transform: rotate(9deg);
+}
+
+.progress-plan > .static-luxury-art--topography {
+  right: -8%;
+  top: 1%;
+  width: min(760px, 55vw);
+  opacity: .62;
+  transform: rotate(-4deg);
+}
+
+.clinic-bridge > .static-luxury-art--microfluidic {
+  right: -5%;
+  bottom: -13%;
+  width: min(820px, 58vw);
+  opacity: .66;
+  transform: rotate(-7deg);
+}
+
+.faq > .static-luxury-art--specimen {
+  left: 8%;
+  top: 7%;
+  width: clamp(210px, 23vw, 340px);
+  opacity: .88;
+  transform: rotate(-13deg);
+  filter: brightness(.88) contrast(1.42) saturate(.48) drop-shadow(0 28px 42px rgba(39, 77, 119, .16));
+}
+
+@media (max-width: 720px) {
+  .science-ribbon-divider {
+    width: 100vw;
+    height: 44px;
+    margin-block: -28px -4px;
+  }
+
+  .science-ribbon-divider img { opacity: .3; }
+  .treatment-preview__caustic { inset-inline: -24%; width: 148%; opacity: .09; }
+  .analysis-showcase .metric-row::after { width: 88px; height: 88px; opacity: .1; }
+
+  .hero-stage > .static-luxury-art--ring { right: -48px; bottom: 9%; width: 190px; opacity: .7; }
+  .appearance-evidence > .static-luxury-art--prisms { left: -22%; width: 270px; opacity: .7; }
+  .analysis-showcase > .static-luxury-art--molecule { left: -30%; width: 300px; opacity: .7; }
+  .treatment-preview > .static-luxury-art--membrane { right: 0; width: 320px; opacity: .7; }
+  .trust .static-luxury-art--pearls { left: -28%; width: 300px; opacity: .7; }
+  .pricing > .static-luxury-art--arcs { right: -38%; width: 470px; opacity: .7; }
+  .next-steps > .static-luxury-art--orbit { right: -29%; top: 1%; width: 230px; opacity: .54; }
+  .progress-plan > .static-luxury-art--topography { right: -48%; top: 5%; width: 520px; opacity: .48; }
+  .clinic-bridge > .static-luxury-art--microfluidic { right: -54%; bottom: -5%; width: 560px; opacity: .52; }
+  .faq > .static-luxury-art--specimen { left: -24%; top: 9%; width: 240px; opacity: .66; }
+}
+
+/* The containing block the art above is positioned against.
+ *
+ * Without these three sections being positioned, `.static-luxury-art`'s
+ * `position: absolute` resolves against the document instead, and the orbit,
+ * arcs and specimen renders pile up at the top of the page over the hero —
+ * measured at top=-5, -49 and 38 against qijek's 4616, 7490 and 12197.
+ *
+ * `overflow: hidden` is what keeps each render inside its own section; every one
+ * of them is deliberately positioned to bleed past an edge. `isolation: isolate`
+ * gives the section its own stacking context so the art's `z-index: 0` cannot
+ * slide under anything outside it. Taken verbatim from qijek, where they sit
+ * alongside the same art rules. */
+.pricing,
+.next-steps,
+.faq {
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+}
