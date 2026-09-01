@@ -1,5 +1,6 @@
 import os
 import hashlib
+import logging
 import math
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
@@ -57,6 +58,8 @@ from .simulation_engine import has_profile_images, related_union, simulate, sour
 from .storage import delete_image, download_image, signed_upload_url, signed_url, upload_image
 from .tasks import cleanup_scan, process_scan, process_simulation, request_scan_deletion
 
+
+logger = logging.getLogger(__name__)
 
 SCAN_VIEWS = SCAN_VIEW_MODES["full"]
 ALLOWED_TYPES = {"image/jpeg", "image/png", "image/webp"}
@@ -541,11 +544,16 @@ class ScanViewSet(viewsets.GenericViewSet, mixins.ListModelMixin, mixins.Retriev
                 except Exception as exc:
                     upload_error = upload_error or exc
         if upload_error:
+            # Logged, not just returned. The client is told only that storage is unavailable --
+            # correct, since the cause is never the user's to act on -- but that left the actual
+            # reason nowhere at all. A dead Supabase project and an expired key produce the same
+            # silent 503, and telling them apart meant reproducing the call by hand.
+            logger.exception("scan image upload failed", exc_info=upload_error)
             for object_name in uploaded.values():
                 try:
                     delete_image(object_name)
                 except Exception:
-                    pass
+                    logger.exception("could not delete %s while unwinding a failed upload", object_name)
             return Response({"detail": "Image storage is temporarily unavailable"}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
         try:
             with transaction.atomic():
@@ -610,6 +618,8 @@ class ScanViewSet(viewsets.GenericViewSet, mixins.ListModelMixin, mixins.Retriev
                 for view, object_name in scan.image_objects.items()
             }
         except Exception:
+            # See the note above: the reason has to land somewhere the operator can read it.
+            logger.exception("could not sign upload URLs for scan %s", scan.id)
             return Response({"detail": "Image storage is temporarily unavailable"}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
         return Response({"id": str(scan.id), "status": scan.status, "uploads": uploads}, status=status.HTTP_201_CREATED)
 
