@@ -68,12 +68,25 @@ test('pose guidance reports the largest correction in pose-target coordinates', 
 });
 
 test('switching profile sides returns to center before counting the new target', () => {
+  // Turned the wrong way: the correction is the whole way back to centre, and that number does
+  // not depend on where the window sits. Turning further from -68 towards the far edge would be
+  // arithmetically shorter and physically absurd, which is what `centerFirst` exists to say.
   assert.deepEqual(getPoseGuidance('right_profile', { yaw: -68, pitch: 0, roll: 0 }), {
     axis: 'yaw', delta: 68, degrees: 70, direction: 'right', centerFirst: true,
   });
-  assert.deepEqual(getPoseGuidance('right_profile', { yaw: 0, pitch: 0, roll: 0 }), {
-    axis: 'yaw', delta: 55, degrees: 55, direction: 'right', centerFirst: false,
-  });
+
+  // From centre the ask is the near edge of the window, read off `pose_targets.json` rather
+  // than written down here. It used to be written down: `b362f3c` widened the profile window
+  // to make the step reachable at all, this assertion kept the old edge, and the suite has
+  // carried a red test ever since — describing a decision nobody had reversed.
+  const edge = (poseTargets as any).right_profile.yaw[0];
+  const fromCentre = getPoseGuidance('right_profile', { yaw: 0, pitch: 0, roll: 0 })!;
+  assert.equal(fromCentre.delta, edge, 'the ask is the near edge of the window');
+  assert.equal(fromCentre.direction, 'right');
+  assert.equal(fromCentre.centerFirst, false, 'nothing to undo — already facing forward');
+  // Spoken aloud to someone who cannot see the screen, so it is rounded to fives.
+  assert.equal(fromCentre.degrees % 5, 0);
+  assert.ok(Math.abs(fromCentre.degrees - edge) <= 2.5, `${fromCentre.degrees} is not ${edge} rounded`);
 });
 
 test('the basal view asks for chin up and never sends the subject the other way', () => {
