@@ -1,8 +1,12 @@
 {
   "name": "doodee-app",
   "private": true,
-  "workspaces": ["apps/*", "packages/*"],
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
   "scripts": {
+    "doctor": "docker compose exec api python manage.py check_services",
     "dev:web": "npm run dev --workspace @doodee/web",
     "build:web": "npm run build --workspace @doodee/web",
     "test:web": "npm test --workspace @doodee/web",

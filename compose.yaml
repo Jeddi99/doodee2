@@ -74,7 +74,13 @@ services:
     depends_on:
       postgres: {condition: service_healthy}
       redis: {condition: service_healthy}
-    command: celery -A config worker --loglevel=info --concurrency=2
+    # --queues is not optional. settings.CELERY_TASK_ROUTES sends process_scan, process_simulation
+    # and process_skin_vision to `cv`, and reconcile_heavy_jobs to `maintenance`; without this flag
+    # Celery consumes only its default `celery` queue and every scan sits at status=queued for
+    # ever, with no error anywhere — the upload succeeds, the worker logs "ready", and the
+    # analysis page simply stays empty. compose.prod.yaml already splits these across two workers,
+    # which is why production was unaffected and this stayed hidden.
+    command: celery -A config worker --loglevel=info --concurrency=2 --queues=cv,maintenance,celery
   # ตัวตั้งเวลา — ตอนนี้มีงานเดียวคือแจ้งเตือนต่ออายุสมาชิกทุกเช้า
   # แยกจาก worker เพราะถ้ารันสองตัวขึ้นไป beat จะยิงงานซ้ำ ส่วน worker ขยายกี่ตัวก็ได้
   # ถ้า beat ล่ม จะเสียแค่ “การแจ้งเตือน” ไม่กระทบสิทธิ์ของผู้ใช้ เพราะ sync_entitlement

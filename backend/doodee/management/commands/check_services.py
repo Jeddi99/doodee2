@@ -138,15 +138,61 @@ def check_supabase():
         return result.fail(f"ต่อไม่ได้: {exc.reason}", "ตรวจ SUPABASE_URL และอินเทอร์เน็ต")
 
 
+def check_gemini(config):
+    """Google Gemini — the production default, and what this deployment is set to.
+
+    Lists the models rather than generating anything: it proves the key and the model name for
+    free, where a one-token completion would bill. The key is read exactly as `chat._gemini_reply`
+    reads it, `GEMINI_API_KEY` then `GOOGLE_API_KEY`, and deliberately never falls back to
+    `CHAT_API_KEY` — `chat_enabled` refuses that fallback so the feature cannot report itself off
+    while still answering, and a check that disagreed would send someone hunting the wrong key.
+    """
+    result = Result("แชท (Gemini)", "DOODEE Chat (คำถามพิมพ์เอง)")
+    key = os.getenv("GEMINI_API_KEY", "") or os.getenv("GOOGLE_API_KEY", "")
+    if not key:
+        return result.skip(
+            "ยังไม่ได้ตั้ง GEMINI_API_KEY",
+            "ขอคีย์ฟรีที่ aistudio.google.com/apikey แล้วใส่ใน .env — ดู docs/SETUP.md",
+        )
+    url = f"https://generativelanguage.googleapis.com/v1beta/models?key={key}"
+    try:
+        with urlopen(Request(url), timeout=20) as response:
+            body = json.loads(response.read().decode())
+    except HTTPError as exc:
+        if exc.code in (400, 401, 403):
+            return result.fail(f"คีย์ถูกปฏิเสธ (HTTP {exc.code})",
+                               "ตรวจ GEMINI_API_KEY ที่ aistudio.google.com/apikey แล้ว restart api")
+        return result.fail(f"HTTP {exc.code}")
+    except URLError as exc:
+        return result.fail(f"ต่อไม่ได้: {exc.reason}", "ตรวจอินเทอร์เน็ตของ container")
+
+    # The REST API returns names as "models/gemini-2.5-flash"; the admin stores the bare name.
+    names = [(item.get("name") or "").removeprefix("models/") for item in body.get("models") or []]
+    if config.model not in names:
+        suggestion = ", ".join(n for n in names if n.startswith("gemini-2.5"))[:80] or ", ".join(names[:3])
+        return result.fail(
+            f"คีย์ผ่าน แต่ไม่มีรุ่น '{config.model}' ที่ตั้งไว้",
+            f"เปลี่ยนรุ่นที่ /admin → ตั้งค่า AI แชท เป็นรุ่นที่มีจริง เช่น {suggestion or '—'}",
+        )
+    return result.ok(f"{config.model} · เรียกได้ {len(names)} รุ่น")
+
+
 def check_chat_provider():
     """Whichever provider the admin has actually selected — not always Anthropic.
 
     Asking Anthropic while the chat is pointed at Groq gives an answer that is true and
     useless: "skipped", when what the operator wants to know is whether chat works.
+
+    Gemini was missing from this branch while being both the documented default and what the
+    database actually held, so the report named Anthropic, called it unconfigured, and advised
+    signing up for a service the deployment does not use — costing money and still leaving chat
+    untested. Every member of `ChatSetting.Provider` is answered here now.
     """
     from doodee.models import ChatSetting
 
     config = ChatSetting.current()
+    if config.provider == ChatSetting.Provider.GEMINI:
+        return check_gemini(config)
     if config.provider != ChatSetting.Provider.OPENAI:
         return check_anthropic()
 
@@ -240,13 +286,93 @@ def check_omise():
         return result.fail(f"ต่อไม่ได้: {exc.reason}")
 
 
+def check_payout_key():
+    """The cipher for users' bank account numbers.
+
+    Not an external service, but it fails the same way one does: absent or malformed, every
+    attempt to save a payout account raises `payout_not_configured`, and the person only finds
+    out when they try to withdraw. Round-tripping a value proves the key is usable rather than
+    merely present — `payout._fernet` rejects a malformed key outright and deliberately never
+    falls back to storing the number in the clear.
+    """
+    result = Result("คีย์เข้ารหัสบัญชีธนาคาร", "เข้ารหัสเลขบัญชีของผู้ใช้ก่อนเก็บ")
+    from django.conf import settings
+
+    key = (settings.PAYOUT_ENCRYPTION_KEY or "").strip()
+    if not key:
+        return result.skip(
+            "ยังไม่ได้ตั้ง PAYOUT_ENCRYPTION_KEY",
+            'สร้างด้วย: python -c "from cryptography.fernet import Fernet; '
+            'print(Fernet.generate_key().decode())" · ถ้าไม่ตั้ง ผู้ใช้จะบันทึกบัญชีรับเงินไม่ได้',
+        )
+    try:
+        from cryptography.fernet import Fernet
+
+        cipher = Fernet(key.encode())
+        if cipher.decrypt(cipher.encrypt(b"probe")) != b"probe":
+            return result.fail("เข้ารหัสแล้วถอดกลับไม่ตรง")
+        return result.ok("คีย์ใช้ได้")
+    except Exception as exc:  # noqa: BLE001
+        return result.fail(
+            f"คีย์ผิดรูปแบบ: {str(exc)[:80]}",
+            "ต้องเป็น Fernet key (base64 32 ไบต์) สร้างใหม่ด้วยคำสั่งใน .env.example",
+        )
+
+
+def check_firebase_consistency():
+    """Backend, service account and web client must all name the same Firebase project.
+
+    Any two of the three disagreeing produces "Invalid Firebase token" in the browser and
+    nothing at all in the log to say why: the token is real, correctly signed, and issued by a
+    different project than the one verifying it. `compose.yaml` already guards the case where the
+    key file is missing entirely; this is the quieter version where every file exists and one of
+    them names the wrong project.
+    """
+    result = Result("Firebase (โปรเจกต์ตรงกัน)", "ฝั่งเว็บกับฝั่งเซิร์ฟเวอร์ต้องเป็นโปรเจกต์เดียวกัน")
+    backend_id = os.getenv("FIREBASE_PROJECT_ID", "")
+    if not backend_id:
+        return result.skip("ยังไม่ได้ตั้ง FIREBASE_PROJECT_ID")
+
+    found = {"FIREBASE_PROJECT_ID": backend_id}
+    credentials_path = os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "")
+    if credentials_path and os.path.exists(credentials_path):
+        try:
+            with open(credentials_path) as handle:
+                found["ไฟล์ service account"] = json.load(handle).get("project_id", "")
+        except Exception as exc:  # noqa: BLE001
+            return result.fail(f"อ่านไฟล์ service account ไม่ได้: {str(exc)[:80]}")
+    elif credentials_path:
+        return result.fail(
+            f"ไม่พบไฟล์ {credentials_path}",
+            "วาง firebase-service-account.json ไว้ที่รากโปรเจกต์",
+        )
+
+    # `VITE_*` belongs to the browser bundle, but compose loads the whole `.env` into this
+    # container too, so it arrives here as an ordinary variable. Reading the file instead would
+    # have found nothing: only ./backend is mounted, and /app/.env does not exist.
+    web_id = os.getenv("VITE_FIREBASE_PROJECT_ID", "")
+    if web_id:
+        found["VITE_FIREBASE_PROJECT_ID"] = web_id
+
+    unique = {value for value in found.values() if value}
+    if len(unique) > 1:
+        detail = " · ".join(f"{name}={value or '(ว่าง)'}" for name, value in found.items())
+        return result.fail(
+            f"ไม่ตรงกัน: {detail}",
+            "ทั้งสามที่ต้องเป็นโปรเจกต์เดียวกัน ไม่งั้นหน้าเว็บจะขึ้น Invalid Firebase token",
+        )
+    return result.ok(f"ตรงกันทั้งหมด: {backend_id}")
+
+
 CHECKS = {
     "database": check_database,
     "redis": check_redis,
     "firebase": check_firebase,
+    "firebase-project": check_firebase_consistency,
     "supabase": check_supabase,
     "anthropic": check_chat_provider,
     "omise": check_omise,
+    "payout": check_payout_key,
 }
 
 
