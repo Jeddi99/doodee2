@@ -1,4 +1,5 @@
 import React, { lazy, Suspense, useEffect, useState } from 'react';
+import { useQuery } from '@tanstack/react-query';
 import { onAuthStateChanged } from 'firebase/auth';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { authRedirect } from './lib/authRouting';
@@ -7,7 +8,8 @@ import {
   localDay, readAttribution, rememberAttribution, sendVisit, shouldSendVisit, utmFromQuery,
   visitPayload,
 } from './lib/visit';
-import { postAttribution } from './lib/api';
+import { getScans, postAttribution } from './lib/api';
+import { latestCraniofacialScan } from './lib/latestScan';
 import { getFirebaseAuth } from './lib/firebase';
 import { useLocale } from './useLocale';
 
@@ -143,12 +145,20 @@ export default function App() {
     postAttribution(stored).catch(() => {});
   }, [isAuthenticated]);
 
-  useEffect(() => {
-    const redirect = authRedirect(authState.ready, isAuthenticated, currentRoute);
-    if (redirect) navigate(ROUTE_PATHS[redirect], { replace: true });
-  }, [authState.ready, currentRoute, isAuthenticated, navigate]);
+  // The same `["scans"]` query the dashboard runs, so this is a cache read rather than a second
+  // request. It is needed here because landing and the dashboard now redirect against each other
+  // — see the note in lib/authRouting — and both have to be deciding on the same fact.
+  const scans = useQuery({ queryKey: ['scans'], queryFn: getScans, enabled: isAuthenticated });
+  // Tri-state: null until the list answers. `isSuccess` rather than `!isLoading` so a failed
+  // request stays unknown and leaves the user where they are instead of moving them on a guess.
+  const hasScan = scans.isSuccess ? Boolean(latestCraniofacialScan(scans.data)) : null;
 
-  if (!authState.ready || authRedirect(authState.ready, isAuthenticated, currentRoute)) {
+  useEffect(() => {
+    const redirect = authRedirect(authState.ready, isAuthenticated, currentRoute, hasScan);
+    if (redirect) navigate(ROUTE_PATHS[redirect], { replace: true });
+  }, [authState.ready, currentRoute, isAuthenticated, hasScan, navigate]);
+
+  if (!authState.ready || authRedirect(authState.ready, isAuthenticated, currentRoute, hasScan)) {
     return <WorkspaceFallback locale={locale} />;
   }
 

@@ -2,9 +2,14 @@
 // signs in can finish answering before their first scan is created.
 const PUBLIC_ROUTES = new Set(['landing', 'login', 'onboarding']);
 
-export function authRedirect(authReady, isAuthenticated, currentRoute) {
+// `hasScan` is a tri-state on purpose: true, false, or null while the scan list has not
+// answered yet. It has to be, because the dashboard sends a signed-in user with no scan back
+// to the landing page — so if this function guessed `false` as "not yet known" it would bounce
+// them to home, the dashboard would bounce them back, and the two rules would trade the user
+// between them forever. Unknown means stay put.
+export function authRedirect(authReady, isAuthenticated, currentRoute, hasScan = null) {
   if (!authReady) return null;
-  if (isAuthenticated && currentRoute === 'landing') return 'home';
+  if (isAuthenticated && currentRoute === 'landing') return hasScan === true ? 'home' : null;
   if (!isAuthenticated && !PUBLIC_ROUTES.has(currentRoute)) return 'landing';
   return null;
 }

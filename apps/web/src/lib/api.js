@@ -82,9 +82,6 @@ export function uploadScan(files, {
 }
 
 export const getScan = (scanId) => request(`/scans/${scanId}/status/`);
-// Sample data so chat, the score card and the paid gates can be used without a camera.
-// 403 unless DEMO_SCANS_ENABLED; session.demo_scans_enabled says whether to offer it.
-export const createDemoScan = () => request('/scans/demo/', { method: 'POST' });
 export const getScans = () => request('/scans/');
 // 403 for a free account, 409 while the scan is still being analysed — the caller shows a
 // different thing for each, so neither is smoothed into an empty result here.

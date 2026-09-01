@@ -1,6 +1,6 @@
 import { useState, type CSSProperties } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { CircleAlert, Info, LockKeyhole, ScanFace, Sparkles } from "lucide-react";
+import { CircleAlert, LockKeyhole, ScanFace, Sparkles } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { GlassCard } from "../DashboardPage";
 import { getScans, getSession, getSkinAnalysis, setSkinVisionConsent } from "../../lib/api";
@@ -64,7 +64,6 @@ const COPY = {
     visionOn: (provider: string) => `เปิดอยู่ · ส่งภาพให้ ${provider}`,
     visionPending: "ยังไม่มีคำอธิบายสำหรับสแกนนี้ ระบบจะสร้างให้ในการสแกนครั้งถัดไป",
     limitsTitle: "สิ่งที่ภาพนี้บอกไม่ได้",
-    demoNote: "ข้อมูลตัวอย่าง ไม่ใช่ผิวจริงของคุณ",
     noRanking: "ค่าเหล่านี้ไม่ได้เทียบกับคนอื่น และไม่ใช่การวินิจฉัยทางการแพทย์",
   },
   en: {
@@ -98,7 +97,6 @@ const COPY = {
     visionOn: (provider: string) => `On · sending the photo to ${provider}`,
     visionPending: "No description for this scan yet. One will be generated on your next scan.",
     limitsTitle: "What this photo can't show",
-    demoNote: "Sample data, not your own skin.",
     noRanking: "These readings are not compared to anyone else, and are not a medical diagnosis.",
   },
 } as const;
@@ -296,12 +294,6 @@ export default function SkinPanel() {
         <h1>{copy.heading}</h1>
         <p>{copy.intro}</p>
       </div>
-
-      {data?.is_demo && (
-        <GlassCard className="skin-note">
-          <Info size={16} /> {copy.demoNote}
-        </GlassCard>
-      )}
 
       {error && <p className="skin-error" role="alert">{error}</p>}
 

@@ -12,10 +12,26 @@
  * Nothing would have thrown. That is why this lives in one module with a name rather than as a
  * `.find()` repeated six times: the next screen that needs the newest scan should have to pick
  * which kind it means, and should find the question already asked.
+ *
+ * Both answers exclude demo scans. The app no longer creates them, but an account that loaded
+ * sample data before still holds one, and it is the newest row — so without this a screen would
+ * present invented numbers as the person's own measurements, and the "no scan yet" gate would
+ * think they had already scanned.
  */
 
 /** Matches `Scan.ScanMode.SKIN` in backend/doodee/models.py. */
 export const SKIN_SCAN_MODE = 'skin';
+
+/**
+ * Whether a scan measured this person's actual face.
+ *
+ * `is_demo` marks the sample rows `POST /scans/demo/` used to seed: real analysis output shape,
+ * invented input. Every screen here wants a real one, so the check lives beside the mode check
+ * rather than being remembered at each call site.
+ */
+function isRealScan(scan) {
+  return Boolean(scan) && scan.is_demo !== true;
+}
 
 /**
  * The newest scan that carries craniofacial measurements.
@@ -26,7 +42,7 @@ export const SKIN_SCAN_MODE = 'skin';
  */
 export function latestCraniofacialScan(scans) {
   if (!Array.isArray(scans)) return null;
-  return scans.find((scan) => scan && scan.scan_mode !== SKIN_SCAN_MODE) || null;
+  return scans.find((scan) => isRealScan(scan) && scan.scan_mode !== SKIN_SCAN_MODE) || null;
 }
 
 /**
@@ -38,5 +54,5 @@ export function latestCraniofacialScan(scans) {
  */
 export function latestScanOfAnyMode(scans) {
   if (!Array.isArray(scans)) return null;
-  return scans[0] || null;
+  return scans.find(isRealScan) || null;
 }
