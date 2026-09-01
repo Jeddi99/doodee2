@@ -2,16 +2,19 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { Activity, ArrowLeft, Check, Lock, Maximize2, MoveHorizontal, Save, ScanFace, ShieldCheck, Ticket, Unlock, X, ZoomIn } from 'lucide-react';
 import { focusTransform, NO_ZOOM, pollUntilSettled, SIMULATION_CONSENT_VERSION } from '@doodee/shared';
-import { createSimulation, getProcedures, getScan, getScans, getSession, getSimulation, previewSimulation } from '../lib/api';
+import { createSimulation, getProcedureCategories, getProcedures, getScan, getScans, getSession, getSimulation, previewSimulation } from '../lib/api';
 import { statusPollInterval } from '../lib/pollInterval.js';
 import { daysRemaining } from '../lib/promoCode';
 import { describeSimulationError } from '../lib/simulationError';
 import { emptyQueue, request as queueRequest, settle } from '../lib/previewQueue';
 import {
-  MAX_ITEMS, clearAll, clearUnlocked, count, emptyStack, isLocked, itemFor, remove as removeFromStack, select as selectInStack,
-  toRequest, toggleLock, total, unlock,
-} from '../lib/simulationStack';
+  MAX_PROCEDURES, clearUnlockedProcedures, emptyProcedureStack,
+  isProcedureLocked, procedureCount, procedureItem, removeProcedure, setProcedureIntensity,
+  toProcedureRequest, toggleProcedure, toggleProcedureLock, unlockProcedure,
+} from '../lib/procedureStack';
 import { latestCraniofacialScan } from '../lib/latestScan';
+import '../simulation.css';
+
 
 const REGIONS = [
   ['eyes', 'ดวงตา', 'Eyes'], ['nose', 'จมูก', 'Nose'], ['lips', 'ริมฝีปาก', 'Lips'],
@@ -22,9 +25,19 @@ const REGIONS = [
 // until a source with comparable soft-tissue measurements is added to the backend.
 const REFERENCE_REGIONS = ['nose', 'lips', 'chin'];
 
+// The three photographs the fused model is built from, which are also the three it renders.
+// Named separately from the images themselves because the user picks one to look at, and both
+// profiles are real renders rather than one "side" — the face is not symmetric.
+const ANGLES = [
+  ['front', 'มุมหน้าตรง', 'Front'],
+  ['left_profile', 'ด้านซ้าย', 'Left'],
+  ['right_profile', 'ด้านขวา', 'Right'],
+];
+
 const CONSENT_VERSION = SIMULATION_CONSENT_VERSION;
-const noPreviews = () => ({ front: null, profile: null });
+const noPreviews = () => ({ front: null, left_profile: null, right_profile: null });
 const regionName = (id, isTh) => REGIONS.find(([key]) => key === id)?.[isTh ? 1 : 2] ?? id;
+const angleName = (id, isTh) => ANGLES.find(([key]) => key === id)?.[isTh ? 1 : 2] ?? id;
 
 const BLINK_MS = 600;
 
@@ -112,29 +125,39 @@ export default function SimulationView({ lang = 'th', onNavigate }) {
   const scanId = requestedScanId || latestCraniofacialScan(scans.data)?.id;
   const scan = useQuery({ queryKey: ['scan', scanId], queryFn: () => getScan(scanId), enabled: Boolean(scanId) });
   const session = useQuery({ queryKey: ['session'], queryFn: getSession });
-  const [targetMode, setTargetMode] = useState('preset'); // 'preset' | 'reference'
-  const [region, setRegion] = useState('eyes');
-  // The whole catalog, not one region: the list of what is being simulated has to name shapes
-  // and procedures for regions whose tab is not open.
+  const [targetMode, setTargetMode] = useState('procedure'); // 'procedure' | 'reference'
+  // Reference mode still works in the six coarse regions: it compares one measured ratio against
+  // a published mean, and the means are published for regions, not for procedures.
+  const [region, setRegion] = useState('nose');
+  const [category, setCategory] = useState(null);
+  // The whole catalog, not one category: the list of what is being simulated has to name
+  // procedures from categories whose tab is not open.
   const procedures = useQuery({ queryKey: ['procedures'], queryFn: () => getProcedures() });
+  const categories = useQuery({ queryKey: ['procedure-categories'], queryFn: getProcedureCategories });
   const catalog = useMemo(() => procedures.data || [], [procedures.data]);
-  const presetsById = useMemo(() => new Map(catalog.map((preset) => [preset.id, preset])), [catalog]);
-  const presets = useMemo(() => catalog.filter((preset) => preset.region === region), [catalog, region]);
+  const proceduresById = useMemo(() => new Map(catalog.map((row) => [row.id, row])), [catalog]);
+  const headings = useMemo(() => categories.data || [], [categories.data]);
+  const activeCategory = category ?? headings[0]?.id ?? null;
+  const visible = useMemo(
+    () => catalog.filter((row) => row.category_id === activeCategory),
+    [catalog, activeCategory],
+  );
   const [consented, setConsented] = useState(false);
   const [mode, setMode] = useState('compare');
   // On by default: with no preview yet there is no region to aim at, so this reads as off until
-  // one arrives, and no reset is needed when the region changes.
+  // one arrives, and no reset is needed when the selection changes.
   const [zoom, setZoom] = useState(true);
   const [simulationId, setSimulationId] = useState(null);
 
-  // One stack and one rendered image per camera angle: a width change is only visible from the
-  // front and a projection change only from the side, so they are separate source photos.
-  const [stack, setStack] = useState(emptyStack);
+  // One stack, unlike the shape catalog's one-per-angle. A catalog procedure is a pipeline the
+  // fused engine runs across all three views from a single model, so the angle chooses which
+  // render comes back — it does not change what is being simulated.
+  const [stack, setStack] = useState(emptyProcedureStack);
   const [previews, setPreviews] = useState(noPreviews);
   const [viewAngle, setViewAngle] = useState('front');
   const [renderingView, setRenderingView] = useState(null);
   const [previewError, setPreviewError] = useState('');
-  // Which region to point the zoom at. The union of every selected region would frame the whole
+  // Which region to point the zoom at. The union of every touched region would frame the whole
   // face once a few are chosen, which is the opposite of zooming.
   const [lastTouched, setLastTouched] = useState(null);
   const queueRef = useRef(emptyQueue());
@@ -147,12 +170,20 @@ export default function SimulationView({ lang = 'th', onNavigate }) {
   const simulationOff = session.data?.simulation_enabled === false;
   const simulationLocked = session.data?.simulation_locked === true;
 
-  const frontPresets = presets.filter((preset) => preset.source_view !== 'profile');
-  const profilePresets = presets.filter((preset) => preset.source_view === 'profile');
-  // Also available when the side stack holds something, or locking a nose projection and then
-  // opening the eyes tab would leave no way back to look at it.
-  const sideAvailable = !isReference && hasProfiles && (profilePresets.length > 0 || count(stack, 'profile') > 0);
-  const activeView = sideAvailable || viewAngle === 'front' ? viewAngle : 'front';
+  // A catalog procedure needs all three photographs — the model is built by fusing them, so a
+  // missing one is not a degraded render but no render, and the backend refuses the stack with
+  // `canonical_required`. Said here rather than discovered by clicking.
+  const catalogAvailable = hasProfiles;
+  const items = useMemo(
+    () => stack.map((item) => ({ ...item, procedure: proceduresById.get(item.id) })),
+    [stack, proceduresById],
+  );
+  // Which angles this stack actually shows something in. The catalog records it per procedure:
+  // a chin projection is the whole point of the side view and nearly invisible from the front.
+  const angleShowsStack = (view) => items.length === 0
+    || items.some((item) => item.procedure?.views?.includes(view));
+  const availableAngles = ANGLES.filter(([id]) => id === 'front' || hasProfiles);
+  const activeView = availableAngles.some(([id]) => id === viewAngle) ? viewAngle : 'front';
   const preview = previews[activeView];
   const target = isReference ? previews.front?.measurements?.[0] : null;
 
@@ -168,7 +199,7 @@ export default function SimulationView({ lang = 'th', onNavigate }) {
   // fired in parallel: the backend holds a per-user lock and 409s a second one.
   const runPreview = ({ selection: pick, sequence }) => {
     setRenderingView(pick.view);
-    previewSimulation(scanId, pick.selections, CONSENT_VERSION)
+    previewSimulation(scanId, pick.selections, CONSENT_VERSION, pick.requestView)
       .then((created) => created.already_near_reference
         ? created
         : pollUntilSettled(created, () => getSimulation(created.id)))
@@ -193,27 +224,32 @@ export default function SimulationView({ lang = 'th', onNavigate }) {
     if (start) runPreview(start);
   };
 
-  /** Render one angle's stack, or clear its image when nothing is left in it. */
+  /** Render the stack into one angle, or clear that angle's image when nothing is left. */
   const renderStack = (next, view) => {
     setStack(next);
     setSimulationId(null);
     if (!consented) return;
-    if (count(next, view) === 0) {
-      setPreviews((current) => ({ ...current, [view]: null }));
+    if (procedureCount(next) === 0) {
+      setPreviews(noPreviews());
       setPreviewError('');
       return;
     }
-    requestPreview({ view, selections: toRequest(next, view) });
+    requestPreview({ view, requestView: view, selections: toProcedureRequest(next) });
   };
 
-  const choosePreset = (preset) => {
-    const view = preset.source_view === 'profile' ? 'profile' : 'front';
-    const next = selectInStack(stack, view, preset.region, preset.id);
-    // Unchanged means the region is locked or the stack is full — no flicker, no request.
+  const chooseProcedure = (row) => {
+    const next = toggleProcedure(stack, row.id);
+    // Unchanged means the procedure is locked or the stack is full — no flicker, no request.
     if (next === stack) return;
-    setViewAngle(view);
-    setLastTouched(preset.region);
-    renderStack(next, view);
+    setLastTouched(row.regions?.[0] || null);
+    renderStack(next, activeView);
+  };
+
+  const changeIntensity = (id, level) => {
+    const next = setProcedureIntensity(stack, id, level);
+    if (next === stack) return;
+    setLastTouched(proceduresById.get(id)?.regions?.[0] || null);
+    renderStack(next, activeView);
   };
 
   const chooseReferenceTarget = () => {
@@ -223,10 +259,21 @@ export default function SimulationView({ lang = 'th', onNavigate }) {
     if (consented) requestPreview({ view: 'front', selections: [{ region, preset_id: `reference:${region}` }] });
   };
 
-  const changeStack = (next, view, focusRegion) => {
+  const changeStack = (next) => {
     if (next === stack) return;
-    if (focusRegion) setLastTouched(focusRegion);
-    renderStack(next, view);
+    renderStack(next, activeView);
+  };
+
+  /**
+   * Look at the same stack from another angle.
+   *
+   * A render per angle, not one render reused: the fused model draws all three, but a preview
+   * hands back only the one that was asked for. Angles already rendered are not asked for twice.
+   */
+  const changeAngle = (view) => {
+    setViewAngle(view);
+    if (isReference || !consented || previews[view] || procedureCount(stack) === 0) return;
+    requestPreview({ view, requestView: view, selections: toProcedureRequest(stack) });
   };
 
   // Consent is separate from analysis consent by design, so nothing renders before it is
@@ -238,35 +285,34 @@ export default function SimulationView({ lang = 'th', onNavigate }) {
       clearPreviews();
       return;
     }
-    for (const view of ['front', 'profile']) {
-      if (count(stack, view) > 0 && !previews[view]) requestPreview({ view, selections: toRequest(stack, view) });
+    if (!isReference && procedureCount(stack) > 0 && !previews[activeView]) {
+      requestPreview({ view: activeView, requestView: activeView, selections: toProcedureRequest(stack) });
     }
   };
 
-  // Changing region keeps the stack. That is the feature: a jaw shape has to survive a trip to
-  // the chin tab, or nothing can ever be simulated in two places at once.
-  //
-  // Reference mode is the exception. It holds one region and states "your value → the published
+  // Changing category keeps the stack. That is the feature: a jaw procedure has to survive a
+  // trip to the filler tab, or nothing can ever be simulated in two places at once.
+  const changeCategory = (next) => setCategory(next);
+
+  // Reference mode is the exception: it holds one region and states "your value → the published
   // mean", so keeping the previous region's image and numbers under the new region's heading
   // would put a specific, wrong claim on screen.
   const changeRegion = (next) => {
     setRegion(next);
-    if (isReference) {
-      setLastTouched(null);
-      clearPreviews();
-    }
+    setLastTouched(null);
+    clearPreviews();
   };
 
   const switchMode = (next) => {
     if (next === targetMode) return;
-    const stacked = total(stack);
+    const stacked = procedureCount(stack);
     // Reference mode claims the face reaches a published mean, which stops being true the
     // moment another region moves a point it shares. So that mode holds one region only.
     if (stacked > 0 && !window.confirm(isTh
       ? `การสลับโหมดจะล้างการจำลอง ${stacked} รายการที่เลือกไว้ ต้องการสลับหรือไม่`
       : `Switching modes clears the ${stacked} selection(s) you have made. Switch anyway?`)) return;
     setTargetMode(next);
-    setStack(clearAll());
+    setStack(emptyProcedureStack());
     setLastTouched(null);
     clearPreviews();
     setViewAngle('front');
@@ -274,9 +320,9 @@ export default function SimulationView({ lang = 'th', onNavigate }) {
   };
 
   const saveMutation = useMutation({
-    mutationFn: () => createSimulation(scanId, isReference
-      ? [{ region, preset_id: `reference:${region}` }]
-      : toRequest(stack, activeView), CONSENT_VERSION),
+    mutationFn: () => (isReference
+      ? createSimulation(scanId, [{ region, preset_id: `reference:${region}` }], CONSENT_VERSION)
+      : createSimulation(scanId, toProcedureRequest(stack), CONSENT_VERSION, activeView)),
     onSuccess: (result) => setSimulationId(result.id),
   });
   const saved = useQuery({
@@ -295,23 +341,20 @@ export default function SimulationView({ lang = 'th', onNavigate }) {
 
   // A stack is tied to one scan's landmarks, so it means nothing against a different scan.
   useEffect(() => {
-    setStack(clearAll());
+    setStack(emptyProcedureStack());
     setLastTouched(null);
     clearPreviews();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [scanId]);
 
-  const items = stack[activeView].map((item) => {
-    const preset = presetsById.get(item.presetId);
-    return { ...item, preset, procedure: preset?.related_procedures?.[0] };
-  });
-  const cappedRegions = (preview?.measurements || []).filter((item) => item.capped).map((item) => item.region);
   // Preview, save and the worker all fail with the same codes, so they read the same way.
   const failure = describeSimulationError(
     previewError || saveMutation.error?.message || (saved.data?.status === 'failed' ? saved.data.error_code || saved.data.error_message : ''),
     isTh,
-    (id) => regionName(id, isTh),
+    (id) => proceduresById.get(id)?.[isTh ? 'name_th' : 'name_en'] || regionName(id, isTh),
   );
+  // The code's suffix is a procedure ref on this path, so it names a row in the stack directly.
+  const failedItem = failure.region ? procedureItem(stack, failure.region) : null;
 
   if (!scanId && !scans.isPending) return <div className="simulation-empty"><ScanFace /><h1>{isTh ? 'ยังไม่มีผลสแกนสำหรับจำลอง' : 'No scan available'}</h1><button onClick={() => onNavigate('onboarding')}>{isTh ? 'เริ่มสแกนใบหน้า' : 'Start a scan'}</button></div>;
   if (scan.isPending || scans.isPending || session.isPending) return <div className="simulation-empty"><Activity className="capture-spin" />{isTh ? 'กำลังเปิดผลสแกน…' : 'Opening scan…'}</div>;
@@ -342,36 +385,56 @@ export default function SimulationView({ lang = 'th', onNavigate }) {
       </header>
 
       <nav className="simulation-mode-switch" aria-label={isTh ? 'วิธีกำหนดเป้าหมาย' : 'How the target is chosen'}>
-        <button className={!isReference ? 'is-active' : ''} onClick={() => switchMode('preset')}>{isTh ? 'รูปทรง' : 'Shapes'}</button>
+        <button className={!isReference ? 'is-active' : ''} onClick={() => switchMode('procedure')}>{isTh ? 'หัตถการ' : 'Procedures'}</button>
         <button className={isReference ? 'is-active' : ''} onClick={() => switchMode('reference')}>{isTh ? 'เทียบค่าอ้างอิง' : 'Compare to reference'}</button>
       </nav>
 
-      <nav className="simulation-region-tabs" aria-label={isTh ? 'บริเวณใบหน้า' : 'Facial regions'}>
-        {REGIONS.map(([id, th, en]) => {
-          const unavailable = isReference && !REFERENCE_REGIONS.includes(id);
-          // Which regions hold something, and which are locked, without opening every tab.
-          // Said in the label as well as shown, so it does not depend on seeing a colour.
-          const held = !isReference && Boolean(itemFor(stack, activeView, id));
-          const locked = held && isLocked(stack, activeView, id);
-          const state = locked ? (isTh ? ' — มีการจำลองและถูกล็อกไว้' : ' — simulated and locked')
-            : held ? (isTh ? ' — มีการจำลองอยู่' : ' — simulated') : '';
-          return (
-            <button
-              key={id}
-              disabled={unavailable}
-              title={unavailable ? (isTh ? 'ยังไม่มีค่าอ้างอิงสำหรับบริเวณนี้' : 'No reference data for this region yet') : undefined}
-              className={`${region === id ? 'is-active' : ''}${held ? ' is-marked' : ''}`}
-              aria-label={`${isTh ? th : en}${state}`}
-              onClick={() => changeRegion(id)}
-            >{isTh ? th : en}{locked ? <Lock size={12} aria-hidden="true" /> : held ? <b aria-hidden="true" /> : null}</button>
-          );
-        })}
-      </nav>
+      {isReference ? (
+        <nav className="simulation-region-tabs" aria-label={isTh ? 'บริเวณใบหน้า' : 'Facial regions'}>
+          {REGIONS.map(([id, th, en]) => {
+            const unavailable = !REFERENCE_REGIONS.includes(id);
+            return (
+              <button
+                key={id}
+                disabled={unavailable}
+                title={unavailable ? (isTh ? 'ยังไม่มีค่าอ้างอิงสำหรับบริเวณนี้' : 'No reference data for this region yet') : undefined}
+                className={region === id ? 'is-active' : ''}
+                onClick={() => changeRegion(id)}
+              >{isTh ? th : en}</button>
+            );
+          })}
+        </nav>
+      ) : (
+        <nav className="simulation-region-tabs" aria-label={isTh ? 'หมวดหัตถการ' : 'Procedure categories'}>
+          {headings.map((heading) => {
+            // Which categories hold something, and which are locked, without opening every tab.
+            // Said in the label as well as shown, so it does not depend on seeing a colour.
+            const held = items.filter((item) => item.procedure?.category_id === heading.id);
+            const locked = held.length > 0 && held.every((item) => item.locked);
+            const state = locked ? (isTh ? ' — เลือกไว้และล็อกแล้ว' : ' — chosen and locked')
+              : held.length > 0 ? (isTh ? ` — เลือกไว้ ${held.length} รายการ` : ` — ${held.length} chosen`) : '';
+            return (
+              <button
+                key={heading.id}
+                className={`${activeCategory === heading.id ? 'is-active' : ''}${held.length > 0 ? ' is-marked' : ''}`}
+                aria-label={`${isTh ? heading.name_th : heading.name_en}${state}`}
+                onClick={() => changeCategory(heading.id)}
+              >{isTh ? heading.name_th : heading.name_en}{locked ? <Lock size={12} aria-hidden="true" /> : held.length > 0 ? <b aria-hidden="true" /> : null}</button>
+            );
+          })}
+        </nav>
+      )}
 
       {simulationOff && (
         <p className="simulation-warning" role="status">{isTh
           ? 'ฟังก์ชันจำลองใบหน้าถูกปิดใช้งานอยู่ในขณะนี้ คุณยังดูผลวิเคราะห์ได้ตามปกติ'
           : 'Face simulation is switched off right now. Your analysis results are still available.'}</p>
+      )}
+
+      {!isReference && !catalogAvailable && (
+        <p className="simulation-warning">{isTh
+          ? 'การจำลองหัตถการสร้างจากภาพทั้งสามมุมรวมกัน สแกนนี้ไม่มีภาพด้านข้าง จึงจำลองไม่ได้ ต้องสแกนแบบมาตรฐานใหม่'
+          : 'Procedure simulation is built by fusing all three photographs. This scan has no side photos, so it cannot be simulated — a new standard scan is needed.'}</p>
       )}
 
       {isReference && !regionHasReference && (
@@ -382,20 +445,25 @@ export default function SimulationView({ lang = 'th', onNavigate }) {
         <section className="simulation-viewer-card">
           <div className="simulation-viewer-controls">
             <div className="simulation-angle-tabs" role="group" aria-label={isTh ? 'มุมกล้อง' : 'Camera angle'}>
-              <button className={activeView === 'front' ? 'is-active' : ''} onClick={() => setViewAngle('front')}>{isTh ? 'มุมหน้าตรง' : 'Front'}</button>
-              <button
-                className={activeView === 'profile' ? 'is-active' : ''}
-                disabled={!sideAvailable}
-                title={sideAvailable ? undefined : (isTh ? 'การเปลี่ยนแปลงในบริเวณนี้ไม่ปรากฏในมุมด้านข้าง' : 'Changes in this region are not visible from the side')}
-                onClick={() => setViewAngle('profile')}
-              >{isTh ? 'มุมด้านข้าง' : 'Side'}</button>
+              {availableAngles.map(([id, th, en]) => {
+                const empty = !isReference && !angleShowsStack(id);
+                return (
+                  <button
+                    key={id}
+                    className={activeView === id ? 'is-active' : ''}
+                    disabled={isReference && id !== 'front'}
+                    title={empty ? (isTh ? 'สิ่งที่เลือกไว้ไม่ปรากฏในมุมนี้' : 'What you have chosen does not show in this view') : undefined}
+                    onClick={() => changeAngle(id)}
+                  >{isTh ? th : en}</button>
+                );
+              })}
             </div>
             <div className="simulation-viewer-actions">
               {/* Two axes, not one control: which image you are looking at, and how close. */}
               <button
                 className={`simulation-zoom-toggle${zoom ? ' is-active' : ''}`}
                 disabled={!focusBox}
-                title={focusBox ? undefined : (isTh ? 'เลือกแบบก่อน แล้วจึงซูมไปที่บริเวณที่ปรับได้' : 'Choose a shape first, then the zoom has a region to aim at')}
+                title={focusBox ? undefined : (isTh ? 'เลือกหัตถการก่อน แล้วจึงซูมไปที่บริเวณที่ปรับได้' : 'Choose a procedure first, then the zoom has a region to aim at')}
                 aria-pressed={zoom}
                 onClick={() => setZoom((current) => !current)}
               >{zoom ? <ZoomIn /> : <Maximize2 />}{zoom ? (isTh ? 'ซูมบริเวณที่ปรับ' : 'Zoomed') : (isTh ? 'ดูทั้งใบหน้า' : 'Whole face')}</button>
@@ -409,35 +477,35 @@ export default function SimulationView({ lang = 'th', onNavigate }) {
               : <div className="simulation-placeholder">
                   {renderingView ? <Activity className="capture-spin" /> : <ScanFace />}
                   <strong>{renderingView ? (isTh ? 'กำลังสร้างภาพ…' : 'Rendering…')
-                    : activeView === 'profile' ? (isTh ? 'เลือกแบบที่เห็นจากมุมด้านข้าง' : 'Choose a shape visible from the side')
-                      : (isTh ? 'เลือกแบบแล้วเห็นผลทันที' : 'Pick a shape and see it immediately')}</strong>
+                    : (isTh ? 'เลือกหัตถการแล้วเห็นผลทันที' : 'Pick a procedure and see it immediately')}</strong>
                   <span>{isTh ? 'ไม่ต้องกดปุ่มสร้างอีกต่อไป' : 'No generate button needed.'}</span>
                 </div>}
           {renderingView && beforeUrl && <p className="simulation-note" role="status">{isTh ? 'กำลังสร้างภาพ…' : 'Rendering…'}</p>}
-          {!isReference && preview?.measurements?.map((item) => <div className="simulation-measurement" key={item.region || item.key}><span>{regionName(item.region, isTh)} · {item.key.replaceAll('_', ' ')}</span><strong>{item.before_ratio} → {item.target_ratio}</strong><b>{item.change_percent > 0 ? '+' : ''}{item.change_percent}%</b></div>)}
-          {!isReference && cappedRegions.length > 0 && (
-            <p className="simulation-note">{isTh
-              ? `${cappedRegions.map((id) => regionName(id, isTh)).join(' และ ')} ขยับจุดร่วมกัน ภาพนี้จึงแสดงการปรับเท่าที่เพดานความปลอดภัยอนุญาต`
-              : `${cappedRegions.map((id) => regionName(id, isTh)).join(' and ')} move points in common, so this image shows only as much change as the safety ceiling allows.`}</p>
-          )}
+          {!isReference && <EvidenceList measurements={preview?.measurements} isTh={isTh} />}
           {target && <div className="simulation-measurement"><span>{isTh ? 'ค่าของคุณ → ค่าเฉลี่ยกลุ่มอ้างอิง' : 'Yours → reference mean'}</span><strong>{target.observed_ratio} → {target.reference_ratio}</strong><b>{target.change_percent > 0 ? '+' : ''}{target.change_percent}%</b></div>}
           {target?.capped && <p className="simulation-note">{isTh ? `ภาพนี้แสดงการปรับเท่าที่เพดานความปลอดภัยอนุญาต ไม่ใช่ทั้ง ${Math.abs(target.change_percent)}%` : `This image shows only as much change as the safety ceiling allows, not the full ${Math.abs(target.change_percent)}%.`}</p>}
         </section>
 
         <aside className="simulation-controls-card">
-          <div><span className="simulation-step">01 · {isReference ? (isTh ? 'เป้าหมายจากงานวิจัย' : 'Research-derived target') : (isTh ? 'เลือกรูปทรง' : 'Choose shape')}</span><h2>{REGIONS.find(([id]) => id === region)?.[isTh ? 1 : 2]}</h2></div>
+          <div>
+            <span className="simulation-step">01 · {isReference ? (isTh ? 'เป้าหมายจากงานวิจัย' : 'Research-derived target') : (isTh ? 'เลือกหัตถการ' : 'Choose a procedure')}</span>
+            <h2>{isReference
+              ? REGIONS.find(([id]) => id === region)?.[isTh ? 1 : 2]
+              : headings.find((heading) => heading.id === activeCategory)?.[isTh ? 'name_th' : 'name_en'] || ''}</h2>
+          </div>
 
           <div className="simulation-consent"><ShieldCheck /><label><input type="checkbox" checked={consented} onChange={(event) => acceptConsent(event.target.checked)} />{isTh ? 'ยินยอมให้ประมวลผลภาพเพื่อสร้างภาพจำลองนี้' : 'I consent to processing for this simulation.'}</label></div>
-          {!consented && <p className="simulation-note">{isTh ? 'ติ๊กยินยอมก่อน แล้วการกดเลือกแบบจะสร้างภาพให้ทันที' : 'Tick consent first; after that, choosing a shape renders it immediately.'}</p>}
+          {!consented && <p className="simulation-note">{isTh ? 'ติ๊กยินยอมก่อน แล้วการกดเลือกหัตถการจะสร้างภาพให้ทันที' : 'Tick consent first; after that, choosing a procedure renders it immediately.'}</p>}
 
           {/* Locking guards a selection; it does not change the image, so it never re-renders. */}
           {!isReference && items.length > 0 && (
-            <StackPanel
+            <ProcedureStackPanel
               items={items}
               isTh={isTh}
-              onToggleLock={(item) => setStack(toggleLock(stack, activeView, item.region))}
-              onRemove={(item) => changeStack(removeFromStack(stack, activeView, item.region), activeView, null)}
-              onClearUnlocked={() => changeStack(clearUnlocked(stack, activeView), activeView, null)}
+              onIntensity={changeIntensity}
+              onToggleLock={(item) => setStack(toggleProcedureLock(stack, item.id))}
+              onRemove={(item) => changeStack(removeProcedure(stack, item.id))}
+              onClearUnlocked={() => changeStack(clearUnlockedProcedures(stack))}
             />
           )}
 
@@ -472,28 +540,13 @@ export default function SimulationView({ lang = 'th', onNavigate }) {
               )}
             </div>
           ) : (
-            <>
-              <PresetGroup
-                title={isTh ? 'เห็นจากมุมหน้าตรง' : 'Visible from the front'}
-                presets={frontPresets} selectedId={itemFor(stack, 'front', region)?.presetId}
-                locked={isLocked(stack, 'front', region)} full={count(stack, 'front') >= MAX_ITEMS && !itemFor(stack, 'front', region)}
-                regionLabel={regionName(region, isTh)} isTh={isTh} onChoose={choosePreset}
-              />
-              {profilePresets.length > 0 && (
-                <PresetGroup
-                  title={isTh ? 'เห็นจากมุมด้านข้าง' : 'Visible from the side'}
-                  note={hasProfiles ? '' : (isTh ? 'สแกนนี้ไม่มีภาพด้านข้าง' : 'This scan has no side photos')}
-                  presets={profilePresets} selectedId={itemFor(stack, 'profile', region)?.presetId}
-                  locked={isLocked(stack, 'profile', region)} full={count(stack, 'profile') >= MAX_ITEMS && !itemFor(stack, 'profile', region)}
-                  regionLabel={regionName(region, isTh)} disabled={!hasProfiles} isTh={isTh} onChoose={choosePreset}
-                />
-              )}
-              {profilePresets.length === 0 && (
-                <p className="simulation-note">{isTh
-                  ? 'การเปลี่ยนแปลงของบริเวณนี้เป็นความกว้างและตำแหน่ง ซึ่งมองไม่เห็นจากมุมด้านข้าง จึงมีเฉพาะมุมหน้าตรง'
-                  : 'Changes here are widths and positions, which a side view cannot show, so only the front angle is offered.'}</p>
-              )}
-            </>
+            <ProcedureGrid
+              procedures={visible}
+              stack={stack}
+              disabled={!catalogAvailable}
+              isTh={isTh}
+              onChoose={chooseProcedure}
+            />
           )}
 
           {/* The angle is named, because one save stores the image of one angle. */}
@@ -503,21 +556,20 @@ export default function SimulationView({ lang = 'th', onNavigate }) {
             title={preview ? undefined : (isTh ? 'ยังไม่มีภาพให้บันทึกในมุมนี้' : 'There is no image to save for this angle yet')}
             onClick={() => saveMutation.mutate()}
           ><Save />{isReference ? (isTh ? 'บันทึกภาพเต็ม · เก็บ 30 วัน' : 'Save full image · 30 days')
-            : activeView === 'profile' ? (isTh ? 'บันทึกภาพมุมด้านข้าง · เก็บ 30 วัน' : 'Save the side image · 30 days')
-              : (isTh ? 'บันทึกภาพมุมหน้าตรง · เก็บ 30 วัน' : 'Save the front image · 30 days')}</button>
+            : (isTh ? `บันทึกภาพ${angleName(activeView, true)} · เก็บ 30 วัน` : `Save the ${angleName(activeView, false).toLowerCase()} image · 30 days`)}</button>
           {failure.text && (
             <p className="simulation-error" role="alert">
               {failure.text}
-              {/* Offer to drop exactly the region the server named, unlocking it on the way out
+              {/* Offer to drop exactly the procedure the server named, unlocking it on the way out
                   so a locked one is not stuck in a stack that can never render. */}
-              {failure.region && itemFor(stack, activeView, failure.region) && (
-                <button onClick={() => changeStack(removeFromStack(unlock(stack, activeView, failure.region), activeView, failure.region), activeView, null)}>
-                  {isTh ? `เอา ${regionName(failure.region, isTh)} ออก` : `Remove ${regionName(failure.region, isTh)}`}
+              {failedItem && (
+                <button onClick={() => changeStack(removeProcedure(unlockProcedure(stack, failure.region), failure.region))}>
+                  {isTh ? `เอา ${proceduresById.get(failure.region)?.name_th || failure.region} ออก` : `Remove ${proceduresById.get(failure.region)?.name_en || failure.region}`}
                 </button>
               )}
             </p>
           )}
-          {preview?.related_procedures?.length > 0 && <div className="simulation-related"><span>{isTh ? 'หัตถการที่อาจเกี่ยวข้อง' : 'Related procedures'}</span><p>{preview.related_procedures.join(' · ')}</p><small>{isTh ? 'ไม่ใช่คำแนะนำการรักษาหรือการทำนายผลลัพธ์' : 'Not treatment advice or an outcome prediction.'}</small></div>}
+          {preview?.related_procedures?.length > 0 && <div className="simulation-related"><span>{isTh ? 'หัตถการที่อยู่ในภาพนี้' : 'In this image'}</span><p>{preview.related_procedures.join(' · ')}</p><small>{isTh ? 'ไม่ใช่คำแนะนำการรักษาหรือการทำนายผลลัพธ์' : 'Not treatment advice or an outcome prediction.'}</small></div>}
         </aside>
       </main>
     </div>
@@ -525,24 +577,43 @@ export default function SimulationView({ lang = 'th', onNavigate }) {
 }
 
 /**
- * What is in the image right now, and the lock that keeps it there.
+ * What is in the image right now, its intensity, and the lock that keeps it there.
  *
  * At the top of the panel rather than the bottom: this is the current state of the picture, not
  * a footnote about it. Announced politely so a screen reader hears rows being added and locked.
+ *
+ * The intensity lives here rather than on the catalog card because it only means something once
+ * a procedure is in the picture — a level on a card nobody chose is a number with no effect.
  */
-function StackPanel({ items, isTh, onToggleLock, onRemove, onClearUnlocked }) {
+function ProcedureStackPanel({ items, isTh, onIntensity, onToggleLock, onRemove, onClearUnlocked }) {
   const unlockedCount = items.filter((item) => !item.locked).length;
   return (
     <div className="simulation-stack">
       <span className="simulation-group-title">{isTh ? 'กำลังจำลอง' : 'Currently simulating'}</span>
       <ul aria-live="polite">
         {items.map((item) => {
-          const name = regionName(item.region, isTh);
-          const shape = item.preset ? (isTh ? item.preset.name_th : item.preset.name_en) : item.presetId;
+          const name = item.procedure ? (isTh ? item.procedure.name_th : item.procedure.name_en) : item.id;
+          const levels = item.procedure?.intensity_levels;
           return (
-            <li key={item.region} className={`simulation-stack-row${item.locked ? ' is-locked' : ''}`}>
-              <span>{name} · <strong>{shape}</strong></span>
-              {item.procedure && <em className="simulation-procedure-chip">{item.procedure}</em>}
+            <li key={item.id} className={`simulation-stack-row${item.locked ? ' is-locked' : ''}`}>
+              <span><strong>{name}</strong></span>
+              {item.procedure?.technique && <em className="simulation-procedure-chip">{item.procedure.technique}</em>}
+              {/* Only the rows the catalog says have a dose to vary. A fixed procedure showing a
+                  slider would be offering a choice that changes nothing. */}
+              {levels && (
+                <span className="simulation-intensity" role="group" aria-label={isTh ? `ระดับของ ${name}` : `Intensity for ${name}`}>
+                  {levels.map((level) => (
+                    <button
+                      key={level.level}
+                      disabled={item.locked}
+                      aria-pressed={item.level === level.level}
+                      className={item.level === level.level ? 'is-active' : ''}
+                      title={level.quantity_note_th || (isTh ? level.label_th : level.label_en)}
+                      onClick={() => onIntensity(item.id, level.level)}
+                    >{level.level}</button>
+                  ))}
+                </span>
+              )}
               <button
                 className="simulation-lock"
                 aria-pressed={item.locked}
@@ -567,30 +638,71 @@ function StackPanel({ items, isTh, onToggleLock, onRemove, onClearUnlocked }) {
   );
 }
 
-function PresetGroup({ title, note, presets, selectedId, locked, full, regionLabel, disabled, isTh, onChoose }) {
-  const blockedReason = locked
-    ? (isTh ? `ปลดล็อก ${regionLabel} ก่อนจึงจะเปลี่ยนแบบได้` : `Unlock ${regionLabel} before changing its shape`)
-    : full ? (isTh ? `เลือกได้สูงสุด ${MAX_ITEMS} บริเวณต่อภาพ` : `Up to ${MAX_ITEMS} regions per image`) : '';
+/** One category's procedures. A card is a toggle: unlike a region's shape, two coexist. */
+function ProcedureGrid({ procedures, stack, disabled, isTh, onChoose }) {
+  const full = procedureCount(stack) >= MAX_PROCEDURES;
+  if (procedures.length === 0) {
+    return <p className="simulation-note">{isTh ? 'กำลังโหลดรายการหัตถการ…' : 'Loading procedures…'}</p>;
+  }
   return (
     <div className="simulation-preset-group">
-      <span className="simulation-group-title">{title}{note && <small>{note}</small>}</span>
+      <span className="simulation-group-title">
+        {isTh ? 'หัตถการในหมวดนี้' : 'Procedures in this category'}
+        <small>{isTh ? `เลือกได้สูงสุด ${MAX_PROCEDURES} รายการต่อภาพ` : `Up to ${MAX_PROCEDURES} per image`}</small>
+      </span>
       <div className="simulation-preset-grid">
-        {presets.map((preset, index) => (
-          <button
-            key={preset.id}
-            disabled={disabled || Boolean(blockedReason)}
-            title={blockedReason || undefined}
-            className={selectedId === preset.id ? 'is-active' : ''}
-            onClick={() => onChoose(preset)}
-          >
-            <span>{String(index + 1).padStart(2, '0')}</span>
-            <strong>{isTh ? preset.name_th : preset.name_en}</strong>
-            {/* Names the treatment this shape belongs to, on the card where it is chosen. */}
-            {preset.related_procedures?.[0] && <em className="simulation-procedure-chip">{preset.related_procedures[0]}</em>}
-            {selectedId === preset.id && !disabled && <Check />}
-          </button>
-        ))}
+        {procedures.map((row, index) => {
+          const chosen = Boolean(procedureItem(stack, row.id));
+          const locked = isProcedureLocked(stack, row.id);
+          const blockedReason = locked
+            ? (isTh ? 'ปลดล็อกก่อนจึงจะเอาออกได้' : 'Unlock it before taking it out')
+            : (!chosen && full)
+              ? (isTh ? `เลือกได้สูงสุด ${MAX_PROCEDURES} รายการต่อภาพ` : `Up to ${MAX_PROCEDURES} per image`)
+              : '';
+          return (
+            <button
+              key={row.id}
+              disabled={disabled || Boolean(blockedReason)}
+              title={blockedReason || undefined}
+              aria-pressed={chosen}
+              className={chosen ? 'is-active' : ''}
+              onClick={() => onChoose(row)}
+            >
+              <span>{String(index + 1).padStart(2, '0')}</span>
+              <strong>{isTh ? row.name_th : row.name_en}</strong>
+              {/* Names the technique this row belongs to, on the card where it is chosen. */}
+              {row.technique && <em className="simulation-procedure-chip">{row.technique}</em>}
+              {chosen && !disabled && <Check />}
+            </button>
+          );
+        })}
       </div>
+    </div>
+  );
+}
+
+/**
+ * What the render actually did, in the units a clinic uses.
+ *
+ * The fused engine answers with a treatment record rather than a ratio: the procedure, the dose
+ * and its unit, how far it moves tissue in millimetres, and whether a published study measured
+ * that or it was derived from one. The status is shown for every line, including the ones that
+ * say no study backs this — hiding those would leave a number on screen that looks as solid as
+ * the measured ones. Where a source exists it is linked, because the claim is checkable.
+ */
+function EvidenceList({ measurements, isTh }) {
+  if (!measurements?.length) return null;
+  return (
+    <div className="simulation-evidence">
+      {measurements.map((item) => (
+        <div className="simulation-measurement" key={item.key}>
+          <span>{item.procedure || item.key}</span>
+          <strong>{item.dose} {item.unit} · {item.mmShown ?? item.mm} {isTh ? 'มม.' : 'mm'}</strong>
+          <b style={item.statusColour ? { color: item.statusColour } : undefined}>{item.statusLabel}</b>
+          {item.extrapolated && item.extrapolatedNote && <small>{item.extrapolatedNote}</small>}
+          {item.sourceUrl && <a href={item.sourceUrl} target="_blank" rel="noreferrer noopener">{item.sourceTitle}</a>}
+        </div>
+      ))}
     </div>
   );
 }

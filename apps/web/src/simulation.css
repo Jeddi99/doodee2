@@ -1,0 +1,578 @@
+/* The simulation view's own layer.
+ *
+ * The component was ported from doodoodeedee; its stylesheet was not, so this view has been
+ * rendering with browser defaults — a two-column layout collapsed into a single column of
+ * unstyled buttons. The structure below is that stylesheet's, because the class names and the
+ * markup are the same shape. The palette is not: doodoodeedee is purple on grey, and this app is
+ * blue on ice with a defined radius and spacing scale, so every colour and radius here is a
+ * `--dd-*` token rather than the hex it was.
+ *
+ * Loaded by the component rather than by `styles.css` so it arrives with the lazily-loaded route,
+ * and so its `.simulation-note` wins over the one left behind in `styles.css` by the
+ * `.simulation-stage` block, which nothing renders any more.
+ */
+
+.simulation-page {
+  min-height: 100%;
+  padding: var(--dd-space-6);
+  color: var(--dd-text);
+  background: var(--dd-ice);
+}
+
+/* ---- header ------------------------------------------------------------------------------ */
+
+.simulation-header {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  gap: var(--dd-space-4);
+  align-items: center;
+  max-width: 1280px;
+  margin: 0 auto var(--dd-space-4);
+}
+.simulation-header span,
+.simulation-step {
+  font-size: 0.7rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  color: var(--dd-blue);
+}
+.simulation-header h1 { font-size: 1.55rem; margin: 3px 0; }
+.simulation-header p { margin: 0; color: var(--dd-muted); font-size: 0.82rem; }
+
+.simulation-back {
+  width: 42px;
+  height: 42px;
+  border: 1px solid var(--dd-line);
+  border-radius: 14px;
+  background: var(--dd-canvas);
+  display: grid;
+  place-items: center;
+  color: var(--dd-blue);
+}
+
+.simulation-quota {
+  min-width: 112px;
+  padding: 10px 14px;
+  border-radius: var(--dd-radius-card);
+  background: var(--dd-ink);
+  color: var(--dd-canvas);
+  text-align: center;
+}
+.simulation-quota strong { display: block; font-size: 1.25rem; }
+.simulation-quota span { color: var(--dd-blue-soft); letter-spacing: 0; font-weight: 600; }
+.simulation-quota small {
+  display: block;
+  margin-top: 3px;
+  color: var(--dd-blue-soft);
+  font-size: 0.6rem;
+  font-weight: 600;
+  letter-spacing: 0;
+}
+
+/* ---- tab strips --------------------------------------------------------------------------- */
+
+.simulation-mode-switch,
+.simulation-region-tabs {
+  max-width: 1280px;
+  margin: 0 auto var(--dd-space-3);
+  display: flex;
+  gap: 4px;
+  padding: 4px;
+  background: var(--dd-ice-strong);
+  border-radius: 14px;
+}
+.simulation-mode-switch { width: max-content; }
+/* Twelve categories do not fit a phone, and wrapping them would push the image off the screen. */
+.simulation-region-tabs { overflow-x: auto; scrollbar-width: none; }
+.simulation-region-tabs::-webkit-scrollbar { display: none; }
+
+.simulation-mode-switch button,
+.simulation-region-tabs button,
+.simulation-mode-tabs button,
+.simulation-angle-tabs button {
+  border: 0;
+  background: transparent;
+  padding: 9px 18px;
+  border-radius: 11px;
+  color: var(--dd-muted);
+  font-weight: 700;
+  white-space: nowrap;
+}
+.simulation-mode-switch button.is-active,
+.simulation-region-tabs button.is-active,
+.simulation-mode-tabs button.is-active,
+.simulation-angle-tabs button.is-active {
+  background: var(--dd-canvas);
+  color: var(--dd-blue-strong);
+  box-shadow: var(--dd-shadow-float);
+}
+.simulation-region-tabs button:disabled,
+.simulation-angle-tabs button:disabled { opacity: 0.4; cursor: not-allowed; }
+/* A category holding a selection carries a dot; the label says so too, so it does not depend on
+   seeing a colour. */
+.simulation-region-tabs button.is-marked { display: inline-flex; align-items: center; gap: 5px; }
+.simulation-region-tabs button.is-marked b {
+  width: 6px;
+  height: 6px;
+  border-radius: var(--dd-radius-pill);
+  background: var(--dd-blue);
+}
+
+/* ---- layout ------------------------------------------------------------------------------- */
+
+.simulation-layout {
+  max-width: 1280px;
+  margin: auto;
+  display: grid;
+  grid-template-columns: minmax(0, 1.45fr) minmax(320px, 0.75fr);
+  gap: var(--dd-space-4);
+}
+.simulation-viewer-card,
+.simulation-controls-card {
+  background: var(--dd-canvas);
+  border: 1px solid var(--dd-line);
+  border-radius: var(--dd-radius-frame);
+  padding: var(--dd-space-4);
+  box-shadow: var(--dd-shadow-float);
+}
+.simulation-controls-card h2 { margin: 3px 0 13px; }
+
+.simulation-viewer-controls {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: var(--dd-space-3);
+}
+.simulation-viewer-actions { display: flex; align-items: center; gap: var(--dd-space-2); flex-wrap: wrap; }
+.simulation-angle-tabs,
+.simulation-mode-tabs {
+  display: flex;
+  gap: 3px;
+  padding: 3px;
+  background: var(--dd-ice-strong);
+  border-radius: 12px;
+}
+.simulation-mode-tabs { width: max-content; margin: 0; }
+
+.simulation-zoom-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 9px 14px;
+  border: 1px solid var(--dd-line);
+  border-radius: 12px;
+  background: var(--dd-canvas);
+  color: var(--dd-muted);
+  font-weight: 700;
+  font-size: 0.78rem;
+  white-space: nowrap;
+}
+.simulation-zoom-toggle svg { width: 15px; height: 15px; }
+.simulation-zoom-toggle.is-active {
+  border-color: var(--dd-blue);
+  background: var(--dd-blue-soft);
+  color: var(--dd-blue-strong);
+}
+.simulation-zoom-toggle:disabled { opacity: 0.45; cursor: not-allowed; }
+
+/* ---- the image ---------------------------------------------------------------------------- */
+
+.simulation-compare {
+  position: relative;
+  margin: 0;
+  aspect-ratio: 4 / 3;
+  border-radius: var(--dd-radius-frame);
+  overflow: hidden;
+  background: var(--dd-ice-strong);
+  touch-action: none;
+}
+.simulation-compare > img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: center;
+  /* The viewer aims itself — choose a lip filler and the camera travels to the mouth — so the
+     move has to read as a move. `transform-origin` is animated beside `transform` because a zoom
+     that changes both and animates only one arrives by growing out of the old centre and then
+     snapping across. `opacity` keeps its own short timing: that is the blink mode cutting between
+     two images, not a camera move. */
+  transition:
+    transform var(--dd-motion-normal) var(--dd-ease-out),
+    transform-origin var(--dd-motion-normal) var(--dd-ease-out),
+    opacity 0.12s linear;
+  will-change: transform;
+}
+@media (prefers-reduced-motion: reduce) {
+  .simulation-compare > img { transition: none; }
+}
+.simulation-compare.is-compare .simulation-image-after {
+  clip-path: inset(0 calc(100% - var(--split-clip)) 0 0);
+}
+.simulation-compare.is-blink { cursor: default; }
+.simulation-compare input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0;
+  cursor: ew-resize;
+  z-index: 4;
+  margin: 0;
+}
+.simulation-divider {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: var(--split);
+  width: 2px;
+  background: var(--dd-canvas);
+  z-index: 3;
+  pointer-events: none;
+}
+.simulation-divider b {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  translate: -50% -50%;
+  width: 44px;
+  height: 44px;
+  border: 3px solid var(--dd-blue);
+  border-radius: 50%;
+  background: var(--dd-canvas);
+  color: var(--dd-blue-strong);
+  display: grid;
+  place-items: center;
+  font-size: 1.2rem;
+}
+.simulation-compare figcaption {
+  position: absolute;
+  left: var(--dd-space-4);
+  right: var(--dd-space-4);
+  bottom: 14px;
+  display: flex;
+  justify-content: space-between;
+  z-index: 3;
+  pointer-events: none;
+}
+.simulation-compare figcaption.is-single { justify-content: center; }
+.simulation-compare figcaption span {
+  background: rgba(11, 14, 20, 0.76);
+  color: var(--dd-canvas);
+  padding: 7px 13px;
+  border-radius: var(--dd-radius-pill);
+  font-size: 0.72rem;
+  font-weight: 800;
+}
+.simulation-hold-hint {
+  position: absolute;
+  left: var(--dd-space-4);
+  right: var(--dd-space-4);
+  top: 14px;
+  z-index: 3;
+  margin: 0;
+  text-align: center;
+  pointer-events: none;
+  font-size: 0.7rem;
+  font-weight: 700;
+  color: var(--dd-canvas);
+}
+.simulation-hold-hint::before {
+  content: '';
+  position: absolute;
+  inset: -6px -10px;
+  border-radius: var(--dd-radius-pill);
+  background: rgba(11, 14, 20, 0.7);
+  z-index: -1;
+}
+
+.simulation-placeholder {
+  aspect-ratio: 4 / 3;
+  border: 1px dashed var(--dd-line);
+  border-radius: var(--dd-radius-frame);
+  background: var(--dd-ice);
+  display: grid;
+  place-content: center;
+  text-align: center;
+  color: var(--dd-muted);
+  gap: 7px;
+}
+.simulation-placeholder svg { margin: auto; color: var(--dd-blue); }
+.simulation-placeholder span { font-size: 0.75rem; }
+
+/* ---- what the render did ------------------------------------------------------------------ */
+
+.simulation-evidence { display: grid; gap: 6px; }
+.simulation-measurement {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  gap: var(--dd-space-3);
+  align-items: center;
+  margin-top: 10px;
+  padding: 10px var(--dd-space-3);
+  border-radius: var(--dd-radius-card);
+  background: var(--dd-blue-soft);
+  font-size: 0.75rem;
+}
+.simulation-evidence .simulation-measurement { margin-top: 0; }
+.simulation-measurement b { color: var(--dd-blue-strong); }
+/* The extrapolation note and the citation are full-width rows under the numbers, not a fourth
+   and fifth column: they are sentences, and squeezing them beside a dose makes both unreadable. */
+.simulation-measurement small,
+.simulation-measurement a {
+  grid-column: 1 / -1;
+  font-size: 0.68rem;
+  line-height: 1.5;
+  color: var(--dd-muted);
+}
+.simulation-measurement a { color: var(--dd-blue-strong); }
+
+/* ---- the panel ---------------------------------------------------------------------------- */
+
+.simulation-consent {
+  display: flex;
+  gap: var(--dd-space-2);
+  align-items: flex-start;
+  margin: 14px 0;
+  padding: 11px;
+  border-radius: 13px;
+  background: var(--dd-ice);
+  font-size: 0.74rem;
+}
+.simulation-consent svg { width: 17px; flex: none; color: var(--dd-blue); }
+.simulation-consent label { display: flex; gap: 7px; }
+
+.simulation-group-title {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  margin-bottom: 7px;
+  color: var(--dd-blue);
+  font-size: 0.68rem;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+}
+.simulation-group-title small { color: var(--dd-muted); font-weight: 600; letter-spacing: 0; }
+
+.simulation-preset-group { margin-bottom: 14px; }
+.simulation-preset-grid { display: grid; grid-template-columns: 1fr 1fr; gap: var(--dd-space-2); }
+.simulation-preset-grid button {
+  position: relative;
+  min-height: 92px;
+  border: 1px solid var(--dd-line);
+  background: var(--dd-ice);
+  border-radius: 15px;
+  padding: 11px;
+  text-align: left;
+  color: var(--dd-text);
+}
+.simulation-preset-grid button > span {
+  display: block;
+  color: var(--dd-muted);
+  font-size: 0.65rem;
+  font-weight: 800;
+}
+.simulation-preset-grid button strong { display: block; margin-top: 6px; font-size: 0.8rem; }
+.simulation-preset-grid button svg { position: absolute; right: 9px; top: 9px; width: 15px; color: var(--dd-blue); }
+.simulation-preset-grid button.is-active {
+  border: 2px solid var(--dd-blue);
+  background: var(--dd-blue-soft);
+  color: var(--dd-blue-strong);
+}
+.simulation-preset-grid button:disabled { opacity: 0.5; }
+
+/* ---- the stack ---------------------------------------------------------------------------- */
+
+.simulation-stack {
+  margin: 0 0 14px;
+  padding: 11px var(--dd-space-3);
+  background: var(--dd-ice);
+  border: 1px solid var(--dd-line);
+  border-radius: 15px;
+}
+.simulation-stack ul {
+  list-style: none;
+  margin: 7px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.simulation-stack-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 7px var(--dd-space-2);
+  background: var(--dd-canvas);
+  border: 1px solid var(--dd-line);
+  border-radius: 11px;
+  font-size: 0.77rem;
+  color: var(--dd-text);
+  flex-wrap: wrap;
+}
+.simulation-stack-row.is-locked { border-color: var(--dd-blue); background: var(--dd-blue-soft); }
+.simulation-stack-row > span:first-child { flex: 1; min-width: 8ch; }
+.simulation-stack-row strong { color: var(--dd-ink); }
+.simulation-stack-row > button {
+  border: 0;
+  background: transparent;
+  padding: 4px;
+  border-radius: var(--dd-space-2);
+  color: var(--dd-muted);
+  display: inline-flex;
+}
+.simulation-stack-row > button:disabled { opacity: 0.35; }
+.simulation-stack-row .simulation-lock[aria-pressed='true'] { background: var(--dd-blue); color: var(--dd-canvas); }
+.simulation-stack-clear {
+  margin-top: var(--dd-space-2);
+  border: 0;
+  background: transparent;
+  padding: 2px;
+  color: var(--dd-blue-strong);
+  font-size: 0.72rem;
+  font-weight: 700;
+}
+.simulation-stack > small { display: block; margin-top: var(--dd-space-2); font-size: 0.68rem; color: var(--dd-muted); }
+
+/* Five levels, numbered rather than labelled: the words are in the tooltip, and five words in a
+   row inside a stack row is wider than the row it lives in. */
+.simulation-intensity {
+  display: inline-flex;
+  gap: 2px;
+  padding: 2px;
+  background: var(--dd-ice-strong);
+  border-radius: var(--dd-radius-pill);
+  flex: none;
+}
+.simulation-intensity button {
+  border: 0;
+  background: transparent;
+  width: 22px;
+  height: 22px;
+  border-radius: var(--dd-radius-pill);
+  color: var(--dd-muted);
+  font-size: 0.68rem;
+  font-weight: 800;
+}
+.simulation-intensity button.is-active { background: var(--dd-blue); color: var(--dd-canvas); }
+.simulation-intensity button:disabled { opacity: 0.4; }
+
+.simulation-procedure-chip {
+  flex: none;
+  padding: 2px 7px;
+  border-radius: var(--dd-radius-pill);
+  background: var(--dd-ice-strong);
+  color: var(--dd-muted);
+  font-size: 0.64rem;
+  font-style: normal;
+  font-weight: 700;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 11ch;
+}
+.simulation-preset-grid button .simulation-procedure-chip {
+  display: block;
+  margin-top: 4px;
+  max-width: 100%;
+}
+
+/* ---- reference mode, notices, actions ------------------------------------------------------ */
+
+.simulation-reference-card p { margin: 0 0 10px; color: var(--dd-muted); font-size: 0.76rem; line-height: 1.55; }
+.simulation-reference-numbers { margin: 0; display: grid; gap: 7px; }
+.simulation-reference-numbers > div { padding: 10px var(--dd-space-3); border-radius: var(--dd-radius-card); background: var(--dd-blue-soft); }
+.simulation-reference-numbers dt { color: var(--dd-muted); font-size: 0.66rem; font-weight: 800; text-transform: capitalize; }
+.simulation-reference-numbers dd { margin: 3px 0 0; font-size: 0.76rem; color: var(--dd-text); }
+.simulation-reference-numbers dd b { color: var(--dd-blue-strong); }
+
+.simulation-note {
+  margin: 9px 0 0;
+  padding: 9px 11px;
+  border-radius: 11px;
+  background: var(--dd-ice);
+  color: var(--dd-muted);
+  font-size: 0.72rem;
+  line-height: 1.5;
+  display: block;
+}
+.simulation-warning {
+  max-width: 1280px;
+  margin: 0 auto var(--dd-space-3);
+  padding: var(--dd-space-2) 10px;
+  border-radius: 10px;
+  /* No amber token exists; a warning that used the blue would read as an ordinary note. */
+  background: #fff4df;
+  color: #8b5c16;
+  font-size: 0.7rem;
+}
+
+.simulation-primary,
+.simulation-save,
+.simulation-empty button {
+  width: 100%;
+  border: 0;
+  border-radius: 13px;
+  padding: var(--dd-space-3);
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: var(--dd-space-2);
+  font-weight: 800;
+}
+.simulation-primary { background: var(--dd-blue); color: var(--dd-canvas); }
+.simulation-save { margin-top: 7px; background: var(--dd-blue-soft); color: var(--dd-blue-strong); }
+.simulation-primary:disabled,
+.simulation-save:disabled { opacity: 0.45; }
+
+.simulation-related { margin-top: var(--dd-space-3); padding-top: var(--dd-space-3); border-top: 1px solid var(--dd-line); }
+.simulation-related span { font-size: 0.7rem; font-weight: 800; color: var(--dd-blue); }
+.simulation-related p { font-size: 0.77rem; margin: 5px 0; }
+.simulation-related small { font-size: 0.68rem; color: var(--dd-muted); }
+
+.simulation-error { color: #b42318; font-size: 0.75rem; }
+.simulation-error button {
+  margin-left: 6px;
+  border: 0;
+  background: transparent;
+  padding: 0;
+  color: var(--dd-blue-strong);
+  font-weight: 700;
+  text-decoration: underline;
+}
+
+.simulation-empty {
+  min-height: 70vh;
+  display: grid;
+  place-content: center;
+  text-align: center;
+  gap: 10px;
+  color: var(--dd-muted);
+}
+.simulation-empty svg { margin: auto; }
+.simulation-empty h1 { font-size: 1.2rem; }
+.simulation-empty p { max-width: 420px; margin: 0; color: var(--dd-muted); font-size: 0.82rem; line-height: 1.6; }
+.simulation-empty button { background: var(--dd-blue); color: var(--dd-canvas); }
+.simulation-empty button.is-secondary { background: var(--dd-blue-soft); color: var(--dd-blue-strong); }
+
+/* ---- narrow ------------------------------------------------------------------------------- */
+
+@media (max-width: 850px) {
+  .simulation-page { padding: var(--dd-space-3) 10px 90px; }
+  .simulation-header { grid-template-columns: auto 1fr; }
+  .simulation-header h1 { font-size: 1.05rem; }
+  .simulation-header p { display: none; }
+  .simulation-quota { grid-column: 1 / -1; display: flex; justify-content: center; gap: var(--dd-space-2); align-items: center; }
+  .simulation-layout { grid-template-columns: 1fr; }
+  /* The controls come first on a phone: the image is the answer, and there is nothing to answer
+     until a procedure has been picked. */
+  .simulation-controls-card { order: -1; }
+  .simulation-preset-grid button { min-height: 78px; }
+  .simulation-viewer-card,
+  .simulation-controls-card { border-radius: 18px; }
+  .simulation-compare { aspect-ratio: 1 / 1; }
+  .simulation-save { position: sticky; bottom: 10px; z-index: 5; }
+}
