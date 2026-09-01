@@ -203,6 +203,10 @@ class ProcedureSpec:
             "category_name_th": category_th,
             "category_name_en": category_en,
             "name_th": self.name_th,
+            # Falls back to the Thai rather than to an empty string or the slug: a client rendering
+            # an English locale would otherwise show a blank row or `hifu-lift`, and a Thai name in
+            # an English list is at least a name a clinic would recognise.
+            "name_en": NAMES_EN.get(self.id, self.name_th),
             "technique_raw": technique_raw,
             "technique": canonical_technique(technique_raw),
             "available": available,
@@ -261,6 +265,126 @@ def T(region: str, strength: float = .4, **params) -> Step:
 
 def I(region: str, mode: str = "remove", strength: float = .6, **params) -> Step:
     return _step(OpType.INPAINT_OP, region, mode=mode, strength=strength, **params)
+
+
+# English names, keyed by the internal slug rather than the public numeric ref, because the slug is
+# the stable half: `source_ref` is data.txt's numbering and moves if that document is renumbered.
+#
+# A side table rather than a fifth argument to `P()`: the ninety-two call sites below are the audit
+# trail against data.txt, and widening their signature to carry a translation would put an editorial
+# concern inside the record. `QUANTITY_NOTES_TH` is keyed off to the side for the same reason.
+#
+# Mostly recovered rather than translated -- the slug already encodes the English term, so the work
+# is restoring the brand names the slug drops (อัลเทอร่า → Ultherapy, เทอร์มาจ → Thermage,
+# อินโหมด → InMode, ออนดา → Onda, จูวีลุค → Juvelook). Clinical naming still deserves a review by
+# someone who treats patients; the Thai column remains authoritative where the two disagree.
+NAMES_EN = MappingProxyType({
+    # lifting
+    "hifu-lift": "Ultherapy / HIFU lift",
+    "rf-tightening": "Thermage / InMode RF tightening",
+    "laser-tightening": "Titanium laser tightening",
+    "microwave-tightening": "Onda microwave tightening",
+    "thread-lift": "Thread lift",
+    "facelift": "Facelift surgery",
+    "body-lift": "Body lifting",
+    "body-proportion-lift": "Body proportion lifting",
+    "other-face-tightening": "Other facial tightening",
+    # skin
+    "rejuran-skin-booster": "Rejuran skin booster",
+    "collagen-booster": "Juvelook collagen booster",
+    "ecm-booster": "ECM skin regeneration injection",
+    "pigmentation-treatment": "Melasma, freckle and dark spot treatment",
+    "pores-acne-scars": "Pore and acne scar reduction",
+    "vascular-redness": "Redness and visible capillary treatment",
+    "mole-wart-removal": "Laser removal of moles, warts and skin tags",
+    "ldm-soothing": "LDM skin soothing",
+    "facial-peel": "Facial chemical peel",
+    "acne-treatment": "Acne treatment",
+    "body-skin-tone": "Body skin tone treatment",
+    # botox
+    "facial-botox": "Masseter botulinum toxin (jaw slimming)",
+    "wrinkle-botox": "Wrinkle botulinum toxin",
+    "body-botox": "Body botulinum toxin",
+    "dermotoxin": "Skin botulinum toxin (dermotoxin)",
+    "sweat-botox": "Botulinum toxin for sweating",
+    "allergy-botox": "Botulinum toxin for allergy",
+    # filler
+    "nasolabial-filler": "Nasolabial fold filler",
+    "tear-trough-filler": "Tear trough filler",
+    "temple-forehead-filler": "Temple and forehead filler",
+    "lip-filler": "Lip filler",
+    "chin-filler": "Chin filler",
+    "aegyo-sal-filler": "Aegyo sal (under-eye) filler",
+    "body-filler": "Body filler",
+    "filler-dissolving": "Filler dissolving",
+    # nose
+    "nose-tip-plasty": "Nasal tip plasty",
+    "nose-bridge-surgery": "Nasal bridge augmentation / hump reduction",
+    "alar-reduction": "Alar base reduction",
+    "revision-rhinoplasty": "Revision rhinoplasty",
+    "septoplasty-visible": "Septoplasty for a deviated septum",
+    "non-surgical-rhinoplasty": "Non-surgical rhinoplasty",
+    # eyes
+    "double-eyelid": "Double eyelid surgery",
+    "hidden-eyelid-fold": "Hidden (inner) double eyelid fold",
+    "ptosis-correction": "Ptosis correction",
+    "epicanthoplasty": "Epicanthoplasty (inner corner)",
+    "lateral-canthoplasty": "Lateral canthoplasty (outer corner)",
+    "revision-eyelid": "Revision double eyelid surgery",
+    "lower-blepharoplasty": "Lower blepharoplasty (under-eye bags)",
+    "sub-brow-lift": "Sub-brow excision of excess upper eyelid skin",
+    # contour
+    "v-line-jaw": "V-line jaw reduction",
+    "genioplasty": "Genioplasty (chin surgery)",
+    "zygoma-reduction": "Zygoma (cheekbone) reduction",
+    "two-jaw-surgery": "Two-jaw (orthognathic) surgery",
+    "revision-facial-contour": "Revision facial contouring",
+    "forehead-augmentation": "Forehead augmentation",
+    "endotine-forehead-lift": "Endotine forehead and brow lift",
+    "noble-surgery": "Nasolabial fold augmentation",
+    "temple-augmentation": "Temple augmentation",
+    "occipital-augmentation": "Occipital augmentation",
+    # breast
+    "breast-augmentation-lift": "Breast augmentation and lift",
+    "revision-breast-surgery": "Revision breast surgery",
+    "nipple-areola-surgery": "Nipple and areola surgery",
+    "gynecomastia": "Gynecomastia treatment",
+    # fat
+    "meso-fat-face": "Mesotherapy fat dissolving for cheeks and double chin",
+    "body-liposuction": "Body liposuction",
+    "facial-liposuction": "Facial and submental liposuction",
+    "facial-fat-grafting": "Facial fat grafting",
+    "revision-liposuction": "Revision liposuction",
+    "facial-fat-dissolving": "Targeted fat dissolving",
+    "facial-weight-loss": "Weight loss programme",
+    # hair
+    "scalp-care": "Scalp care",
+    "hairline-transplant": "Hair and hairline transplant",
+    "facial-hair-transplant": "Moustache, beard and eyebrow transplant",
+    "body-hair-transplant": "Body hair transplant",
+    # hair_removal
+    "body-hair-removal": "Body hair removal",
+    "facial-hair-removal": "Facial laser hair removal",
+    # traditional
+    "korean-weight-herbs": "Korean herbal weight-loss medicine",
+    "facial-acupuncture": "Cosmetic facial acupuncture",
+    "korean-health-herbs": "Korean herbal skin tonic",
+    # other
+    "iv-vitamins": "IV vitamin skin drip",
+    "tattoo-removal": "Tattoo and cosmetic brow tattoo removal",
+    "cosmetic-tattoo": "Cosmetic brow and lip tattoo",
+    "womens-surgery": "Women's surgery",
+    "lip-lift": "Upper lip lift",
+    "lip-surgery": "Lip surgery",
+    "laser-vision-correction": "Laser vision correction",
+    "dimpleplasty": "Dimpleplasty",
+    "otoplasty": "Otoplasty (prominent ears)",
+    "body-odour-hyperhidrosis": "Body odour and hyperhidrosis treatment",
+    "body-contouring": "Body contouring surgery",
+    "nerve-block-visible-relief": "Nerve block for jaw slimming",
+    "mens-facial-surgery": "Men's facial surgery",
+    "unspecified-other": "Other procedure",
+})
 
 
 def P(id: str, ref: str, category: str, name: str, *pipeline: Step,

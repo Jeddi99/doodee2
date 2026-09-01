@@ -383,6 +383,44 @@ class MetricCatalogTest(SimpleTestCase):
         self.assertTrue({f"{name}_ratio" for name in shared} <= self.WEB_LABELLED_METRICS)
 
 
+class ProcedureNamesEnTest(TestCase):
+    """Every row carries an English name, and the table names nothing that does not exist.
+
+    Asserted rather than trusted because the table is keyed off to the side: a row added to
+    `PROCEDURES` without a translation would silently serve a Thai name into an English locale,
+    and a slug renamed in `PROCEDURES` would leave its entry here pointing at nothing.
+    """
+
+    def test_every_procedure_has_an_english_name(self):
+        from doodee.procedure_catalog import NAMES_EN, PROCEDURES
+
+        missing = sorted(p.id for p in PROCEDURES if p.id not in NAMES_EN)
+        self.assertEqual(missing, [], f"no English name for: {missing}")
+
+    def test_the_table_names_nothing_that_is_not_in_the_catalog(self):
+        from doodee.procedure_catalog import NAMES_EN, PROCEDURES
+
+        known = {p.id for p in PROCEDURES}
+        orphans = sorted(key for key in NAMES_EN if key not in known)
+        self.assertEqual(orphans, [], f"translation for an unknown procedure: {orphans}")
+
+    def test_the_public_row_carries_both_languages(self):
+        from doodee.procedure_catalog import public_catalog
+
+        rows = public_catalog()
+        self.assertTrue(all(row["name_th"] and row["name_en"] for row in rows))
+        hifu = next(row for row in rows if row["id"] == "1.1")
+        self.assertEqual(hifu["name_en"], "Ultherapy / HIFU lift")
+
+    def test_an_untranslated_row_falls_back_to_thai_not_to_a_blank(self):
+        """A blank name is a broken screen; the Thai name is at least a name."""
+        from doodee.procedure_catalog import PROCEDURES
+
+        spec = PROCEDURES[0]
+        with patch("doodee.procedure_catalog.NAMES_EN", {}):
+            self.assertEqual(spec.public()["name_en"], spec.name_th)
+
+
 class SimulationPolishSwitchTest(TestCase):
     """A face must not reach a paid endpoint because someone set a key.
 
