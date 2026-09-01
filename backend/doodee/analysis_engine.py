@@ -78,6 +78,27 @@ def _face_landmarker():
     return mp.tasks.vision.FaceLandmarker.create_from_options(options)
 
 
+def _profile_face_landmarker():
+    """A guarded second opinion for a hard profile the primary detector cannot acquire.
+
+    The model has a directional cold-start bias on near-profile stills: the supplied left view is
+    found after mirroring but not in its original direction at any working size. This detector is
+    only consulted after the stricter two-face detector fails every retry. It still asks for two
+    faces (so a group photo is rejected), while a lower threshold is confined to an isolated crop.
+    """
+    os.environ.setdefault("MEDIAPIPE_DISABLE_GPU", "1")
+    import mediapipe as mp
+    model_path = os.getenv("FACE_LANDMARKER_MODEL", str(Path(__file__).parent / "assets" / "face_landmarker.task"))
+    options = mp.tasks.vision.FaceLandmarkerOptions(
+        base_options=mp.tasks.BaseOptions(model_asset_path=model_path, delegate=mp.tasks.BaseOptions.Delegate.CPU),
+        running_mode=mp.tasks.vision.RunningMode.IMAGE,
+        num_faces=2,
+        min_face_detection_confidence=0.3,
+        min_face_presence_confidence=0.3,
+        output_facial_transformation_matrixes=True,
+    )
+    return mp.tasks.vision.FaceLandmarker.create_from_options(options)
+
 def pose_from_matrix(matrix):
     """Read a row-major flat 4x4 MediaPipe transform into pose_targets.json coordinates.
 
@@ -97,7 +118,53 @@ def pose_from_matrix(matrix):
     }
 
 
-def _landmarks(image):
+# ---------------------------------------------------------------------------
+# Detection layer, ported from github.com/Rapeepath/doodoodeedee.
+#
+# What changed: nothing about what is measured, only whether the face is found
+# at all. `_landmarks(image)` still returns exactly `(points, pose)`, so every
+# caller, the metric set and FORMULA_VERSION are untouched — this fixes scans
+# that failed with "face_count" on a photo a person can plainly see their face
+# in, which upstream's commits call "Crop the capture to the face so the scan
+# can actually be finished" and "Put pose angles in one coordinate space".
+#
+# Deliberately NOT ported from that file: the new metrics (_tilt_degrees,
+# _facing, _signed_point_line_distance), its inline _skin_metrics, the
+# client-landmark path, and the FORMULA_VERSION bump to 2026.5-extended. Those
+# change what the numbers mean, which would invalidate stored scans and every
+# score card, development plan and chat answer derived from them. This repo's
+# skin work stays in skin_engine.py / skin_vision.py where it already lives.
+# ---------------------------------------------------------------------------
+
+def rotation_from_matrix(matrix):
+    """The scale-free 3x3 head rotation carried by a MediaPipe face transform.
+
+    Measurements only need the three display angles above. Multi-view simulation needs the full
+    rotation so a displacement expressed on one shared face can be projected back into each
+    photograph without treating a profile's horizontal image axis as facial width.
+    """
+    import numpy as np
+
+    transform = np.asarray(matrix, dtype=np.float64).reshape(4, 4)
+    block = transform[:3, :3]
+    norms = np.linalg.norm(block, axis=0)
+    if np.any(norms <= 1e-6):
+        return np.eye(3, dtype=np.float64)
+    return block / norms
+
+
+# Sizes to try before calling a photo unusable, longest edge in pixels.
+#
+# The detector is far more scale-sensitive than its confidence threshold suggests, and not
+# monotonically so: a real 65-degree profile in this repo is found at one working size and missed at
+# a smaller one, with nothing about the photo changing but its resolution. Measured on this project's
+# own failing scan, and the same list p1/doodee3/dd2 arrived at independently, which is where this
+# comes from — dropping it there turned three usable views into two.
+SCAN_ATTEMPTS = (1100, 1240, 1400, 860, 700)
+
+
+def _detect_at_with_rotation(image):
+    """One detection attempt, including the rotation needed by multi-view simulation."""
     import cv2
     import mediapipe as mp
     import numpy as np
@@ -107,7 +174,118 @@ def _landmarks(image):
     if len(result.face_landmarks) != 1 or len(result.facial_transformation_matrixes) != 1:
         raise ValueError("face_count")
     matrix = np.asarray(result.facial_transformation_matrixes[0], dtype=np.float64).reshape(-1)
-    return np.array([(p.x, p.y, p.z) for p in result.face_landmarks[0]], dtype=np.float64), pose_from_matrix(matrix)
+    return (
+        np.array([(p.x, p.y, p.z) for p in result.face_landmarks[0]], dtype=np.float64),
+        pose_from_matrix(matrix),
+        rotation_from_matrix(matrix),
+    )
+
+
+def _detect_profile_crop_with_rotation(image):
+    """Locate a hard profile through a mirror, then landmark the untouched photo crop.
+
+    Directly un-mirroring a mesh would swap anatomical landmark identities. The mirrored result
+    therefore supplies only a padded box; x/y/z and head rotation come from a second detection on
+    original pixels, then are mapped from crop-normalised coordinates back to the whole photo.
+    """
+    import cv2
+    import mediapipe as mp
+    import numpy as np
+
+    detector = _profile_face_landmarker()
+    hint = detector.detect(mp.Image(
+        image_format=mp.ImageFormat.SRGB,
+        data=cv2.cvtColor(cv2.flip(image, 1), cv2.COLOR_BGR2RGB),
+    ))
+    if len(hint.face_landmarks) != 1:
+        raise ValueError("face_count")
+
+    height, width = image.shape[:2]
+    xs = np.asarray([point.x for point in hint.face_landmarks[0]], dtype=np.float64)
+    ys = np.asarray([point.y for point in hint.face_landmarks[0]], dtype=np.float64)
+    if not np.isfinite(xs).all() or not np.isfinite(ys).all():
+        raise ValueError("face_count")
+    padding = .18
+    left = max(0, int(np.floor((1. - xs.max() - padding) * width)))
+    right = min(width, int(np.ceil((1. - xs.min() + padding) * width)))
+    top = max(0, int(np.floor((ys.min() - padding) * height)))
+    bottom = min(height, int(np.ceil((ys.max() + padding) * height)))
+    if right - left < 64 or bottom - top < 64:
+        raise ValueError("face_count")
+
+    crop = image[top:bottom, left:right]
+    result = detector.detect(mp.Image(
+        image_format=mp.ImageFormat.SRGB,
+        data=cv2.cvtColor(crop, cv2.COLOR_BGR2RGB),
+    ))
+    if len(result.face_landmarks) != 1 or len(result.facial_transformation_matrixes) != 1:
+        raise ValueError("face_count")
+    matrix = np.asarray(result.facial_transformation_matrixes[0], dtype=np.float64).reshape(-1)
+    pose = pose_from_matrix(matrix)
+    # This is not a general relaxation of face detection. A frontal or mildly oblique false hit
+    # cannot use the direction-assisted path; only a profile in the capture window can.
+    if abs(pose["yaw"]) < 40:
+        raise ValueError("face_count")
+
+    crop_height, crop_width = crop.shape[:2]
+    points = np.array([
+        (
+            (left + point.x * crop_width) / width,
+            (top + point.y * crop_height) / height,
+            point.z * crop_width / width,
+        )
+        for point in result.face_landmarks[0]
+    ], dtype=np.float64)
+    if (points.shape != (478, 3) or not np.isfinite(points).all()
+            or np.any(points[:, :2] < -.1) or np.any(points[:, :2] > 1.1)):
+        raise ValueError("face_count")
+    return points, pose, rotation_from_matrix(matrix)
+
+
+def _retry_landmark_detection(image, detector):
+    """Run one detector over the shared scale sequence without upsampling the photo."""
+    import cv2
+
+    height, width = image.shape[:2]
+    longest = max(height, width)
+    attempted = set()
+    error = ValueError("face_count")
+    for target in SCAN_ATTEMPTS:
+        scale = target / longest
+        resized = image if scale >= 1 else cv2.resize(
+            image, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA,
+        )
+        key = resized.shape[:2]
+        if key in attempted:
+            continue
+        attempted.add(key)
+        try:
+            return detector(resized)
+        except ValueError as exc:
+            error = exc
+    raise error
+
+
+def _landmarks(image):
+    """Landmarks and pose, retrying at several working sizes before giving up.
+
+    Landmarks come back normalised, so resizing the input changes nothing about the coordinates
+    that are returned — only whether the detector finds the face at all.
+    """
+    points, pose, _rotation = _landmarks_with_rotation(image)
+    return points, pose
+
+
+def _landmarks_with_rotation(image):
+    """Landmarks, display pose and full rotation, with the same retries as analysis.
+
+    Keeping the retry list shared matters for stored scans: a profile accepted by analysis must
+    not become unusable merely because simulation happened to call the detector at one size.
+    """
+    try:
+        return _retry_landmark_detection(image, _detect_at_with_rotation)
+    except ValueError:
+        return _retry_landmark_detection(image, _detect_profile_crop_with_rotation)
 
 
 def _isotropic(points, image):

@@ -110,19 +110,35 @@ class RealPhotographTest(SimpleTestCase):
         self.assertIsNotNone(analysis_engine._pose_error("left_profile", front))
         self.assertIsNotNone(analysis_engine._pose_error("right_profile", front))
 
-    def test_the_uploaded_crop_is_what_the_server_can_read(self):
-        """Pins the fact that the browser's crop is not an optimisation but a requirement.
+    def test_a_full_size_picked_profile_is_readable(self):
+        """The uncropped profiles the detector used to refuse outright.
 
-        The picked profile files are refused outright at their full size. If `captureFrame` ever
-        stopped cropping — or started submitting the original — profile scans would fail for
-        everybody while every other test in the project carried on passing.
+        This test previously asserted the opposite — that `PICKED[slot]` raises "face_count" at
+        full size — and pinned the browser's crop as a requirement rather than an optimisation.
+        The ported detection layer removes that limitation: `_landmarks` retries across several
+        working sizes and, failing those, locates a hard profile through a mirror before
+        landmarking the original pixels.
+
+        Asserting where the face was found, not merely that something came back. "It returned"
+        would still pass if the fallback landmarked the wrong thing, which is the failure worth
+        catching: a mis-located profile yields measurements rather than an error, and nothing
+        downstream would question them. Yaw is the check — it carries both the direction the head
+        is turned and how far, so a face found in the wrong place cannot produce a plausible one.
+
+        Deliberately NOT asserting `_pose_error` is None. Reading a photo and accepting it for a
+        slot are different questions: pass-left-profile.jpg reads correctly at yaw -77 but is
+        shot with the head tilted ~26 degrees down, so the pose gate refuses it. That refusal is
+        the gate working. The crop is still worth doing; the server is simply no longer helpless
+        without it.
         """
-        for slot in ("left_profile", "right_profile"):
+        for slot, sign in (("left_profile", -1), ("right_profile", 1)):
             with self.subTest(slot=slot):
-                analysis_engine._landmarks(analysis_engine._decode(read(POSED[slot])))
-                with self.assertRaises(ValueError) as caught:
-                    analysis_engine._landmarks(analysis_engine._decode(read(PICKED[slot])))
-                self.assertEqual(str(caught.exception), "face_count")
+                _, pose = analysis_engine._landmarks(analysis_engine._decode(read(PICKED[slot])))
+                yaw = pose["yaw"]
+                self.assertGreater(
+                    yaw * sign, 40,
+                    f"{PICKED[slot]} read, but not as a {slot}-facing head: {pose}",
+                )
 
     def test_the_two_profiles_are_not_interchangeable(self):
         """They are mirror images, so a sign error would make each satisfy the other's window."""
