@@ -19,7 +19,13 @@ documented and hoped for:
   will be stored or trended. Ask the same photograph twice and the wording moves; a trend line
   built on that would be reporting the model's variance as the user's skin.
 * **The output shape is fixed by a schema**, so a model that starts narrating, diagnosing, or
-  rating attractiveness fails validation rather than reaching a screen.
+  rating attractiveness fails validation rather than reaching a screen. Gemini's `responseSchema`
+  is an OpenAPI subset that has no `additionalProperties`, so the closed-shape half of that
+  promise is re-checked here in `_validate` rather than being quietly dropped with the keyword.
+* **`SKIN_VISION_ENABLED` gates the whole path**, defaulting to off. Google's free tier may use
+  submitted content to improve its models, and what this module submits is a photograph of a
+  face — a materially different exposure from the twelve numbers `chat.py` sends. Leave this off
+  until the project's Gemini access is on a paid tier that excludes training.
 
 If a provider is unreachable, refuses, or answers off-schema, the caller still has the local
 measurements. Vision is an addition to the analysis, never the analysis itself.
@@ -28,7 +34,8 @@ measurements. Vision is an addition to the analysis, never the analysis itself.
 import base64
 import json
 import os
-from functools import lru_cache
+from urllib.error import HTTPError
+from urllib.request import Request, urlopen
 
 from .consent import granted
 from .models import ConsentEvent
@@ -37,24 +44,29 @@ from .models import ConsentEvent
 # the point: new terms need a new agreement, not an old one stretched to cover them.
 SKIN_VISION_CONSENT_VERSION = "2026.1"
 
-# Opus 5's high-resolution tier tops out here on the long edge. Sending more pixels buys no
-# detail the model can use and is billed as though it did.
+# Gemini bills an image as 768x768 tiles at 258 tokens each, so the cost step is the tile count
+# rather than the pixel count: a 2,576px long edge is 4x3 tiles on a portrait frame regardless of
+# what sits between the tile boundaries. Kept at the previous ceiling because lowering it trades
+# away exactly the fine skin texture this module exists to read.
 MAX_EDGE_PX = 2576
 # JPEG rather than PNG on the wire: a face photograph is a photograph, and lossless encoding
 # triples the upload for detail the model discards.
 JPEG_QUALITY = 90
 
-MODEL = "claude-opus-5"
+MODEL = "gemini-2.5-flash"
+# Recorded on every payload and on the AI ledger row, so a cost report and a consent screen can
+# both name the actual recipient rather than a provider someone remembers configuring.
+PROVIDER = "gemini"
 # Enough for a structured description of six signals. Vision replies are short by construction
 # here — the schema has no free-text field longer than a couple of sentences.
 MAX_TOKENS = 1500
-# Reading a photograph against six pre-computed numbers is not agentic work. Medium keeps the
-# wait inside gunicorn's window while leaving room for the model to actually look.
-EFFORT = "medium"
+# Low, not zero. The task is reading fixed numbers off a photograph; sampling variance here would
+# show up as a trend line that moves when the skin did not.
+TEMPERATURE = 0.2
 # Must stay well under gunicorn's --timeout (60, see backend/Dockerfile) so the caller's error
 # handling runs instead of the worker being killed mid-request. Same reasoning as chat.py.
 REQUEST_TIMEOUT_SECONDS = 30.0
-MAX_RETRIES = 1
+API_BASE = "https://generativelanguage.googleapis.com/v1beta/models"
 
 
 class SkinVisionUnavailable(RuntimeError):
@@ -126,22 +138,33 @@ Hard limits, in order of importance:
 Answer in the requested language."""
 
 
-@lru_cache(maxsize=1)
-def _client():
-    """Built once; the SDK holds a connection pool worth reusing."""
-    key = os.getenv("ANTHROPIC_API_KEY", "")
+def _api_key():
+    """The Gemini key, or a refusal naming which variable is missing.
+
+    Same two names `chat.py` accepts, and deliberately *not* falling back to `CHAT_API_KEY`:
+    that variable selects an OpenAI-compatible provider, and silently sending a face to whatever
+    endpoint it points at is the exact disclosure this module exists to control.
+    """
+    key = os.getenv("GEMINI_API_KEY", "") or os.getenv("GOOGLE_API_KEY", "")
     if not key:
-        raise SkinVisionUnavailable("anthropic_api_key_missing")
-    try:
-        from anthropic import Anthropic
-    except ImportError as exc:  # pragma: no cover - dependency is in requirements.txt
-        raise SkinVisionUnavailable("anthropic_sdk_missing") from exc
-    return Anthropic(api_key=key, timeout=REQUEST_TIMEOUT_SECONDS, max_retries=MAX_RETRIES)
+        raise SkinVisionUnavailable("gemini_api_key_missing")
+    return key
+
+
+def enabled():
+    """The deliberate switch, separate from having a key.
+
+    Off by default. A key being present means the request *could* be made; this means someone
+    decided it should be. The two are separate because the free tier is the one you get by
+    default, and on it Google may use submitted content to improve its models — which for this
+    module means a user's face, not a sentence.
+    """
+    return os.getenv("SKIN_VISION_ENABLED", "false").lower() == "true"
 
 
 def configured():
     """Whether the feature can run at all, for the session payload."""
-    return bool(os.getenv("ANTHROPIC_API_KEY"))
+    return enabled() and bool(os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY"))
 
 
 def provider_label():
@@ -151,7 +174,65 @@ def provider_label():
     `views._chat_provider_label` is: a screen that names the wrong recipient is a false
     statement about where a user's face went.
     """
-    return "Anthropic (Claude)"
+    return "Google (Gemini)"
+
+
+# Gemini's `responseSchema` is an OpenAPI 3.0 subset: it has no `additionalProperties`, and sending
+# one is rejected rather than ignored. Stripping the keyword on the way out is only safe because
+# `_validate` re-checks the same closure on the way back — see the module docstring.
+_SCHEMA_KEYS = frozenset({
+    "type", "description", "enum", "items", "properties", "required", "maxItems", "minItems",
+})
+
+
+def _gemini_schema(schema):
+    """The response schema, minus the keywords Gemini rejects."""
+    if not isinstance(schema, dict):
+        return schema
+    out = {}
+    for key, value in schema.items():
+        if key not in _SCHEMA_KEYS:
+            continue
+        if key == "properties":
+            out[key] = {name: _gemini_schema(sub) for name, sub in value.items()}
+        elif key == "items":
+            out[key] = _gemini_schema(value)
+        else:
+            out[key] = value
+    return out
+
+
+def _validate(payload):
+    """Enforce the parts of RESPONSE_SCHEMA the provider cannot.
+
+    Raises rather than repairing. A response that carries a field nobody designed is a model
+    doing something this module did not ask for, and the honest reaction to that is to fall back
+    to the local measurements — not to keep the parts that happen to parse.
+    """
+    if not isinstance(payload, dict):
+        raise SkinVisionUnavailable("unexpected_response_shape")
+    allowed = set(RESPONSE_SCHEMA["properties"])
+    if set(payload) - allowed or not allowed.issubset(payload):
+        raise SkinVisionUnavailable("unexpected_response_shape")
+    if not isinstance(payload["summary"], str) or not isinstance(payload["limits"], str):
+        raise SkinVisionUnavailable("unexpected_response_shape")
+
+    item_schema = RESPONSE_SCHEMA["properties"]["observations"]["items"]
+    fields = set(item_schema["properties"])
+    signals = set(item_schema["properties"]["signal"]["enum"])
+    observations = payload["observations"]
+    if not isinstance(observations, list):
+        raise SkinVisionUnavailable("unexpected_response_shape")
+    if len(observations) > RESPONSE_SCHEMA["properties"]["observations"]["maxItems"]:
+        raise SkinVisionUnavailable("unexpected_response_shape")
+    for item in observations:
+        if not isinstance(item, dict) or set(item) != fields:
+            raise SkinVisionUnavailable("unexpected_response_shape")
+        if item["signal"] not in signals:
+            raise SkinVisionUnavailable("unexpected_response_shape")
+        if not all(isinstance(item[name], str) for name in ("reading", "care")):
+            raise SkinVisionUnavailable("unexpected_response_shape")
+    return payload
 
 
 def _encode(image):
@@ -197,52 +278,62 @@ def analyze(user, image, skin, locale="th"):
     """
     if not granted(user, ConsentEvent.Purpose.SKIN_VISION):
         raise SkinVisionNotConsented("skin_vision_not_consented")
+    # Re-checked here and not only in `queue_skin_vision`, for the same reason consent is: this
+    # is the last line before the photograph is on the wire, and a caller that reaches it with
+    # the feature switched off should get an exception rather than a silent upload.
+    if not enabled():
+        raise SkinVisionUnavailable("skin_vision_disabled")
 
-    client = _client()
+    key = _api_key()
+    body = json.dumps({
+        "system_instruction": {"parts": [{"text": SYSTEM_PROMPT}]},
+        "contents": [{
+            "role": "user",
+            "parts": [
+                {"inline_data": {"mime_type": "image/jpeg", "data": _encode(image)}},
+                {"text": _measurement_block(skin, locale)},
+            ],
+        }],
+        "generationConfig": {
+            "maxOutputTokens": MAX_TOKENS,
+            "temperature": TEMPERATURE,
+            "responseMimeType": "application/json",
+            "responseSchema": _gemini_schema(RESPONSE_SCHEMA),
+        },
+    }).encode()
+
+    request = Request(
+        f"{API_BASE}/{MODEL}:generateContent?key={key}",
+        data=body,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
     try:
-        message = client.messages.create(
-            model=MODEL,
-            max_tokens=MAX_TOKENS,
-            thinking={"type": "adaptive"},
-            output_config={
-                "effort": EFFORT,
-                "format": {"type": "json_schema", "schema": RESPONSE_SCHEMA},
-            },
-            system=[{
-                "type": "text",
-                "text": SYSTEM_PROMPT,
-                # The prompt is identical for every user and every scan, so one breakpoint here
-                # makes it a cache read after the first call of a session.
-                "cache_control": {"type": "ephemeral"},
-            }],
-            messages=[{
-                "role": "user",
-                "content": [
-                    {
-                        "type": "image",
-                        "source": {
-                            "type": "base64",
-                            "media_type": "image/jpeg",
-                            "data": _encode(image),
-                        },
-                    },
-                    {"type": "text", "text": _measurement_block(skin, locale)},
-                ],
-            }],
-        )
-    except (SkinVisionUnavailable, SkinVisionNotConsented):
-        raise
-    except Exception as exc:  # noqa: BLE001 - the SDK raises a family of transport/API errors
-        raise SkinVisionUnavailable(str(exc)) from exc
+        with urlopen(request, timeout=REQUEST_TIMEOUT_SECONDS) as response:
+            payload_body = json.loads(response.read().decode())
+    except HTTPError as exc:
+        # The key rides in the query string, so the URL is never echoed into an exception here.
+        detail = exc.read().decode()[:200] if exc.fp else ""
+        raise SkinVisionUnavailable(f"http_{exc.code}: {detail}") from exc
+    except Exception as exc:  # noqa: BLE001 - timeouts, DNS, TLS
+        raise SkinVisionUnavailable(f"unreachable: {exc}") from exc
 
-    # Checked before `content` is read, not after. A refusal returns HTTP 200 with an empty or
-    # partial content list, so indexing into it first is how this becomes an IndexError in
-    # production instead of a handled degradation.
-    if getattr(message, "stop_reason", None) == "refusal":
-        raise SkinVisionUnavailable("refused")
+    # Checked before `candidates` is read, not after. A photograph blocked by Google's safety
+    # filters comes back HTTP 200 with no candidates at all, so indexing first is how this
+    # becomes a KeyError in production instead of a handled degradation.
+    blocked = (payload_body.get("promptFeedback") or {}).get("blockReason")
+    if blocked:
+        raise SkinVisionUnavailable(f"blocked: {blocked}")
+    candidates = payload_body.get("candidates") or []
+    if not candidates:
+        raise SkinVisionUnavailable("empty_response")
+    finish = candidates[0].get("finishReason")
+    if finish and finish not in ("STOP", "MAX_TOKENS"):
+        raise SkinVisionUnavailable(f"refused: {finish}")
 
     text = "".join(
-        block.text for block in message.content if getattr(block, "type", None) == "text"
+        part.get("text", "")
+        for part in ((candidates[0].get("content") or {}).get("parts") or [])
     ).strip()
     if not text:
         raise SkinVisionUnavailable("empty_response")
@@ -250,14 +341,13 @@ def analyze(user, image, skin, locale="th"):
         payload = json.loads(text)
     except ValueError as exc:
         raise SkinVisionUnavailable("unparseable_response") from exc
-    if not isinstance(payload, dict) or "summary" not in payload:
-        raise SkinVisionUnavailable("unexpected_response_shape")
+    _validate(payload)
 
-    usage = getattr(message, "usage", None)
+    usage = payload_body.get("usageMetadata") or {}
     payload["provider"] = provider_label()
     payload["model"] = MODEL
     payload["usage"] = {
-        "input_tokens": getattr(usage, "input_tokens", 0) or 0,
-        "output_tokens": getattr(usage, "output_tokens", 0) or 0,
+        "input_tokens": usage.get("promptTokenCount") or 0,
+        "output_tokens": usage.get("candidatesTokenCount") or 0,
     }
     return payload

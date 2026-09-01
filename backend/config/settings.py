@@ -71,6 +71,14 @@ DATABASES = {
         # otherwise be handed to the next request and fail it. This checks liveness once per
         # request instead, which is a round-trip cheaper than reconnecting every time.
         conn_health_checks=True,
+        # Production points at Supabase's *transaction* pooler, which hands a server connection
+        # back to the pool at the end of every transaction rather than holding it for the
+        # session. That is what makes ~60 gunicorn threads survivable against a pool of 15 — but
+        # a server-side cursor outlives its transaction, so the next statement against it lands
+        # on a different backend and fails with "cursor does not exist". Django only opens them
+        # for `.iterator()`, which is rare here, so paying for client-side fetching is cheap
+        # next to sizing the whole thread pool down to the pooler.
+        disable_server_side_cursors=True,
     )
 }
 AUTH_PASSWORD_VALIDATORS = [
@@ -93,6 +101,24 @@ STORAGES = {
     # Compresses and fingerprints admin assets so they can be cached forever.
     "staticfiles": {"BACKEND": "whitenoise.storage.CompressedManifestStaticFilesStorage"},
 }
+# Behind a TLS-terminating reverse proxy (see Caddyfile) gunicorn is reached over plain HTTP on
+# loopback, so without this Django reports every request as insecure. The API does not care —
+# it authenticates with a bearer token and runs no CSRF check — but the admin does: Django
+# compares the browser's `Origin: https://api.doodee.app` against a request it believes is
+# http://, rejects the login POST, and the only symptom is "CSRF verification failed" on a form
+# that looks entirely normal. Bank transfers are confirmed in the admin, so an admin nobody can
+# log into is an admin that cannot take money.
+#
+# Trusting this header is only safe because the proxy sets it on every request it forwards and
+# gunicorn is bound to 127.0.0.1 (compose.prod.yaml), so nothing else can reach it to forge one.
+SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
+# Defaults to https:// for each configured host rather than being a second list to keep in step
+# with DJANGO_ALLOWED_HOSTS by hand. localhost is skipped: it is served over http in development,
+# and an https:// origin that never occurs would only be noise.
+CSRF_TRUSTED_ORIGINS = [item for item in os.getenv("CSRF_TRUSTED_ORIGINS", "").split(",") if item] or [
+    f"https://{host}" for host in ALLOWED_HOSTS
+    if host not in ("localhost", "127.0.0.1") and not host.startswith("*")
+]
 CORS_ALLOWED_ORIGINS = [item for item in os.getenv("CORS_ORIGINS", "http://localhost:5173,http://localhost:5174,http://localhost:5175,http://localhost:5180").split(",") if item]
 if DEBUG:
     CORS_ALLOWED_ORIGIN_REGEXES = [
@@ -159,13 +185,14 @@ CHAT_PRICE_CACHED_IN_USD_PER_MTOK = float(os.getenv("CHAT_PRICE_CACHED_IN_USD_PE
 CHAT_PRICE_OUT_USD_PER_MTOK = float(os.getenv("CHAT_PRICE_OUT_USD_PER_MTOK", "1.20"))
 USD_THB_RATE = float(os.getenv("USD_THB_RATE", "35"))
 
-# Skin vision is pinned to Opus 5 (`skin_vision.MODEL`) and is billed at Opus rates, which are
-# more than twenty times the chat model's per-token price. Reusing CHAT_PRICE_* here would have
-# under-reserved every photograph by that factor and let the monthly ceiling be walked straight
-# through. A photograph also arrives as thousands of input tokens rather than a sentence.
-SKIN_VISION_PRICE_IN_USD_PER_MTOK = float(os.getenv("SKIN_VISION_PRICE_IN_USD_PER_MTOK", "5"))
-SKIN_VISION_PRICE_CACHED_IN_USD_PER_MTOK = float(os.getenv("SKIN_VISION_PRICE_CACHED_IN_USD_PER_MTOK", "0.5"))
-SKIN_VISION_PRICE_OUT_USD_PER_MTOK = float(os.getenv("SKIN_VISION_PRICE_OUT_USD_PER_MTOK", "25"))
+# Skin vision now runs on the same model as chat (`skin_vision.MODEL`), so these default to the
+# same rates. They stay separate variables rather than collapsing into CHAT_PRICE_*: the two are
+# free to diverge again the moment either side changes model, and a photograph arrives as
+# thousands of input tokens rather than a sentence, so the per-call cost differs by orders of
+# magnitude even when the per-token price does not.
+SKIN_VISION_PRICE_IN_USD_PER_MTOK = float(os.getenv("SKIN_VISION_PRICE_IN_USD_PER_MTOK", "0.20"))
+SKIN_VISION_PRICE_CACHED_IN_USD_PER_MTOK = float(os.getenv("SKIN_VISION_PRICE_CACHED_IN_USD_PER_MTOK", "0.02"))
+SKIN_VISION_PRICE_OUT_USD_PER_MTOK = float(os.getenv("SKIN_VISION_PRICE_OUT_USD_PER_MTOK", "1.20"))
 # Turns the LLM cost card red once the month's spend passes this. Sized against the ~฿570 of
 # the ฿1,000 budget that is not the VPS.
 LLM_BUDGET_THB_PER_MONTH = float(os.getenv("LLM_BUDGET_THB_PER_MONTH", "570"))
@@ -254,7 +281,7 @@ CELERY_TASK_ROUTES = {
     # Shares the cv queue rather than getting its own. It is one HTTP call per completed scan
     # for consenting users only, so it cannot starve scan processing at any plausible volume —
     # and a queue nobody watches is worse than a queue that is slightly mixed. Split it out if
-    # an Anthropic outage ever shows up as scan latency.
+    # a vision-provider outage ever shows up as scan latency.
     "doodee.tasks.process_skin_vision": {"queue": "cv"},
     "doodee.tasks.reconcile_heavy_jobs": {"queue": "maintenance"},
 }

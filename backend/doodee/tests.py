@@ -6377,13 +6377,36 @@ class SkinVisionConsentTest(TestCase):
             SKIN_VISION_CONSENT_VERSION, accepted=accepted,
         )
 
+    def _live(self):
+        """The environment in which a request is permitted to go out at all."""
+        return patch.dict(
+            os.environ, {"SKIN_VISION_ENABLED": "true", "GEMINI_API_KEY": "test-key"},
+        )
+
+    def _response(self, body):
+        """What `urlopen` returns: a context manager whose read() is the REST reply."""
+        handle = MagicMock()
+        handle.read.return_value = json.dumps(body).encode()
+        handle.__enter__.return_value = handle
+        handle.__exit__.return_value = False
+        return handle
+
+    def _gemini(self, payload, finish_reason="STOP"):
+        return {
+            "candidates": [{
+                "content": {"parts": [{"text": json.dumps(payload)}]},
+                "finishReason": finish_reason,
+            }],
+            "usageMetadata": {"promptTokenCount": 4000, "candidatesTokenCount": 300},
+        }
+
     def test_no_consent_sends_nothing(self):
         from doodee import skin_vision
 
-        with patch("doodee.skin_vision._client") as client:
+        with self._live(), patch("doodee.skin_vision.urlopen") as urlopen:
             with self.assertRaises(skin_vision.SkinVisionNotConsented):
                 skin_vision.analyze(self.user, self.image, {"signals": {}})
-        client.assert_not_called()
+        urlopen.assert_not_called()
 
     def test_withdrawn_consent_sends_nothing(self):
         """The failure `filter(accepted=True).exists()` would have: a grant then a withdrawal."""
@@ -6392,10 +6415,27 @@ class SkinVisionConsentTest(TestCase):
         self._grant(accepted=True)
         self._grant(accepted=False)
 
-        with patch("doodee.skin_vision._client") as client:
+        with self._live(), patch("doodee.skin_vision.urlopen") as urlopen:
             with self.assertRaises(skin_vision.SkinVisionNotConsented):
                 skin_vision.analyze(self.user, self.image, {"signals": {}})
-        client.assert_not_called()
+        urlopen.assert_not_called()
+
+    def test_the_feature_switch_sends_nothing_even_with_consent(self):
+        """Consent answers "may we"; SKIN_VISION_ENABLED answers "are we, yet".
+
+        Asserted on `urlopen` never being called rather than on the exception, for the same
+        reason the consent tests are: an exception raised after the photograph is already on the
+        wire would still pass a test that only checked the exception.
+        """
+        from doodee import skin_vision
+
+        self._grant()
+        with patch.dict(os.environ, {"SKIN_VISION_ENABLED": "false", "GEMINI_API_KEY": "k"}), \
+             patch("doodee.skin_vision.urlopen") as urlopen:
+            with self.assertRaises(skin_vision.SkinVisionUnavailable) as caught:
+                skin_vision.analyze(self.user, self.image, {"signals": {}})
+        urlopen.assert_not_called()
+        self.assertIn("disabled", str(caught.exception))
 
     def test_regranting_after_a_withdrawal_works_again(self):
         from doodee import consent
@@ -6407,17 +6447,6 @@ class SkinVisionConsentTest(TestCase):
         self._grant(True)
         self.assertTrue(consent.granted(self.user, ConsentEvent.Purpose.SKIN_VISION))
 
-    def _reply(self, payload, stop_reason="end_turn"):
-        message = MagicMock()
-        message.stop_reason = stop_reason
-        block = MagicMock()
-        block.type = "text"
-        block.text = json.dumps(payload)
-        message.content = [block]
-        message.usage.input_tokens = 4000
-        message.usage.output_tokens = 300
-        return message
-
     def test_a_consented_scan_sends_the_image_once(self):
         from doodee import skin_vision
 
@@ -6427,36 +6456,55 @@ class SkinVisionConsentTest(TestCase):
             "observations": [{"signal": "undereye_shadow", "reading": "เห็นเงาบาง", "care": "นอนให้พอ"}],
             "limits": "ภาพเดียวบอกการเปลี่ยนแปลงตามเวลาไม่ได้",
         }
-        client = MagicMock()
-        client.messages.create.return_value = self._reply(payload)
 
-        with patch("doodee.skin_vision._client", return_value=client):
+        with self._live(), patch(
+            "doodee.skin_vision.urlopen", return_value=self._response(self._gemini(payload)),
+        ) as urlopen:
             result = skin_vision.analyze(self.user, self.image, {"signals": {"undereye_shadow": 6.4}})
 
         self.assertEqual(result["summary"], payload["summary"])
         self.assertEqual(result["model"], skin_vision.MODEL)
         self.assertEqual(result["usage"]["input_tokens"], 4000)
 
-        sent = client.messages.create.call_args.kwargs
-        image_blocks = [b for b in sent["messages"][0]["content"] if b["type"] == "image"]
-        self.assertEqual(len(image_blocks), 1)
+        sent = json.loads(urlopen.call_args.args[0].data.decode())
+        parts = sent["contents"][0]["parts"]
+        images = [p for p in parts if "inline_data" in p]
+        self.assertEqual(len(images), 1)
+        self.assertEqual(images[0]["inline_data"]["mime_type"], "image/jpeg")
         # The measurements travel with the image so the model describes them rather than
         # inventing its own.
-        text = "".join(b["text"] for b in sent["messages"][0]["content"] if b["type"] == "text")
+        text = "".join(p.get("text", "") for p in parts)
         self.assertIn("undereye_shadow", text)
+        # Gemini rejects `additionalProperties`, so it must not survive the schema conversion —
+        # `_validate` is what keeps the closed shape binding instead.
+        self.assertNotIn(
+            "additionalProperties", json.dumps(sent["generationConfig"]["responseSchema"]),
+        )
 
     def test_a_refusal_degrades_instead_of_raising_an_index_error(self):
-        """Refusals come back as HTTP 200 with empty content — the trap this guards."""
+        """A blocked photograph comes back HTTP 200 with no candidates — the trap this guards."""
         from doodee import skin_vision
 
         self._grant()
-        refused = MagicMock()
-        refused.stop_reason = "refusal"
-        refused.content = []
-        client = MagicMock()
-        client.messages.create.return_value = refused
+        blocked = {"promptFeedback": {"blockReason": "SAFETY"}}
 
-        with patch("doodee.skin_vision._client", return_value=client):
+        with self._live(), patch(
+            "doodee.skin_vision.urlopen", return_value=self._response(blocked),
+        ):
+            with self.assertRaises(skin_vision.SkinVisionUnavailable) as caught:
+                skin_vision.analyze(self.user, self.image, {"signals": {}})
+        self.assertIn("blocked", str(caught.exception))
+
+    def test_a_stopped_candidate_degrades(self):
+        """`finishReason` carries the refusal when the prompt itself was not blocked."""
+        from doodee import skin_vision
+
+        self._grant()
+        body = self._gemini({"summary": "x", "observations": [], "limits": "y"}, "SAFETY")
+
+        with self._live(), patch(
+            "doodee.skin_vision.urlopen", return_value=self._response(body),
+        ):
             with self.assertRaises(skin_vision.SkinVisionUnavailable) as caught:
                 skin_vision.analyze(self.user, self.image, {"signals": {}})
         self.assertIn("refused", str(caught.exception))
@@ -6465,10 +6513,41 @@ class SkinVisionConsentTest(TestCase):
         from doodee import skin_vision
 
         self._grant()
-        client = MagicMock()
-        client.messages.create.return_value = self._reply({"unexpected": True})
+        with self._live(), patch(
+            "doodee.skin_vision.urlopen",
+            return_value=self._response(self._gemini({"unexpected": True})),
+        ):
+            with self.assertRaises(skin_vision.SkinVisionUnavailable):
+                skin_vision.analyze(self.user, self.image, {"signals": {}})
 
-        with patch("doodee.skin_vision._client", return_value=client):
+    def test_an_extra_field_is_rejected(self):
+        """What `additionalProperties: false` used to buy, now that Gemini cannot enforce it."""
+        from doodee import skin_vision
+
+        self._grant()
+        payload = {
+            "summary": "ok", "observations": [], "limits": "ok",
+            "diagnosis": "rosacea",  # exactly the thing the system prompt forbids
+        }
+        with self._live(), patch(
+            "doodee.skin_vision.urlopen", return_value=self._response(self._gemini(payload)),
+        ):
+            with self.assertRaises(skin_vision.SkinVisionUnavailable):
+                skin_vision.analyze(self.user, self.image, {"signals": {}})
+
+    def test_an_invented_signal_is_rejected(self):
+        """The enum is the list of things the local engine measured; nothing else is describable."""
+        from doodee import skin_vision
+
+        self._grant()
+        payload = {
+            "summary": "ok",
+            "observations": [{"signal": "wrinkles", "reading": "r", "care": ""}],
+            "limits": "ok",
+        }
+        with self._live(), patch(
+            "doodee.skin_vision.urlopen", return_value=self._response(self._gemini(payload)),
+        ):
             with self.assertRaises(skin_vision.SkinVisionUnavailable):
                 skin_vision.analyze(self.user, self.image, {"signals": {}})
 
@@ -6476,10 +6555,9 @@ class SkinVisionConsentTest(TestCase):
         from doodee import skin_vision
 
         self._grant()
-        client = MagicMock()
-        client.messages.create.side_effect = RuntimeError("connection reset")
-
-        with patch("doodee.skin_vision._client", return_value=client):
+        with self._live(), patch(
+            "doodee.skin_vision.urlopen", side_effect=RuntimeError("connection reset"),
+        ):
             with self.assertRaises(skin_vision.SkinVisionUnavailable):
                 skin_vision.analyze(self.user, self.image, {"signals": {}})
 

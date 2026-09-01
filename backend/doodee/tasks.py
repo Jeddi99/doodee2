@@ -65,12 +65,12 @@ def process_scan(scan_id):
     transaction.on_commit(lambda: queue_skin_vision(scan))
 
 
-# Roughly what one front photograph costs to send. Anthropic bills an image at about
-# width*height/750 tokens, and `skin_vision._encode` caps the long edge at 2,576px, so a portrait
-# frame lands near 6,600 — call it 8,000 with the prompt and the measurement block. Deliberately
-# generous: an under-estimate is admitted against the monthly ceiling and then spends more than it
-# held, which is the direction that overruns a budget rather than the direction that protects it.
-SKIN_VISION_RESERVE_INPUT_TOKENS = 8000
+# Roughly what one front photograph costs to send. Gemini bills an image as 768x768 tiles at 258
+# tokens each, and `skin_vision._encode` caps the long edge at 2,576px, so a portrait frame is at
+# most 4x3 tiles — about 3,100 — call it 5,000 with the system prompt and the measurement block.
+# Deliberately generous: an under-estimate is admitted against the monthly ceiling and then spends
+# more than it held, which is the direction that overruns a budget rather than protects it.
+SKIN_VISION_RESERVE_INPUT_TOKENS = 5000
 
 
 def queue_skin_vision(scan):
@@ -131,7 +131,7 @@ def process_skin_vision(scan_id):
 
     ledger = ai_budget.reserve(
         scan.user, f"skin_vision:{scan.id}",
-        provider="anthropic", model=skin_vision.MODEL,
+        provider=skin_vision.PROVIDER, model=skin_vision.MODEL,
         input_tokens=SKIN_VISION_RESERVE_INPUT_TOKENS, output_tokens=skin_vision.MAX_TOKENS,
         price_in=settings.SKIN_VISION_PRICE_IN_USD_PER_MTOK,
         price_out=settings.SKIN_VISION_PRICE_OUT_USD_PER_MTOK,
