@@ -12,7 +12,7 @@ import {
 import { useNavigate } from "react-router-dom";
 import { useLocale } from "../useLocale";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { createDemoScan, getPlans, getScan, getScans, getSession } from "../lib/api";
+import { createDemoScan, getPlans, getScan, getScans, getScoreCard, getSession } from "../lib/api";
 import { baht } from "../lib/referral";
 import { errorMessage } from "../lib/apiError";
 import { dashboardGate } from "../lib/dashboardGate";
@@ -52,7 +52,6 @@ import {
   SlidersHorizontal,
   Droplets,
   Sparkles,
-  Target,
   WandSparkles,
   X,
 } from "lucide-react";
@@ -380,316 +379,206 @@ function LockedNumber({
   );
 }
 
+/* The reference distribution, with the viewer's own position marked.
+ *
+ * The bell itself is a fixed decorative path — it illustrates "most people sit in
+ * the middle", not a plotted dataset. The marker is the part that must be real, so
+ * it takes a percentile and maps it across the curve's drawn span. qijek's version
+ * pinned the marker at x=488 with the label "YOU · 7.4" baked in; that is a picture
+ * of one person's result, not anyone's.
+ *
+ * With no percentile the curve renders without a marker rather than defaulting to
+ * the middle, which would quietly tell every viewer they are average. */
+const CURVE_LEFT = 42;
+const CURVE_RIGHT = 718;
+
+function ScoreCurve({
+  percentile,
+  label,
+}: {
+  percentile: number | null;
+  label: string | null;
+}) {
+  const x =
+    percentile === null
+      ? null
+      : CURVE_LEFT + (Math.min(100, Math.max(0, percentile)) / 100) * (CURVE_RIGHT - CURVE_LEFT);
+  return (
+    <svg
+      className="score-curve"
+      viewBox="0 0 760 220"
+      role="img"
+      aria-label={label ?? "Reference range"}
+    >
+      <defs>
+        <linearGradient id="curveFill" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0" stopColor="#1687ff" stopOpacity=".2" />
+          <stop offset="1" stopColor="#1687ff" stopOpacity="0" />
+        </linearGradient>
+      </defs>
+      <path className="score-curve__grid" d="M40 174H720M40 128H720M40 82H720" />
+      <path
+        className="score-curve__fill"
+        d="M42 174C158 174 195 167 249 140C308 111 322 44 380 38C438 44 452 111 511 140C565 167 602 174 718 174V200H42Z"
+      />
+      <path
+        className="score-curve__line"
+        d="M42 174C158 174 195 167 249 140C308 111 322 44 380 38C438 44 452 111 511 140C565 167 602 174 718 174"
+      />
+      {x !== null && (
+        <>
+          <line className="score-curve__marker" x1={x} y1="80" x2={x} y2="181" />
+          <circle cx={x} cy="145" r="7" />
+          {label && (
+            <text x={x} y="66" textAnchor="middle">
+              {label}
+            </text>
+          )}
+        </>
+      )}
+    </svg>
+  );
+}
+
 function Overview({
+  scanId,
   openView,
   onUnlock,
 }: {
+  scanId: string | undefined;
   openView: (view: AppView) => void;
   onUnlock: () => void;
 }) {
-  const { pillars, rows, strengths, improvements, overall } = useScanData();
+  const { pillars, strengths, improvements } = useScanData();
   const { locale } = useLocale();
   const th = locale !== "en";
-  const navigate = useNavigate();
-  const [activeTab, setActiveTab] = useState<"summary" | "ratios" | "insights" | "scorecard">("summary");
-  const [selectedPillar, setSelectedPillar] = useState<PillarId | "all">("all");
-  const [selectedRatio, setSelectedRatio] = useState<RatioMetric | null>(null);
 
   const unlockedCount = pillars.filter((item) => !item.locked).length;
-  // `pillarsFor(null)` scores every pillar "—" for an account with no scan yet,
-  // and `"—" || "0"` is truthy, so the fallback never fired: parseFloat gave
-  // NaN, which reached `toFixed(1)` as the literal text "NaN" and the gauge's
-  // strokeDashoffset as an invalid attribute. Guard on the parsed value.
-  const firstPillarScore = parseFloat(pillars[0]?.score ?? "");
-  const overallVal =
-    overall !== null ? overall : Number.isFinite(firstPillarScore) ? firstPillarScore : 0;
-  const scoreDisplay = overallVal.toFixed(1);
+  // The pillar the card headlines. qijek hardcodes `pillars[0]` and marks "harmony"
+  // active; here it is whichever pillar is actually readable, so an account whose
+  // first pillar is locked does not get a headline with nothing under it.
+  const current = pillars.find((item) => !item.locked) ?? pillars[0];
 
-  // SVG Gauge calculations
-  const radius = 64;
-  const circumference = 2 * Math.PI * radius;
-  const progressOffset = circumference - (Math.min(10, Math.max(0, overallVal)) / 10) * circumference;
-
-  const filteredRows = selectedPillar === "all" ? rows : rows.filter((r) => pillarOf(r.category) === selectedPillar);
+  // The distribution's marker. Same endpoint ScoreCardPanel reads, so the two
+  // screens cannot disagree about where this face sits against the reference.
+  const card = useQuery({
+    queryKey: ["score-card", scanId],
+    queryFn: () => getScoreCard(scanId),
+    enabled: Boolean(scanId),
+  });
+  const cardData = card.data as
+    | { similarity_percentile?: number | null; similarity_percentile_locked?: boolean }
+    | undefined;
+  // Two different absences that must not read the same: `locked` means the number
+  // exists and a paid plan reveals it; plain null means there is nothing to reveal.
+  const percentileLocked = cardData?.similarity_percentile_locked === true;
+  const percentile = percentileLocked ? null : cardData?.similarity_percentile ?? null;
 
   return (
-    <div className="app-view app-overview app-overview--modern">
-      {/* Sub-tabs Navigation */}
-      <nav className="doodee-subtabs" aria-label="Overview tabs">
-        <button
-          type="button"
-          className={activeTab === "summary" ? "is-active" : ""}
-          onClick={() => setActiveTab("summary")}
-        >
-          <LayoutGrid size={16} />
-          <span>{th ? "ภาพรวม" : "Summary"}</span>
-        </button>
-        <button
-          type="button"
-          className={activeTab === "ratios" ? "is-active" : ""}
-          onClick={() => setActiveTab("ratios")}
-        >
-          <SlidersHorizontal size={16} />
-          <span>{th ? "สัดส่วน 12 ค่า" : "12 Measurements"}</span>
-        </button>
-        <button
-          type="button"
-          className={activeTab === "insights" ? "is-active" : ""}
-          onClick={() => setActiveTab("insights")}
-        >
-          <Target size={16} />
-          <span>{th ? "จุดเด่น & การพัฒนา" : "Insights"}</span>
-        </button>
-        <button
-          type="button"
-          className={activeTab === "scorecard" ? "is-active" : ""}
-          onClick={() => setActiveTab("scorecard")}
-        >
-          <BarChart3 size={16} />
-          <span>{th ? "การ์ดคะแนน" : "Score Card"}</span>
-        </button>
-      </nav>
+    <div className="app-view app-overview">
+      <section className="app-pillar-grid" aria-label={th ? "คะแนนรายมิติ" : "Score pillars"}>
+        {pillars.map((item) => (
+          <button
+            className={`pillar-card app-glass ${item.id === current?.id ? "is-active" : ""} ${item.locked ? "is-locked" : ""}`}
+            data-pillar={item.id}
+            type="button"
+            onClick={() => (item.locked ? onUnlock() : openView("analysis"))}
+            key={item.id}
+          >
+            <span className={`pillar-art pillar-art--${item.id}`} aria-hidden="true" />
+            <span className="pillar-card__head">
+              <i className={`pillar-mark pillar-mark--${item.id}`} />
+              {item.label}
+              <ArrowRight />
+            </span>
+            <strong className={item.locked ? "locked-score-shell" : undefined}>
+              {item.locked ? (
+                <LockedNumber />
+              ) : (
+                <>
+                  {item.score}
+                  <small>/10</small>
+                </>
+              )}
+            </strong>
+            {item.locked ? (
+              <span className="pillar-unlock">
+                <LockKeyhole /> {th ? "ปลดล็อกคะแนน" : "Unlock your score"}
+              </span>
+            ) : (
+              <span className="pillar-unlock pillar-unlock--open">
+                <ArrowRight />{" "}
+                {th ? `ดูค่าที่วัดได้ · ${item.label}` : `View ${item.label} ratios`}
+              </span>
+            )}
+          </button>
+        ))}
+      </section>
 
-      {/* TAB 1: SUMMARY */}
-      {activeTab === "summary" && (
-        <>
-          {/* Hero Face Summary Card */}
-          <GlassCard className="doodee-hero-score-card">
-            <div className="doodee-hero-score-card__faces">
-              <figure className="doodee-face-thumb">
-                <ScanPhoto alt="Front view" />
+      <GlassCard className="overall-card">
+        <header>
+          <div>
+            <span className="eyebrow">{th ? "คะแนนรวม" : "Overall score"}</span>
+            <h1>{current?.label}</h1>
+          </div>
+          <span className="overall-card__count">
+            {th
+              ? `${unlockedCount} จาก ${pillars.length} มิติ`
+              : `${unlockedCount} of ${pillars.length} pillars`}
+          </span>
+        </header>
+        <div className="overall-card__body">
+          <div className="overall-score">
+            <strong>{current?.score}</strong>
+            <span>/10</span>
+            <p>{current?.note}</p>
+            <div className="score-portrait-pair">
+              <figure>
+                <ScanPhoto alt={th ? "ภาพหน้าตรงของคุณ" : "Your front scan"} />
                 <figcaption>{th ? "หน้าตรง" : "Front"}</figcaption>
               </figure>
-              <figure className="doodee-face-thumb">
-                <ScanPhoto alt="Side profile" className="is-side" />
+              <figure>
+                <ScanPhoto
+                  alt={th ? "ภาพด้านข้างของคุณ" : "Your side scan"}
+                  className="is-side"
+                />
                 <figcaption>{th ? "ด้านข้าง" : "Side"}</figcaption>
               </figure>
             </div>
-
-            <div className="doodee-hero-score-card__gauge">
-              <div className="doodee-gauge-wrapper">
-                <svg className="doodee-gauge-svg" viewBox="0 0 160 160">
-                  <circle
-                    className="doodee-gauge-bg"
-                    cx="80"
-                    cy="80"
-                    r={radius}
-                    strokeWidth="12"
-                  />
-                  <circle
-                    className="doodee-gauge-meter"
-                    cx="80"
-                    cy="80"
-                    r={radius}
-                    strokeWidth="12"
-                    strokeDasharray={circumference}
-                    strokeDashoffset={progressOffset}
-                  />
-                </svg>
-                <div className="doodee-gauge-content">
-                  <strong>{scoreDisplay}</strong>
-                  <small>/10</small>
-                </div>
-              </div>
-              <div className="doodee-gauge-info">
-                <span className="doodee-badge doodee-badge--primary">
-                  {th ? "ความสมดุลใกล้เคียงเกณฑ์" : "High Balance Index"}
-                </span>
-                <h2>{th ? "ผลวิเคราะห์สัดส่วนใบหน้า" : "Facial Analysis Score"}</h2>
-                <p>
-                  {th
-                    ? "คำนวณเปรียบเทียบกับกลุ่มอ้างอิงคนไทยอายุ 18-35 ปี โดยประเมินความสมดุล 12 มิติ"
-                    : "Calibrated against Thai adult reference standard (18-35 yrs) across 12 facial dimensions."}
-                </p>
+          </div>
+          <div className="overall-distribution">
+            <div className={percentile === null ? "overall-distribution__blur" : undefined}>
+              <ScoreCurve
+                percentile={percentile}
+                label={
+                  percentile === null
+                    ? null
+                    : th
+                      ? `คุณ · ${current?.score}`
+                      : `YOU · ${current?.score}`
+                }
+              />
+              <div className="curve-legend">
+                <span>{th ? "ต่ำกว่า" : "Lower"}</span>
+                <span>{th ? "ช่วงอ้างอิง" : "Reference range"}</span>
+                <span>{th ? "สูงกว่า" : "Higher"}</span>
               </div>
             </div>
-
-            <div className="doodee-hero-score-card__actions">
-              <button
-                type="button"
-                className="doodee-btn doodee-btn--primary"
-                onClick={() => openView("doodeegpt")}
-              >
-                <MessageCircle size={16} />
-                <span>{th ? "ถาม AI เกี่ยวกับผลนี้" : "Ask Gemini AI"}</span>
+            {/* Only offered when there is something behind the lock. A plain
+                missing percentile is not a thing a purchase reveals. */}
+            {percentileLocked && (
+              <button type="button" onClick={onUnlock}>
+                <LockKeyhole /> {th ? "ดูตำแหน่งของคุณ" : "See your reference position"}
               </button>
-              <button
-                type="button"
-                className="doodee-btn doodee-btn--secondary"
-                onClick={() => openView("simulate")}
-              >
-                <WandSparkles size={16} />
-                <span>{th ? "จำลองรูปหน้า" : "Simulation"}</span>
-              </button>
-              <button
-                type="button"
-                className="doodee-btn doodee-btn--ghost"
-                onClick={() => navigate("/scan")}
-              >
-                <RefreshCw size={15} />
-                <span>{th ? "สแกนใหม่" : "New Scan"}</span>
-              </button>
-            </div>
-          </GlassCard>
-
-          {/* 4 Pillars Grid (2x2) */}
-          <div className="doodee-section-header">
-            <div>
-              <span className="eyebrow">{th ? "4 มิติหลักของใบหน้า" : "4 Core Pillars"}</span>
-              <h3>{th ? "ความสมดุลและโครงสร้างรูปหน้า" : "Harmony & Structural Ratios"}</h3>
-            </div>
-            <span className="doodee-tag">{unlockedCount} / {pillars.length} {th ? "ปลดล็อกแล้ว" : "Unlocked"}</span>
+            )}
           </div>
-
-          <section className="doodee-pillar-grid-clean" aria-label="Score pillars">
-            {pillars.map((item) => {
-              const scoreVal = parseFloat(item.score || "0");
-              const pct = Math.min(100, Math.max(0, scoreVal * 10));
-              return (
-                <GlassCard
-                  key={item.id}
-                  className={`doodee-pillar-card ${item.locked ? "is-locked" : ""}`}
-                >
-                  {/* Decorative sprite behind the card, one frame per pillar.
-                      aria-hidden and empty: it carries no information the card
-                      does not already state in text. */}
-                  <span
-                    className={`pillar-art pillar-art--${item.id}`}
-                    aria-hidden="true"
-                  />
-                  <div className="doodee-pillar-card__head">
-                    <div className="doodee-pillar-icon">
-                      <span className={`pillar-mark pillar-mark--${item.id}`} />
-                      <h4>{item.label}</h4>
-                    </div>
-                    <strong className={`doodee-pillar-score${item.locked ? " locked-score-shell" : ""}`}>
-                      {item.locked ? (
-                        <LockedNumber />
-                      ) : (
-                        <>
-                          {item.score}
-                          <small>/10</small>
-                        </>
-                      )}
-                    </strong>
-                  </div>
-
-                  <div className="doodee-progress-bar">
-                    <div
-                      className={`doodee-progress-bar__fill doodee-progress-bar__fill--${item.id}`}
-                      style={{ width: `${pct}%` }}
-                    />
-                  </div>
-
-                  <p className="doodee-pillar-note">{item.note}</p>
-
-                  <div className="doodee-pillar-footer">
-                    {item.locked ? (
-                      <button
-                        type="button"
-                        className="doodee-btn-link doodee-btn-link--lock"
-                        onClick={onUnlock}
-                      >
-                        <LockKeyhole size={14} /> {th ? "ปลดล็อกคะแนนเต็ม" : "Unlock Full Pillar"}
-                      </button>
-                    ) : (
-                      <button
-                        type="button"
-                        className="doodee-btn-link"
-                        onClick={() => {
-                          setSelectedPillar(item.id);
-                          setActiveTab("ratios");
-                        }}
-                      >
-                        <span>{th ? "ดูค่าที่วัดได้" : "View Measurements"}</span>
-                        <ArrowRight size={14} />
-                      </button>
-                    )}
-                  </div>
-                </GlassCard>
-              );
-            })}
-          </section>
-        </>
-      )}
-
-      {/* TAB 2: RATIOS (12 Measurements) */}
-      {activeTab === "ratios" && (
-        <div className="doodee-ratios-tab">
-          <div className="doodee-filter-chips">
-            <button
-              type="button"
-              className={selectedPillar === "all" ? "is-active" : ""}
-              onClick={() => setSelectedPillar("all")}
-            >
-              {th ? "ทั้งหมด" : "All (12)"}
-            </button>
-            {pillars.map((p) => (
-              <button
-                key={p.id}
-                type="button"
-                className={selectedPillar === p.id ? "is-active" : ""}
-                onClick={() => setSelectedPillar(p.id)}
-              >
-                {p.label}
-              </button>
-            ))}
-          </div>
-
-          <GlassCard className="doodee-ratios-card">
-            <div className="ratio-table" role="table" aria-label="Measurements list">
-              {filteredRows.map((r) => (
-                <button
-                  key={r.id}
-                  type="button"
-                  className="ratio-row"
-                  onClick={() => setSelectedRatio(r)}
-                >
-                  <div className="ratio-row__info">
-                    <strong>{r.name}</strong>
-                    {/* `value` and `ideal` already carry the unit — formatMeasure() adds it.
-                        Re-reading observed/reference/unit off the row was reading fields
-                        RatioRow never had, so the whole line rendered blank. */}
-                    <small>{r.value} ({th ? "อ้างอิง" : "reference"}: {r.ideal})</small>
-                  </div>
-                  <div className="ratio-row__score">
-                    <span className="doodee-badge doodee-badge--outline">{r.status}</span>
-                    <b>{r.score}/10</b>
-                    <ArrowRight size={16} />
-                  </div>
-                </button>
-              ))}
-            </div>
-          </GlassCard>
         </div>
-      )}
+      </GlassCard>
 
-      {/* TAB 3: INSIGHTS */}
-      {activeTab === "insights" && (
-        <section className="insight-grid">
-          <InsightList kind="strength" items={strengths} />
-          <InsightList kind="improve" items={improvements} />
-        </section>
-      )}
-
-      {/* TAB 4: SCORECARD */}
-      {activeTab === "scorecard" && (
-        <div className="doodee-scorecard-tab">
-          <Suspense fallback={<div className="app-view" aria-busy="true" />}>
-            <ScoreCardPanel />
-          </Suspense>
-        </div>
-      )}
-
-      {/* Ratio Details Modal if opened */}
-      {selectedRatio && (
-        <RatioModal
-          metric={selectedRatio}
-          index={rows.indexOf(selectedRatio)}
-          total={rows.length}
-          onClose={() => setSelectedRatio(null)}
-        />
-      )}
+      <section className="insight-grid">
+        <InsightList kind="strength" items={strengths} />
+        <InsightList kind="improve" items={improvements} />
+      </section>
     </div>
   );
 }
@@ -2088,6 +1977,7 @@ export default function DashboardPage({ view }: { view: AppView }) {
         <div className="app-content">
           {view === "overview" && (
             <Overview
+              scanId={scanId}
               openView={openView}
               onUnlock={() => setUnlockOpen(true)}
             />

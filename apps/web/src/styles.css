@@ -14871,16 +14871,16 @@ body[data-locale="th"] .eyebrow {
 /* ---------------------------------------------------------------------------
  * Locked-score reel and pillar ornaments, from project-qijek.
  *
- * `.pillar-card` there is `.doodee-pillar-card` here — the same idea on a card
+ * `.pillar-card` there is `.pillar-card` here — the same idea on a card
  * this app has since grown a progress bar, a note and a footer link onto — so
  * the selectors are retargeted rather than qijek's card being imported over it.
  *
- * `.doodee-pillar-card` must be a positioning context for `.pillar-art`, which
+ * `.pillar-card` must be a positioning context for `.pillar-art`, which
  * is absolutely positioned. The landing re-sync shipped a bug by assuming that
  * and leaving three renders stacked on the hero; it is asserted below instead.
  * ------------------------------------------------------------------------- */
 
-.doodee-pillar-card > *:not(.pillar-art) {
+.pillar-card > *:not(.pillar-art) {
   position: relative;
   z-index: 2;
 }
@@ -14910,8 +14910,8 @@ body[data-locale="th"] .eyebrow {
 
 .pillar-art--features { background-position: 100% 50%; transform: rotate(4deg); }
 
-.doodee-pillar-card:hover .pillar-art,
-.doodee-pillar-card.is-active .pillar-art {
+.pillar-card:hover .pillar-art,
+.pillar-card.is-active .pillar-art {
   opacity: .58;
 }
 
@@ -14984,7 +14984,7 @@ body[data-locale="th"] .eyebrow {
 
 .locked-number--compact .locked-number__blur { filter: blur(3.2px); }
 
-.doodee-pillar-card.is-locked strong.locked-score-shell {
+.pillar-card.is-locked strong.locked-score-shell {
   filter: none;
   opacity: 1;
 }
@@ -15002,4 +15002,25 @@ body[data-locale="th"] .eyebrow {
   width: 12px;
   height: 12px;
   opacity: .52;
+}
+
+/* The pillar card's corner bloom, from project-qijek. Every other `.pillar-card`
+ * rule already exists above — this stylesheet was seeded from qijek's and the
+ * classes stayed even while `/home` rendered its own markup — so this pseudo-
+ * element is the only piece the Overview rewrite actually had to bring over.
+ *
+ * Safe to place last: `.pillar-card` sets `position: relative` and
+ * `overflow: hidden`, so the bloom is contained and needs no stacking fix. */
+.pillar-card::after {
+  content: "";
+  width: 58%;
+  height: 42%;
+  position: absolute;
+  right: -12%;
+  bottom: -18%;
+  z-index: 0;
+  pointer-events: none;
+  border-radius: 50%;
+  background: radial-gradient(ellipse, rgba(255,255,255,.82), rgba(169,212,249,.2) 52%, transparent 74%);
+  filter: blur(8px);
 }
