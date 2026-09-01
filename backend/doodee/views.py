@@ -40,7 +40,7 @@ from .omise import (
     verify_signature as verify_omise_signature,
 )
 from .demo_data import create_demo_scan
-from . import procedure_catalog
+from . import metric_catalog, procedure_catalog
 from .chat import (
     HISTORY_TURNS, MAX_QUESTION_CHARS, ChatUnavailable, chat_enabled, reply as chat_reply,
     scan_context, system_prompt, title_for,
@@ -1032,6 +1032,29 @@ class ProcedureList(APIView):
             ))
         except ValueError as exc:
             raise ValidationError({"category": str(exc)}) from exc
+
+
+class MetricCatalogList(APIView):
+    """The characteristics this product claims to read, and what backs each one.
+
+    Served rather than duplicated in each client so "we do not measure your hairline" is written
+    in one place. `coverage` is counted from the same tuple, so the headline number cannot claim
+    more than the list under it shows.
+    """
+
+    def get(self, request):
+        group = request.query_params.get("group")
+        if group and group not in metric_catalog.GROUPS:
+            raise NotFound("Unknown group")
+        items = [item for item in metric_catalog.CATALOG if not group or item["group"] == group]
+        return Response({
+            "items": items,
+            "groups": [{"key": key,
+                        "name_th": metric_catalog.GROUP_LABELS[key][0],
+                        "name_en": metric_catalog.GROUP_LABELS[key][1]}
+                       for key in metric_catalog.GROUPS],
+            "coverage": metric_catalog.coverage(),
+        })
 
 
 class ProcedureCategoryList(APIView):

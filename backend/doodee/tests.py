@@ -388,6 +388,124 @@ class MetricCatalogTest(SimpleTestCase):
         self.assertTrue({f"{name}_ratio" for name in shared} <= set(METRIC_KEYS))
 
 
+class MetricCatalogRowsTest(SimpleTestCase):
+    """The 85 characteristics a person actually asks about, and what backs each one.
+
+    Three different things get called "a metric" here and they are not interchangeable: the
+    ratios `analysis_engine` measures, the twelve spans `reference_scoring` has a published mean
+    for, and the skin signals `skin_engine` reads off a close front photograph. A row can be
+    backed by any of them, so each family is pinned separately — a row naming a key nobody
+    produces would show a user a characteristic with a permanently blank number.
+    """
+
+    def test_every_metric_a_row_names_is_one_the_engine_emits(self):
+        from .analysis_engine import METRIC_KEYS
+        from .metric_catalog import CATALOG
+
+        named = {key for item in CATALOG for key in item["metrics"]}
+        self.assertEqual(sorted(named - set(METRIC_KEYS)), [])
+
+    def test_every_reference_a_row_names_is_one_that_gets_scored(self):
+        from .metric_catalog import CATALOG
+
+        named = {key for item in CATALOG for key in item["reference"]}
+        self.assertEqual(sorted(named - set(CATEGORIES)), [])
+
+    def test_every_skin_signal_a_row_names_is_one_the_skin_engine_produces(self):
+        """The four this file arrived naming were the other repo's cruder set, which this one
+        replaced with `skin_engine` long ago. Left alone they would have read as `measured`."""
+        from .metric_catalog import CATALOG
+        from .skin_engine import analyze_skin
+
+        named = {key for item in CATALOG for key in item["skin_signals"]}
+        source = Path(analyze_skin.__globals__["__file__"]).read_text()
+        missing = sorted(key for key in named if f'signals["{key}"]' not in source)
+        self.assertEqual(missing, [], f"named here but never produced: {missing}")
+
+    def test_no_measured_metric_is_left_out_of_the_catalog(self):
+        """The other direction: a metric produced but placed nowhere is a number with no name."""
+        from .analysis_engine import METRIC_KEYS
+        from .metric_catalog import CATALOG
+
+        named = {key for item in CATALOG for key in item["metrics"]}
+        self.assertEqual(sorted(set(METRIC_KEYS) - named), [])
+
+    def test_status_is_derived_from_the_evidence_not_declared(self):
+        from .metric_catalog import CATALOG
+
+        for item in CATALOG:
+            backed = bool(item["metrics"] or item["reference"] or item["skin_signals"])
+            self.assertEqual(item["status"], "measured" if backed else "not_measured", item["id"])
+
+    def test_a_row_that_measures_nothing_says_why(self):
+        """`not_measured` is a product statement, not a to-do, and it is meant to be shown."""
+        from .metric_catalog import CATALOG
+
+        silent = [item["id"] for item in CATALOG
+                  if item["status"] == "not_measured" and not (item["note_th"] and item["note_en"])]
+        self.assertEqual(silent, [])
+
+    def test_rows_are_numbered_once_and_named_once(self):
+        from .metric_catalog import CATALOG, GROUPS
+
+        self.assertEqual(len({item["number"] for item in CATALOG}), len(CATALOG))
+        self.assertEqual(len({item["id"] for item in CATALOG}), len(CATALOG))
+        self.assertTrue(all(item["group"] in GROUPS for item in CATALOG))
+
+    def test_a_face_scan_does_not_claim_the_rows_only_a_skin_scan_fills(self):
+        from .analysis_engine import METRIC_KEYS
+        from .metric_catalog import catalog_for
+
+        rows = {item["id"]: item for item in catalog_for(METRIC_KEYS, CATEGORIES)}
+        self.assertFalse(rows["skin_texture"]["available"])
+        self.assertTrue(rows["facial_thirds"]["available"])
+        with_skin = {item["id"]: item for item in
+                     catalog_for(METRIC_KEYS, CATEGORIES, ("texture", "tone_spread"))}
+        self.assertTrue(with_skin["skin_texture"]["available"])
+
+
+class MetricCatalogApiTest(TestCase):
+    """`/metric-catalog/` — the same answer for everyone, so it is not attached to a scan."""
+
+    def setUp(self):
+        self.user = User.objects.create_user("catalog-reader-metrics")
+        self.client = APIClient()
+        self.client.force_authenticate(self.user)
+
+    def test_the_whole_catalog_comes_back_with_its_groups_and_a_count(self):
+        from .metric_catalog import CATALOG, GROUPS
+
+        response = self.client.get("/api/v1/metric-catalog/")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(response.data["items"]), len(CATALOG))
+        self.assertEqual([group["key"] for group in response.data["groups"]], list(GROUPS))
+        self.assertTrue(all(group["name_th"] and group["name_en"] for group in response.data["groups"]))
+
+    def test_the_headline_count_cannot_claim_more_than_the_list_shows(self):
+        response = self.client.get("/api/v1/metric-catalog/")
+        measured = sum(1 for item in response.data["items"] if item["status"] == "measured")
+        self.assertEqual(response.data["coverage"]["measured"], measured)
+        self.assertEqual(response.data["coverage"]["total"], len(response.data["items"]))
+
+    def test_one_group_can_be_asked_for(self):
+        response = self.client.get("/api/v1/metric-catalog/?group=skin")
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.data["items"])
+        self.assertTrue(all(item["group"] == "skin" for item in response.data["items"]))
+        # The count stays whole-catalog: it is what the product measures, not what this tab does.
+        self.assertEqual(response.data["coverage"]["total"], len(self.client.get("/api/v1/metric-catalog/").data["items"]))
+
+    def test_an_unknown_group_is_a_404_rather_than_the_whole_list(self):
+        self.assertEqual(self.client.get("/api/v1/metric-catalog/?group=elbows").status_code, 404)
+
+    def test_a_row_that_measures_nothing_still_arrives_with_its_reason(self):
+        """Telling someone "we do not measure your hairline" is the answer; hiding it is not."""
+        response = self.client.get("/api/v1/metric-catalog/")
+        unmeasured = [item for item in response.data["items"] if item["status"] == "not_measured"]
+        self.assertTrue(unmeasured)
+        self.assertTrue(all(item["note_th"] and item["note_en"] for item in unmeasured))
+
+
 class ProcedureNamesEnTest(TestCase):
     """Every row carries an English name, and the table names nothing that does not exist.
 
