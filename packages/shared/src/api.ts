@@ -17,6 +17,15 @@ export const SCAN_VIEWS = SCAN_VIEW_MODES.full;
 export type ScanMode = keyof typeof SCAN_VIEW_MODES;
 export type ScanView = (typeof SCAN_VIEWS)[number];
 
+/** One body shape for both simulation calls. `view` is omitted when the caller names none, so
+ *  the server keeps its own choice rather than being handed `undefined` to interpret. */
+const simulationBody = (scanId: string, selections: unknown[], view?: string) => JSON.stringify({
+  scan_id: scanId,
+  selections,
+  simulation_consent_version: SIMULATION_CONSENT_VERSION,
+  ...(view ? { view } : {}),
+});
+
 export function createApi(baseUrl: string, tokenProvider: TokenProvider) {
   async function request(path: string, options: RequestInit = {}) {
     const token = await tokenProvider();
@@ -51,15 +60,24 @@ export function createApi(baseUrl: string, tokenProvider: TokenProvider) {
     },
     getScan: (id: string) => request(`/scans/${id}/status/`),
     deleteScan: (id: string) => request(`/scans/${id}/`, { method: 'DELETE' }),
-    getProcedures: (region: string) => request(`/procedures/?region=${encodeURIComponent(region)}`),
-    previewSimulation: (scanId: string, region: string, presetId: string) => request('/simulations/preview/', {
+    // The clinical catalog: what a clinic actually does, one row per procedure. Without a
+    // category this returns every renderable row, which is what a client grouping them itself
+    // wants — one request rather than one per tab.
+    getProcedures: (category?: string | number) =>
+      request(category === undefined ? '/procedures/' : `/procedures/?category=${encodeURIComponent(String(category))}`),
+    // The headings, derived on the server, so one with nothing renderable behind it never
+    // arrives here and no client has to hardcode the list.
+    getProcedureCategories: () => request('/procedures/categories/'),
+    // `selections` is `{ procedure_id, intensity_level }` per procedure. `view` names which of
+    // the three renders comes back as the image; the fused engine draws all three either way.
+    previewSimulation: (scanId: string, selections: unknown[], view?: string) => request('/simulations/preview/', {
       method: 'POST', headers: { 'Content-Type': 'application/json', 'Idempotency-Key': `${Date.now()}-${Math.random()}` },
-      body: JSON.stringify({ scan_id: scanId, region, preset_id: presetId, simulation_consent_version: SIMULATION_CONSENT_VERSION }),
+      body: simulationBody(scanId, selections, view),
     }),
-    createSimulation: (scanId: string, region: string, presetId: string) => request('/simulations/', {
+    createSimulation: (scanId: string, selections: unknown[], view?: string) => request('/simulations/', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Idempotency-Key': `${Date.now()}-${Math.random()}` },
-      body: JSON.stringify({ scan_id: scanId, region, preset_id: presetId, simulation_consent_version: SIMULATION_CONSENT_VERSION }),
+      body: simulationBody(scanId, selections, view),
     }),
     getSimulation: (id: string) => request(`/simulations/${id}/status/`),
   };

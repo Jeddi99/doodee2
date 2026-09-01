@@ -8,6 +8,6 @@
     "./poll-schedule": "./src/poll-schedule.ts"
   },
   "scripts": {
-    "test": "node --test src/capture-quality.test.ts src/poll-schedule.test.ts src/simulation-focus.test.ts"
+    "test": "node --test src/capture-quality.test.ts src/poll-schedule.test.ts src/simulation-focus.test.ts src/simulation-visibility.test.ts"
   }
 }

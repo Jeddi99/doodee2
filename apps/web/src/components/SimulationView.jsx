@@ -1,12 +1,11 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { Activity, ArrowLeft, Check, Lock, Maximize2, MoveHorizontal, Save, ScanFace, ShieldCheck, Ticket, Unlock, X, ZoomIn } from 'lucide-react';
-import { focusTransform, NO_ZOOM, pollUntilSettled, SIMULATION_CONSENT_VERSION } from '@doodee/shared';
+import { describeVisibility, focusTransform, NO_ZOOM, pollUntilSettled, SIMULATION_CONSENT_VERSION } from '@doodee/shared';
 import { createSimulation, getProcedureCategories, getProcedures, getScan, getScans, getSession, getSimulation, previewSimulation } from '../lib/api';
 import { statusPollInterval } from '../lib/pollInterval.js';
 import { daysRemaining } from '../lib/promoCode';
 import { describeSimulationError } from '../lib/simulationError';
-import { describeVisibility } from '../lib/simulationVisibility';
 import { emptyQueue, request as queueRequest, settle } from '../lib/previewQueue';
 import {
   MAX_PROCEDURES, clearUnlockedProcedures, emptyProcedureStack,

@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
-import { FAINT_PERCENT, describeVisibility } from './simulationVisibility.js';
+import { FAINT_PERCENT, describeVisibility } from './simulation-visibility.ts';
 
 const three = (front, left, right) => ({ front, left_profile: left, right_profile: right });
 
@@ -55,7 +55,7 @@ test('the threshold still matches the one the server measures against', () => {
    * fails, the fix is to decide which value is right and change both.
    */
   const pipeline = readFileSync(
-    fileURLToPath(new URL('../../../../backend/doodee/canonical_pipeline.py', import.meta.url)),
+    fileURLToPath(new URL('../../../backend/doodee/canonical_pipeline.py', import.meta.url)),
     'utf8',
   );
   const match = pipeline.match(/^FAINT_FRACTION = (\.?[0-9.]+)/m);

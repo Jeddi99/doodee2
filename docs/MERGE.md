@@ -126,9 +126,13 @@ commit `76d2c78` · `177bf4d` · `4e028bc` · `0749ca4` — 739 backend tests, 2
 หน้าจำลองทั้งหน้าจึงใช้สไตล์ default ของ browser มาตลอด — เขียนใหม่ด้วย token `--dd-*` ของ doodee web
 (ฟ้าบนน้ำแข็ง) ไม่ใช่ก็อปม่วงบนเทาของ doodoodeedee
 
-**หนี้ที่เกิดขึ้นและยังไม่แก้:** `apps/mobile/app/simulation.tsx` + `packages/shared/src/api.ts`
-ยังเรียก `?region=` และส่ง `{region, preset_id}` → ตอนนี้ได้ `preset_region_mismatch`
-mobile อยู่นอกขอบเขตที่ตกลงกัน แต่นี่คือ **จอที่พังจริง** ไม่ใช่แค่ฟีเจอร์ที่ไม่ได้พอร์ต
+**`apps/mobile` แก้แล้ว** (แม้จะอยู่นอกขอบเขตที่ตกลงกันตอนแรก — แต่มันคือจอที่พังจริง ไม่ใช่ฟีเจอร์ที่ไม่ได้พอร์ต)
+`packages/shared/src/api.ts` ส่ง `{procedure_id, intensity_level}` + `view` เหมือน web แล้ว ·
+`simulation.tsx` เปลี่ยนเป็น tab ตามหมวด · เลือกทีละหัตถการ · ระดับ 1–5 · เลือกมุมกล้องได้ ·
+แสดงบันทึกการรักษาแทนอัตราส่วน · มีข้อความบอกเมื่อภาพแทบไม่เปลี่ยน
+กฎ visibility ย้ายไป `packages/shared/src/simulation-visibility.ts` ให้ทั้งสองแอปใช้ชุดเดียว
+และมีเทสต์ backend ตรึง shape ที่ mobile ส่ง — จอนั้นไม่มี test runner ในรีโปนี้ และ endpoint
+ปฏิเสธ field ที่ไม่รู้จัก ฟิลด์ที่เพิ่มข้างเดียวจึงกลายเป็น 400 ที่ไม่มีใครเห็นจนกว่าจะเปิดแอปบนมือถือ
 
 ไฟล์: `simulation_engine.py`, `views.py`, `urls.py`, `serializers.py`, `tasks.py`,
 `canonical_pipeline.py`, `SimulationView.jsx`, `lib/procedureStack.js`, `lib/simulationError.js`,

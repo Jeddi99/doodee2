@@ -869,6 +869,30 @@ class ProcedureSimulationApiTest(TestCase):
         self.assertEqual(response.status_code, 400)
         self.assertIn("unknown_view", json.dumps(response.data))
 
+    @patch("doodee.views.process_simulation.delay")
+    def test_the_shape_apps_mobile_sends_is_accepted_whole(self, delay):
+        """`apps/mobile` posts one procedure, its level and an angle, and nothing else.
+
+        Pinned because that client cannot be caught by any test in this repo -- it is a React
+        Native screen with no runner here -- and the endpoint refuses unknown fields outright,
+        so a field added on one side and not the other is a 400 nobody sees until a phone
+        opens the screen.
+        """
+        response = self.client.post(
+            "/api/v1/simulations/preview/",
+            {"scan_id": str(self.scan.id),
+             "selections": [{"procedure_id": "1.1", "intensity_level": 3}],
+             "simulation_consent_version": "2026.3-local",
+             "view": "right_profile"},
+            format="json", HTTP_IDEMPOTENCY_KEY=os.urandom(8).hex(),
+        )
+        self.assertEqual(response.status_code, 202, response.data)
+        simulation = Simulation.objects.get(id=response.data["id"])
+        self.assertEqual(simulation.parameters["view"], "right_profile")
+        # The three fields that screen reads off the answer.
+        for field in ("visibility", "measurements", "related_procedures"):
+            self.assertIn(field, response.data)
+
     def test_a_stack_the_fused_renderer_cannot_run_is_refused_before_any_quota_is_spent(self):
         fast = Scan.objects.create(
             user=self.user, age_band="adult", scan_mode="fast", status="completed",
