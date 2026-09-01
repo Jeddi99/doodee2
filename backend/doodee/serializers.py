@@ -8,6 +8,7 @@ class ScanSerializer(serializers.ModelSerializer):
     analysis_tier = serializers.SerializerMethodField()
     missing_optional_views = serializers.SerializerMethodField()
     front_url = serializers.SerializerMethodField()
+    view_urls = serializers.SerializerMethodField()
     has_profile_images = serializers.SerializerMethodField()
     images_expired = serializers.SerializerMethodField()
 
@@ -16,7 +17,7 @@ class ScanSerializer(serializers.ModelSerializer):
         fields = (
             "id", "status", "progress", "age_band", "reference_age_band", "reference_profile", "reference_population",
             "scan_mode", "analysis_data", "formula_version",
-            "analysis_tier", "missing_optional_views", "front_url", "has_profile_images", "images_expired",
+            "analysis_tier", "missing_optional_views", "front_url", "view_urls", "has_profile_images", "images_expired",
             "is_demo",
             "error_code", "error_message", "expires_at", "created_at", "started_at", "finished_at",
         )
@@ -45,6 +46,18 @@ class ScanSerializer(serializers.ModelSerializer):
     def get_front_url(self, obj):
         return self._signed(obj, "front")
 
+    def get_view_urls(self, obj):
+        """A signed link per captured view.
+
+        `front_url` stays beside it because several screens only ever want the one. The
+        assessment screen needs all of them: it draws each measurement on the photograph it was
+        measured on, and a profile measurement cannot be shown on a front view.
+        """
+        if obj.status != Scan.Status.COMPLETED:
+            return {}
+        links = {view: self._signed(obj, view) for view in (obj.image_objects or {})}
+        return {view: link for view, link in links.items() if link}
+
     def _signed(self, obj, *views):
         """A signed URL for the first of `views` this scan actually has."""
         images = obj.image_objects or {}
@@ -69,13 +82,14 @@ class SimulationSerializer(serializers.ModelSerializer):
     after_url = serializers.SerializerMethodField()
     preset = serializers.SerializerMethodField()
     visibility = serializers.SerializerMethodField()
+    view_urls = serializers.SerializerMethodField()
 
     class Meta:
         model = Simulation
         fields = (
             "id", "scan_id", "status", "progress", "kind", "region", "preset", "selections", "source_view", "measurements",
             "related_procedures", "model_version", "before_url", "after_url", "error_code", "error_message",
-            "visibility", "expires_at", "created_at", "started_at", "finished_at",
+            "visibility", "view_urls", "expires_at", "created_at", "started_at", "finished_at",
         )
         read_only_fields = fields
 
@@ -93,6 +107,27 @@ class SimulationSerializer(serializers.ModelSerializer):
 
     def get_after_url(self, obj):
         return self._url(obj, "after_object")
+
+    def get_view_urls(self, obj):
+        """The other rendered angles, signed.
+
+        The fused engine draws all three views from one model and the worker has been storing
+        them since it was written, but nothing ever read the column — `after_url` handed back
+        whichever single view the request asked for and the other two sat in storage, paid for
+        and unreachable. A saved simulation only; a preview does not keep them.
+        """
+        stored = obj.view_objects or {}
+        if not stored:
+            return {}
+        links = {}
+        for view, object_name in stored.items():
+            try:
+                links[view] = signed_url(object_name)
+            except Exception:
+                # Same reasoning as `_url` below: a signing failure is temporary and the client
+                # should be able to retry, so the view is absent rather than reported as null.
+                continue
+        return links
 
     def get_visibility(self, obj):
         """How much of each rendered frame actually moved, as a percentage, per view.

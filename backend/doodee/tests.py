@@ -806,6 +806,71 @@ class ScanAssessmentEndpointTest(TestCase):
         self.assertTrue(distribution["includes_you"])
 
 
+class StoredViewUrlsTest(TestCase):
+    """The other rendered angles, finally reachable.
+
+    The fused engine draws all three views from one model and the worker has stored them since
+    it was written, but nothing read the column: `after_url` handed back the one view the
+    request asked for and the other two sat in storage, paid for and unreachable.
+    """
+
+    def setUp(self):
+        self.user = User.objects.create_user("view-urls")
+        self.scan = Scan.objects.create(
+            user=self.user, age_band="adult", status=Scan.Status.COMPLETED,
+            image_objects={"front": "u/front.jpg", "left_profile": "u/left.jpg"},
+            expires_at=timezone.now() + timedelta(days=30),
+        )
+
+    def test_a_scan_offers_a_link_for_every_photograph_it_holds(self):
+        """The assessment screen draws each measurement on the photo it was measured on."""
+        from .serializers import ScanSerializer
+
+        with patch("doodee.serializers.signed_url", side_effect=lambda name, **kw: f"https://s/{name}"):
+            data = ScanSerializer(self.scan).data
+        self.assertEqual(data["view_urls"],
+                         {"front": "https://s/u/front.jpg", "left_profile": "https://s/u/left.jpg"})
+        self.assertEqual(data["front_url"], "https://s/u/front.jpg")
+
+    def test_an_unsigned_view_is_absent_rather_than_reported_as_null(self):
+        """A signing failure is temporary, so the client should retry, not say the photo is gone."""
+        from .serializers import ScanSerializer
+
+        def flaky(name, **kwargs):
+            if "left" in name:
+                raise RuntimeError("storage down")
+            return f"https://s/{name}"
+
+        with patch("doodee.serializers.signed_url", side_effect=flaky):
+            data = ScanSerializer(self.scan).data
+        self.assertEqual(list(data["view_urls"]), ["front"])
+
+    def test_a_saved_simulation_hands_back_every_view_it_stored(self):
+        from .serializers import SimulationSerializer
+
+        simulation = Simulation.objects.create(
+            scan=self.scan, region="jaw", preset_id="1.1", selections=[{"procedure_id": "1.1"}],
+            model_version="canonical-3d-fusion-lab-v1",
+            view_objects={"front": "s/front.png", "right_profile": "s/right.png"},
+            expires_at=timezone.now() + timedelta(days=30),
+        )
+        with patch("doodee.serializers.signed_url", side_effect=lambda name, **kw: f"https://s/{name}"):
+            data = SimulationSerializer(simulation).data
+        self.assertEqual(sorted(data["view_urls"]), ["front", "right_profile"])
+
+    def test_a_preview_that_stored_only_one_view_says_so_with_an_empty_map(self):
+        """A preview expires within the hour, so nothing reads the other two and it does not
+        pay to keep them. Empty rather than absent: the field always answers the same shape."""
+        from .serializers import SimulationSerializer
+
+        simulation = Simulation.objects.create(
+            scan=self.scan, kind=Simulation.Kind.PREVIEW, region="jaw", preset_id="1.1",
+            selections=[{"procedure_id": "1.1"}], model_version="canonical-3d-fusion-lab-v1",
+            expires_at=timezone.now() + timedelta(hours=1),
+        )
+        self.assertEqual(SimulationSerializer(simulation).data["view_urls"], {})
+
+
 class ProcedureNamesEnTest(TestCase):
     """Every row carries an English name, and the table names nothing that does not exist.
 
