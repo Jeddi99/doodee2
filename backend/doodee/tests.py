@@ -2321,6 +2321,45 @@ class SimulationApiTest(TestCase):
         self.assertEqual(self.post(scan).status_code, 429)
 
     @patch("doodee.views.process_simulation.delay")
+    def test_looking_at_a_preview_does_not_spend_a_save(self, delay):
+        """Previews and saves are two products, and they were being charged to one counter.
+
+        A preview writes a `Simulation` row like a save does, and `used(SAVES)` used to count
+        every row of either kind. `member` sells three saves a month, so three previews — images
+        the user only looked at, and which the plan meters separately — left an account that had
+        never pressed Save with nothing left to press it with. This is the test that costs money
+        when it is missing.
+        """
+        scan = self.scan()
+        self.assertEqual(Plan.objects.get(code="member").simulation_saves_per_month, 3)
+        for _ in range(3):
+            self.assertEqual(self.preview(scan).status_code, 202)
+            # Settled between requests: a queued preview is cancelled by the next one, and
+            # `create` refuses while any simulation of this user's is still running.
+            Simulation.objects.filter(status=Simulation.Status.QUEUED).update(status=Simulation.Status.COMPLETED)
+        self.assertEqual(Simulation.objects.filter(kind=Simulation.Kind.PREVIEW).count(), 3)
+        self.assertEqual(entitlement.used(self.user, entitlement.SAVES), 0)
+        self.assertEqual(self.client.get("/api/v1/session/").data["saved_remaining"], 3)
+        self.assertEqual(self.post(scan).status_code, 202, "all three saves must still be there")
+
+    @patch("doodee.views.process_simulation.delay")
+    def test_a_save_that_failed_is_given_back(self, delay):
+        """The worker tells the user "your quota was restored" when a render crashes.
+
+        Nothing hands a save back by hand — `process_simulation` credits the preview counter and
+        only that — so the sentence is true solely because `used(SAVES)` refuses to count a FAILED
+        row. That makes this the test holding the claim up.
+        """
+        scan = self.scan()
+        for _ in range(3):
+            self.assertEqual(self.post(scan).status_code, 202)
+            Simulation.objects.filter(status=Simulation.Status.QUEUED).update(status=Simulation.Status.COMPLETED)
+        self.assertEqual(self.post(scan).status_code, 429)
+        Simulation.objects.filter(scan=scan).update(status=Simulation.Status.FAILED)
+        self.assertEqual(entitlement.used(self.user, entitlement.SAVES), 0)
+        self.assertEqual(self.post(scan).status_code, 202)
+
+    @patch("doodee.views.process_simulation.delay")
     def test_an_unlimited_plan_still_records_previews_but_never_refuses_one(self, delay):
         """Every plan is metered now, and one of them has no ceiling.
 

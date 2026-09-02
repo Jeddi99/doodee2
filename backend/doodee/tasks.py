@@ -277,6 +277,12 @@ def process_simulation(simulation_id):
         simulation.error_message = "Simulation failed. Your quota was restored."
     simulation.finished_at = timezone.now()
     simulation.save()
+    # Only a preview needs handing back here, and the asymmetry is not an oversight: a preview is
+    # metered by a monotonic counter that knows nothing about how the row ended, so a failed one
+    # has to be credited by hand. A save is metered by counting rows — `entitlement.used(SAVES)`
+    # counts this month's SAVED rows and excludes FAILED — so marking a save failed is already the
+    # refund, and decrementing anything for it here would give the quota back twice. That is why
+    # the message above ("your quota was restored") is true of both kinds.
     if simulation.kind == Simulation.Kind.PREVIEW and simulation.status == Simulation.Status.FAILED:
         SimulationPreviewUsage.objects.filter(
             user_id=simulation.scan.user_id,

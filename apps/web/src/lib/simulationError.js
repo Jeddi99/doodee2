@@ -78,6 +78,19 @@ const MESSAGES = {
     th: () => 'ใช้ preview ครบตามโควตาของเดือนนี้แล้ว',
     en: () => 'You have used this month’s preview quota.',
   },
+  // Saving keeps the image on the server for 30 days; it is not what put the picture on screen.
+  // So the sentence names what is still possible rather than stopping at the refusal — the image
+  // being looked at can still be downloaded, and that is the thing most people wanted anyway.
+  monthly_save_quota_reached: {
+    th: () => 'ใช้สิทธิ์บันทึกภาพครบตามโควตาของเดือนนี้แล้ว ภาพที่เห็นอยู่ยังดาวน์โหลดเก็บไว้ได้',
+    en: () => 'You have used this month’s save quota. The image on screen can still be downloaded.',
+  },
+  // A 503 from the shared render queue, not a refusal of anything the user chose. Waiting is the
+  // whole answer, so the sentence says that and nothing else.
+  heavy_queue_busy: {
+    th: () => 'ตอนนี้มีงานสร้างภาพรออยู่เต็มคิว รอสักครู่แล้วลองใหม่อีกครั้ง',
+    en: () => 'The rendering queue is full right now. Wait a moment and try again.',
+  },
   simulation_requires_entitlement: {
     th: () => 'การสร้างภาพจำลองต้องมีสิทธิ์ก่อน',
     en: () => 'Generating simulated images needs an entitlement.',

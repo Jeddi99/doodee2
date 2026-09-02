@@ -207,9 +207,20 @@ def used(user, key):
         now = timezone.now()
         # Counted off the Simulation rows themselves rather than a usage counter, because that is
         # what the old check in SimulationViewSet.create did and the two must not disagree.
-        # FAILED is excluded: a render that crashed is not something the user got.
+        #
+        # `kind=SAVED` is what makes this the save quota rather than a count of everything the
+        # renderer has ever been asked to do. A preview writes a Simulation row too, so without
+        # this filter every image the user merely looked at spent one of the saves they never
+        # pressed — on the free plan, three previews and there were no saves left. Previews have
+        # their own meter, `SimulationPreviewUsage` above, and the two must not be the same one.
+        #
+        # FAILED is excluded, and that exclusion *is* the refund for a save. Nothing hands a save
+        # back when a render crashes — `tasks.process_simulation` restores the preview counter and
+        # only the preview counter — so a failed row that still counted here would charge the user
+        # for an image they never received.
         return Simulation.objects.filter(
-            scan__user=user, created_at__year=now.year, created_at__month=now.month,
+            scan__user=user, kind=Simulation.Kind.SAVED,
+            created_at__year=now.year, created_at__month=now.month,
         ).exclude(status=Simulation.Status.FAILED).count()
     raise ValueError(f"unknown quota key: {key}")
 

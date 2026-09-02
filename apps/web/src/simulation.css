@@ -512,6 +512,7 @@
 
 .simulation-primary,
 .simulation-save,
+.simulation-download,
 .simulation-empty button {
   width: 100%;
   border: 0;
@@ -525,7 +526,16 @@
 }
 .simulation-primary { background: var(--dd-blue); color: var(--dd-canvas); }
 .simulation-save { margin-top: 7px; background: var(--dd-blue-soft); color: var(--dd-blue-strong); }
+/* Outlined rather than filled: downloading costs no quota and takes nothing away, so it must not
+   compete for attention with the button that spends one of the month's saves. */
+.simulation-download {
+  margin-top: 7px;
+  background: transparent;
+  color: var(--dd-blue-strong);
+  box-shadow: inset 0 0 0 1px var(--dd-line);
+}
 .simulation-primary:disabled,
+.simulation-download:disabled,
 .simulation-save:disabled { opacity: 0.45; }
 
 .simulation-related { margin-top: var(--dd-space-3); padding-top: var(--dd-space-3); border-top: 1px solid var(--dd-line); }
@@ -592,4 +602,13 @@
   color: var(--dd-blue-strong);
   font-weight: 700;
   text-decoration: underline;
+}
+
+/* A confirmation is not a caveat. The amber above is aimed at "is this broken?", and painting
+   "saved" and "downloaded" the same colour would answer a question nobody asked — so the two
+   notes that report a thing having worked take the ordinary blue back. Announced through
+   role="status" all the same, because these are the only signal that a queued save finished. */
+.simulation-note.is-confirmation[role='status'] {
+  background: var(--dd-blue-soft);
+  color: var(--dd-blue-strong);
 }

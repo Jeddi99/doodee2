@@ -1,10 +1,11 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery } from '@tanstack/react-query';
-import { Activity, ArrowLeft, Check, Lock, Maximize2, MoveHorizontal, Save, ScanFace, ShieldCheck, Ticket, Unlock, X, ZoomIn } from 'lucide-react';
+import { Activity, ArrowLeft, Check, Download, Lock, Maximize2, MoveHorizontal, Save, ScanFace, ShieldCheck, Ticket, Unlock, X, ZoomIn } from 'lucide-react';
 import { describeVisibility, focusTransform, NO_ZOOM, pollUntilSettled, SIMULATION_CONSENT_VERSION } from '@doodee/shared';
 import { createSimulation, getProcedureCategories, getProcedures, getScan, getScans, getSession, getSimulation, previewSimulation } from '../lib/api';
 import { statusPollInterval } from '../lib/pollInterval.js';
 import { daysRemaining } from '../lib/promoCode';
+import { exportFailureText, exportSize, simulationFileName } from '../lib/imageExport';
 import { describeSimulationError } from '../lib/simulationError';
 import { emptyQueue, request as queueRequest, settle } from '../lib/previewQueue';
 import {
@@ -40,6 +41,25 @@ const regionName = (id, isTh) => REGIONS.find(([key]) => key === id)?.[isTh ? 1 
 const angleName = (id, isTh) => ANGLES.find(([key]) => key === id)?.[isTh ? 1 : 2] ?? id;
 
 const BLINK_MS = 600;
+
+/**
+ * Load an image the canvas will let us read back afterwards.
+ *
+ * `crossOrigin` is set before `src` and that order is the whole function: setting it afterwards
+ * has no effect on a request already in flight, the drawn canvas is then tainted, and `toBlob`
+ * throws a SecurityError instead of producing a file. `TryOnView` learned this first; the
+ * download handler below reports the case in words when the header really is missing.
+ *
+ * A fresh `Image` rather than the one already on screen, because the displayed `<img>` is loaded
+ * without the attribute — adding it there would put the visible picture at the mercy of a
+ * storage CORS setting, which is a much worse failure than a download that explains itself.
+ */
+function loadForExport(url) {
+  const image = new Image();
+  image.crossOrigin = 'anonymous';
+  image.src = url;
+  return image.decode().then(() => image);
+}
 
 // Reading the query rather than trusting a one-off check: a user can change the setting while
 // the page is open, and this one flips an animation that flashes a face at them.
@@ -168,6 +188,11 @@ export default function SimulationView({ lang = 'th', onNavigate }) {
   const [viewAngle, setViewAngle] = useState('front');
   const [renderingView, setRenderingView] = useState(null);
   const [previewError, setPreviewError] = useState('');
+  // What the download button has to report, keyed to the image it is about. Keyed rather than
+  // reset by hand because every path that changes the picture — another angle, another procedure,
+  // a save completing — would otherwise leave a confirmation or an error sitting underneath a
+  // different image, describing something the user can no longer see.
+  const [download, setDownload] = useState({ url: '', state: 'idle', error: '' });
   // Which region to point the zoom at. The union of every touched region would frame the whole
   // face once a few are chosen, which is the opposite of zooming.
   const [lastTouched, setLastTouched] = useState(null);
@@ -345,6 +370,10 @@ export default function SimulationView({ lang = 'th', onNavigate }) {
   const finalResult = saved.data?.status === 'completed' ? saved.data : null;
   const beforeUrl = finalResult?.before_url || preview?.before_url || (activeView === 'front' ? scan.data?.front_url : null);
   const afterUrl = finalResult?.after_url || preview?.after_url || preview?.after_data_url;
+  // Which stored row the picture on screen came from. Held so its link can be signed again: the
+  // one the page is carrying is only good for fifteen minutes.
+  const shownSimulationId = finalResult?.id || preview?.id || null;
+  const downloadStatus = download.url && download.url === afterUrl ? download : { state: 'idle', error: '' };
   // A saved image is the same framing as the preview it came from, so its box still applies.
   // Aim at whichever region was touched last; it is the one the user is looking for.
   const focusBox = preview?.focus_boxes?.[lastTouched] || preview?.focus_box || null;
@@ -357,6 +386,99 @@ export default function SimulationView({ lang = 'th', onNavigate }) {
   const raisable = items.length === 1 && items[0].procedure?.intensity_levels && items[0].level < 5
     ? items[0] : null;
   const vipDaysLeft = daysRemaining(session.data?.vip_expires_at);
+  // The real number the server will enforce, never a decoration. `preview_remaining` is null only
+  // when the plan has no ceiling — the server sends null rather than a large sentinel for exactly
+  // this reason — so ∞ appears when the plan is genuinely unlimited and at no other time. This
+  // used to be a hardcoded ∞, which told a metered account it had no limit right up to the
+  // request that was refused. `undefined` means the session did not load, and an unknown number
+  // must not be dressed up as an unlimited one.
+  const previewsLeft = session.data?.preview_remaining;
+  const previewsLabel = previewsLeft === null ? '∞' : typeof previewsLeft === 'number' ? previewsLeft : '—';
+
+  // Saving is a queued job on the server whose only previous sign of life was the picture
+  // silently swapping to the stored copy — success and nothing happening looked identical. Each
+  // step says so now, and the finished sentence says what was actually bought (thirty days on the
+  // server) and points at the download for the copy that outlives it.
+  const savedDaysLeft = daysRemaining(finalResult?.expires_at);
+  const savingInProgress = saveMutation.isPending
+    || Boolean(saved.data && !['completed', 'failed'].includes(saved.data.status));
+  const saveNote = savingInProgress
+    ? (isTh ? 'กำลังบันทึกภาพ…' : 'Saving the image…')
+    : finalResult
+      ? (isTh
+        ? `บันทึกแล้ว${savedDaysLeft ? ` ระบบเก็บภาพนี้ไว้อีก ${savedDaysLeft} วัน` : ''} ถ้าต้องการเก็บไฟล์ไว้เอง ให้กดปุ่มดาวน์โหลด`
+        : `Saved.${savedDaysLeft ? ` The server keeps this image for another ${savedDaysLeft} days.` : ''} Use Download to keep your own copy.`)
+      : '';
+
+  /**
+   * Put the image on the user's own device.
+   *
+   * Nothing on this screen could until now: the save button writes a row on the server, and the
+   * copy the user actually wanted never left the page. Redrawn through a canvas rather than
+   * offered as a link for two reasons — a preview is stored as WebP and a save as PNG, so a link
+   * hands back whichever the server happened to write, and a URL that stops working in fifteen
+   * minutes is not somebody's copy of their own picture.
+   *
+   * The `EDUCATIONAL SIMULATION` mark is burnt into the pixels by the worker before the file is
+   * ever stored, so it is already in what gets drawn here. Nothing re-applies it: a second mark
+   * would be a bug, not extra safety.
+   */
+  const downloadImage = async () => {
+    if (!afterUrl) return;
+    setDownload({ url: afterUrl, state: 'working', error: '' });
+    const failed = (reason) => setDownload({ url: afterUrl, state: 'idle', error: exportFailureText(reason, isTh) });
+
+    let image;
+    try {
+      image = await loadForExport(afterUrl);
+    } catch {
+      // Supabase signs these links for 900 seconds. A tab left open longer than that holds a URL
+      // the browser can no longer fetch, while the picture stays on screen because it was fetched
+      // while the link was alive — so the first thing a download hits after lunch is a 400 on an
+      // image the user can still see. The row is asked to sign itself again rather than the user
+      // being told to re-render something that has not gone anywhere.
+      try {
+        if (!shownSimulationId) throw new Error('no row to re-sign');
+        const refreshed = await getSimulation(shownSimulationId);
+        if (!refreshed?.after_url) throw new Error('the row no longer carries an image');
+        image = await loadForExport(refreshed.after_url);
+      } catch {
+        failed('source');
+        return;
+      }
+    }
+
+    const { width, height } = exportSize(image.naturalWidth, image.naturalHeight);
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    const context = canvas.getContext('2d');
+    if (!context) {
+      failed('encode');
+      return;
+    }
+    context.drawImage(image, 0, 0, width, height);
+    try {
+      canvas.toBlob((blob) => {
+        if (!blob) {
+          failed('encode');
+          return;
+        }
+        const objectUrl = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = objectUrl;
+        link.download = simulationFileName(isReference ? region : activeView);
+        link.click();
+        URL.revokeObjectURL(objectUrl);
+        setDownload({ url: afterUrl, state: 'done', error: '' });
+      }, 'image/png');
+    } catch {
+      // A tainted canvas: the photo host did not allow cross-origin reads. `toBlob` throws here
+      // rather than calling back, and the cause is named because it is a storage setting somebody
+      // can fix, not something the user did wrong.
+      failed('blocked');
+    }
+  };
 
   // A stack is tied to one scan's landmarks, so it means nothing against a different scan.
   useEffect(() => {
@@ -396,7 +518,7 @@ export default function SimulationView({ lang = 'th', onNavigate }) {
         <button className="simulation-back" onClick={() => onNavigate('analysis')} aria-label={isTh ? 'กลับหน้าวิเคราะห์' : 'Back to analysis'}><ArrowLeft /></button>
         <div><span>LOCAL FACIAL SIMULATION</span><h1>{isTh ? 'ทดลองสัดส่วน ก่อนคุยกับแพทย์' : 'Explore proportions before a consultation'}</h1><p>{isTh ? 'ภาพเพื่อการศึกษา ไม่ใช่ผลลัพธ์ที่ทำนายได้' : 'Educational imagery, not a predicted outcome.'}</p></div>
         <div className="simulation-quota">
-          <strong>∞</strong>
+          <strong>{previewsLabel}</strong>
           <span>{isTh ? 'Preview คงเหลือ' : 'Previews left'}</span>
           {/* Answers "why is my quota back to 3?" before it happens. */}
           {vipDaysLeft !== null && <small>{isTh ? `สิทธิ์โค้ดเหลือ ${vipDaysLeft} วัน` : `Code access: ${vipDaysLeft}d left`}</small>}
@@ -582,6 +704,27 @@ export default function SimulationView({ lang = 'th', onNavigate }) {
             />
           )}
 
+          {/* Above the save button, and deliberately: this is the copy the user keeps, it costs
+              no quota, and on a phone the save button is the sticky one at the foot of the card —
+              anything placed after it would be sitting underneath it. Enabled for a preview as
+              well as a saved render, because the file is finished either way and asking somebody
+              to spend a save before they may keep their own picture is the problem, not the fix. */}
+          <button
+            className="simulation-download"
+            disabled={!afterUrl || downloadStatus.state === 'working'}
+            title={afterUrl ? undefined : (isTh ? 'ยังไม่มีภาพให้ดาวน์โหลด' : 'There is no image to download yet')}
+            onClick={downloadImage}
+          >{downloadStatus.state === 'working' ? <Activity className="capture-spin" /> : <Download />}
+            {downloadStatus.state === 'working'
+              ? (isTh ? 'กำลังเตรียมไฟล์…' : 'Preparing the file…')
+              : (isTh ? 'ดาวน์โหลดภาพ (.png)' : 'Download the image (.png)')}</button>
+          {downloadStatus.state === 'done' && (
+            <p className="simulation-note is-confirmation" role="status">{isTh
+              ? 'ดาวน์โหลดแล้ว ไฟล์อยู่ในโฟลเดอร์ดาวน์โหลดของเครื่อง ภาพมีลายน้ำ EDUCATIONAL SIMULATION กำกับไว้ตามเดิม'
+              : 'Downloaded to your device. The file carries the EDUCATIONAL SIMULATION watermark, as the image on screen does.'}</p>
+          )}
+          {downloadStatus.error && <p className="simulation-error" role="alert">{downloadStatus.error}</p>}
+
           {/* The angle is named, because one save stores the image of one angle. */}
           <button
             className="simulation-save"
@@ -590,6 +733,7 @@ export default function SimulationView({ lang = 'th', onNavigate }) {
             onClick={() => saveMutation.mutate()}
           ><Save />{isReference ? (isTh ? 'บันทึกภาพเต็ม · เก็บ 30 วัน' : 'Save full image · 30 days')
             : (isTh ? `บันทึกภาพ${angleName(activeView, true)} · เก็บ 30 วัน` : `Save the ${angleName(activeView, false).toLowerCase()} image · 30 days`)}</button>
+          {saveNote && <p className="simulation-note is-confirmation" role="status">{saveNote}</p>}
           {failure.text && (
             <p className="simulation-error" role="alert">
               {failure.text}

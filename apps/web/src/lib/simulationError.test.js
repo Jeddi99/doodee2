@@ -63,6 +63,23 @@ test('a procedure ref parses as the thing the failure belongs to, dot and all', 
   assert.equal(result.text, 'procedure 1.7 is outside the scope of a face photograph, so it cannot be simulated.');
 });
 
+test('the two refusals a save can come back with are sentences, not codes', () => {
+  // Both reached the screen verbatim: the save button answered `monthly_save_quota_reached` and
+  // a busy queue answered `heavy_queue_busy`, and neither had an entry here, so the user read
+  // "สร้างภาพจำลองไม่สำเร็จ ลองใหม่อีกครั้ง (monthly_save_quota_reached)".
+  for (const code of ['monthly_save_quota_reached', 'heavy_queue_busy']) {
+    for (const isTh of [true, false]) {
+      const result = describeSimulationError(code, isTh, label);
+      assert.equal(result.code, code);
+      assert.doesNotMatch(result.text, /monthly_save_quota_reached|heavy_queue_busy/, code);
+    }
+  }
+  // Running out of saves does not take the picture away, and the wording has to say so — that is
+  // the difference between "you have hit a limit" and "this stopped working".
+  assert.match(describeSimulationError('monthly_save_quota_reached', true, label).text, /ดาวน์โหลด/);
+  assert.match(describeSimulationError('heavy_queue_busy', false, label).text, /Wait a moment/);
+});
+
 test('the catalog refusals each say what to do about them', () => {
   for (const [code, thai] of [
     ['canonical_required', /สามมุม/],

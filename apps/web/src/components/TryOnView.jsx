@@ -10,6 +10,7 @@ import {
   presetSwatches, shadeById,
 } from '../data/makeup';
 import { paintLook } from '../lib/makeupPaint';
+import { exportSize } from '../lib/imageExport';
 import { latestCraniofacialScan } from '../lib/latestScan';
 
 // Makeup order rather than the old top-to-bottom one: lips carry the look, blush shapes it, eye
@@ -20,8 +21,6 @@ const BEAUTY_CATEGORIES = [
   { id: 'blush', label: 'แก้ม', labelEn: 'Cheeks', helper: 'Blush glow', icon: Sparkles, accent: '#D58C8C', shades: BLUSH_SHADES },
   { id: 'eyes', label: 'ดวงตา', labelEn: 'Eyes', helper: 'Eye colour', icon: Eye, accent: '#778C86', shades: IRIS_SHADES },
 ];
-
-const EXPORT_MAX_SIDE = 2000;
 
 export default function TryOnView({ lang = 'th' }) {
   const isTh = lang === 'th';
@@ -199,10 +198,12 @@ export default function TryOnView({ lang = 'th' }) {
     const image = imageRef.current;
     if (!image) return;
     setDownloadError('');
-    const scale = Math.min(1, EXPORT_MAX_SIDE / Math.max(image.naturalWidth, image.naturalHeight));
+    // Shared with the simulation screen's download rather than kept as a second copy of the same
+    // ceiling: two files deciding independently how large an export may be is how they diverge.
+    const { width, height } = exportSize(image.naturalWidth, image.naturalHeight);
     const exportCanvas = document.createElement('canvas');
-    exportCanvas.width = Math.round(image.naturalWidth * scale);
-    exportCanvas.height = Math.round(image.naturalHeight * scale);
+    exportCanvas.width = width;
+    exportCanvas.height = height;
     paintLook(
       exportCanvas.getContext('2d'),
       { width: exportCanvas.width, height: exportCanvas.height },
