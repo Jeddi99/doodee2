@@ -499,7 +499,7 @@ class Plan(models.Model):
 
     code = models.CharField(
         max_length=32, unique=True, verbose_name="รหัสแผน",
-        help_text="รหัสภายในระบบ เช่น free, member, clinic ห้ามแก้หลังเปิดขายแล้ว เพราะสิทธิ์ของผู้ใช้ผูกกับค่านี้",
+        help_text="รหัสภายในระบบ เช่น free, plus, pro ห้ามแก้หลังเปิดขายแล้ว เพราะสิทธิ์ของผู้ใช้ผูกกับค่านี้",
     )
     name_th = models.CharField(max_length=80, verbose_name="ชื่อแผน (ไทย)")
     name_en = models.CharField(max_length=80, verbose_name="ชื่อแผน (อังกฤษ)")
@@ -559,11 +559,19 @@ class Plan(models.Model):
         max_length=64, blank=True, verbose_name="กลุ่มสิทธิ์ที่ได้รับ",
         help_text="ชื่อกลุ่มที่ผู้ใช้จะถูกใส่เข้าไปเมื่อจ่ายเงินสำเร็จ เช่น pro_member เว้นว่างสำหรับแผนฟรี",
     )
-    # Off for tiers that need a conversation before they can start — the clinic partnership is
-    # an agreement, not a checkout.
+    # Off for a tier that needs a conversation before it can start — a partnership is an
+    # agreement, not a checkout. No row has it off today: the clinic partner tier that used to
+    # was removed in migration 0041 because nobody had ever bought it. The column stays because
+    # the next such tier will need it, and because the order endpoint is the only place a
+    # non-self-serve plan can be refused (`views.py`, "plan_not_self_serve").
+    #
+    # This is NOT how a plan is retired. A withdrawn tier gets `is_active=False`, which removes it
+    # from the price list and from `_plan()`'s lookup so it cannot be ordered at all; turning
+    # `self_serve` off instead would leave it on the page inviting people to enquire about
+    # something we no longer sell.
     self_serve = models.BooleanField(
         default=True, verbose_name="ให้ซื้อเองได้",
-        help_text="ปิดไว้ = หน้าเว็บจะแสดงปุ่ม “ติดต่อทีมงาน” แทนปุ่มสั่งซื้อ (ใช้กับแผนคลินิกพาร์ทเนอร์)",
+        help_text="ปิดไว้ = หน้าเว็บจะแสดงปุ่ม “ติดต่อทีมงาน” แทนปุ่มสั่งซื้อ (ใช้กับแผนที่ต้องคุยกันก่อน เช่น แผนพาร์ทเนอร์)",
     )
     is_active = models.BooleanField(
         default=True, verbose_name="เปิดขาย",

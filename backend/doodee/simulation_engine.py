@@ -275,7 +275,8 @@ def _canonical_presets(selections):
     return None if any(p is None for p in presets) else presets
 
 
-def _simulate_reference(scan, selection, download_fn, output_format, max_side, view):
+def _simulate_reference(scan, selection, download_fn, output_format, max_side, view,
+                        refine=False, budget_key=None):
     """Render one region moved toward its published mean, through the fused engine.
 
     `validate_selections` refuses a reference stacked with anything else, so there is exactly one
@@ -291,6 +292,7 @@ def _simulate_reference(scan, selection, download_fn, output_format, max_side, v
     result = simulate_scan_views(
         scan, {}, download_fn, reference_target=target,
         output_format=output_format, max_side=max_side,
+        refine=refine, budget_key=budget_key,
     )
     legacy_view = view if view in result["views"] else result["legacy_view"]
     primary = result["views"][legacy_view]
@@ -312,23 +314,36 @@ def _simulate_reference(scan, selection, download_fn, output_format, max_side, v
         },
         "encoded_views": {name: item["encoded"] for name, item in result["views"].items()},
         "before_encoded": primary["before_encoded"],
+        "dose_notes": result.get("dose_notes", []),
     }
     return primary["encoded"], [measurement], primary["focus_boxes"], extra
 
 
-def simulate_canonical(scan, selections, download_fn, output_format=".png", max_side=1280, view=None):
+def simulate_canonical(scan, selections, download_fn, output_format=".png", max_side=1280,
+                       view=None, refine=False, budget_key=None):
     """Render one simulation through the fused three-view model.
 
     Returns `(output, measurements, focus, extra)` where the first three match what
     `simulate()` returns, so callers keep their existing unpacking, and `extra`
-    carries what only this engine produces — the other rendered views and the
-    model version — for `Simulation.view_objects`.
+    carries what only this engine produces — the other rendered views, the model
+    version, and `dose_notes` — for `Simulation.view_objects` and `Simulation.parameters`.
+
+    `refine` is the switch that decides whether this render pays a third party for skin texture,
+    and it defaults to off. This function had no such parameter at all, so the worker could not
+    have passed one and `simulate_scan_views` used its own default of True on every call — a
+    preview and a save were charged alike. The kind of simulation is the worker's to know
+    (`Simulation.kind`), not this function's to guess, so it is threaded rather than inferred.
+
+    `budget_key` names this render for the AI ledger. It must identify the work — the simulation
+    row — so that a Celery retry finds its own reservation and declines to buy the same pictures
+    twice. Without it the refine pass sends nothing at all.
     """
     from .canonical_pipeline import simulate_scan_views
     from .geometry_controls import INTENSITY_SETTINGS, sliders_for_selections
 
     if any(is_reference_selection(selection) for selection in selections):
-        return _simulate_reference(scan, selections[0], download_fn, output_format, max_side, view)
+        return _simulate_reference(scan, selections[0], download_fn, output_format, max_side, view,
+                                   refine=refine, budget_key=budget_key)
 
     presets = _canonical_presets(selections)
     if presets is None:
@@ -367,6 +382,8 @@ def simulate_canonical(scan, selections, download_fn, output_format=".png", max_
         presets=presets,
         output_format=output_format,
         max_side=max_side,
+        refine=refine,
+        budget_key=budget_key,
     )
     # The pipeline picks a view from the presets' own source view, which for catalog specs is
     # always the front. An explicit request wins over that; an unrenderable one is ignored
@@ -387,5 +404,9 @@ def simulate_canonical(scan, selections, download_fn, output_format=".png", max_
         },
         "encoded_views": {name: view["encoded"] for name, view in result["views"].items()},
         "before_encoded": primary["before_encoded"],
+        # What the stack asked for and did not get, for the dose card. `.get` rather than `[]`
+        # because a mocked renderer is a legitimate caller of this function and an absent key
+        # means "this render made no claim", which is the same thing as no notes.
+        "dose_notes": result.get("dose_notes", []),
     }
     return primary["encoded"], result["measurements"], primary["focus_boxes"], extra

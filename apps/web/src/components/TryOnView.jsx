@@ -60,17 +60,43 @@ export default function TryOnView({ lang = 'th' }) {
   const setterFor = { lips: setLip, blush: setBlush, eyes: setIris };
   const swatches = useMemo(() => [lip.hex, blush.hex, iris.hex].filter(Boolean), [lip, blush, iris]);
 
-  // Track the stage box so the canvas is sized in real pixels; a CSS-stretched canvas would put the
-  // makeup back out of register with the face.
-  useEffect(() => {
-    const stage = comparisonStageRef.current;
-    if (!stage) return;
+  /**
+   * Track the stage box so the canvas is sized in real pixels; a CSS-stretched canvas would put the
+   * makeup back out of register with the face.
+   *
+   * A callback ref rather than a mount effect, and that is the whole of a bug this screen shipped
+   * with: the stage lives past several early returns — the loading spinner, "no scan", "expired",
+   * "no face" — so on a cold load the first render has no stage element at all. A `useEffect` with
+   * an empty dependency list ran exactly then, found `comparisonStageRef.current` null, returned,
+   * and never ran again. `stageSize` therefore stayed {0, 0} for the life of the page, `repaint`
+   * returned at its first guard every time, and the canvas was left at its default 300x150 and
+   * fully transparent.
+   *
+   * What that looked like is the reason it belongs in an honesty audit rather than a bug list: the
+   * studio rendered a grey rectangle labelled MAKEUP LOOK on one side and ORIGINAL on the other,
+   * with a working comparison slider, an intensity readout and every shade button live over a
+   * photograph that had never been drawn. A callback ref cannot miss the element, because React
+   * calls it with the node the moment the node exists — and with null when it goes, which is where
+   * the observer is disconnected.
+   */
+  const stageObserverRef = useRef(null);
+  const attachStage = useCallback((node) => {
+    comparisonStageRef.current = node;
+    stageObserverRef.current?.disconnect();
+    if (!node) {
+      stageObserverRef.current = null;
+      return;
+    }
     const observer = new ResizeObserver(([entry]) => {
       const { width, height } = entry.contentRect;
       setStageSize({ width: Math.round(width), height: Math.round(height) });
     });
-    observer.observe(stage);
-    return () => observer.disconnect();
+    observer.observe(node);
+    stageObserverRef.current = observer;
+    // The observer fires on its own for the first box, but only on the next frame; setting it here
+    // means the first paint does not have to wait for one.
+    const { width, height } = node.getBoundingClientRect();
+    setStageSize({ width: Math.round(width), height: Math.round(height) });
   }, []);
 
   // Load the photo and find the face once per scan. Landmarks stay in memory only — never written to
@@ -420,7 +446,7 @@ export default function TryOnView({ lang = 'th' }) {
             </div>
           </div>
 
-          <div ref={comparisonStageRef} className="tryon-image-stage" style={{
+          <div ref={attachStage} className="tryon-image-stage" style={{
             position: 'relative', flex: 1, minHeight: 0, overflow: 'hidden', borderRadius: '20px',
             background: 'linear-gradient(145deg, #EEE9E7, #E4E9E5)', border: '1px solid #E5DDD8',
           }}>

@@ -4,7 +4,7 @@ import { Check, RotateCcw, ShieldCheck, X } from "lucide-react";
 import Brand from "../Brand";
 import { uploadScan } from "../lib/api";
 import { ANALYSIS_CONSENT_VERSION } from "./OnboardingPage";
-import { errorMessage } from "../lib/apiError";
+import { scanErrorText } from "../lib/scanError";
 import { readOnboardingAnswers } from "../lib/onboardingAnswers";
 import { cropToJpeg, dataUrlToFile } from "../lib/captureImage";
 import { measureLighting, type SkinLighting, type SkinLightingSample } from "../lib/skinCapture";
@@ -59,7 +59,7 @@ const COPY = {
   th: {
     title: "สแกนผิว",
     lead: "ถ่ายหน้าตรงในระยะใกล้ ให้แสงเข้าเท่ากันทั้งสองข้าง",
-    onDevice: "ประมวลผลบนเครื่องคุณ",
+    onDevice: "ตรวจแสงและมุมบนเครื่องคุณ",
     loading: "กำลังเปิดกล้อง…",
     exit: "ออก",
     ready: "แสงและมุมใช้ได้ กำลังเก็บภาพ…",
@@ -68,6 +68,7 @@ const COPY = {
     reviewBody: "ถ้าผมบังหน้าผาก หรือแว่นสะท้อนแสงเข้าตา ให้ถ่ายใหม่ — สองอย่างนี้ตัวตรวจในกล้องมองไม่เห็น",
     retake: "ถ่ายใหม่",
     submit: "ส่งวิเคราะห์ผิว",
+    submitNote: "ระบบวัดสัญญาณผิวจากภาพนี้ด้วยการประมวลผลภาพบนเซิร์ฟเวอร์ของเรา ผลที่ได้เป็นค่าที่วัดได้ ไม่ใช่คำวินิจฉัย",
     uploading: "กำลังส่ง…",
     cameraTitle: "เปิดกล้องไม่ได้",
     cameraBody: "อนุญาตให้เว็บใช้กล้องแล้วลองใหม่",
@@ -81,7 +82,7 @@ const COPY = {
   en: {
     title: "Skin scan",
     lead: "A close, front-facing photo with the light even on both sides of your face",
-    onDevice: "Processed on your device",
+    onDevice: "Light and angle checked on your device",
     loading: "Starting the camera…",
     exit: "Exit",
     ready: "Light and angle are good — capturing…",
@@ -90,6 +91,7 @@ const COPY = {
     reviewBody: "Retake if hair covers your forehead or glasses catch the light across an eye — the live check cannot see either.",
     retake: "Retake",
     submit: "Analyse my skin",
+    submitNote: "Skin signals are measured from this photograph by image processing on our own server. Measured values, not a diagnosis.",
     uploading: "Sending…",
     cameraTitle: "The camera could not start",
     cameraBody: "Allow camera access and try again.",
@@ -309,10 +311,12 @@ export default function SkinScanPage() {
       );
       navigate(`/skin?scan_id=${encodeURIComponent(queued.id)}`);
     } catch (uploadError) {
-      setError(errorMessage(uploadError) || (uploadError as Error)?.message || "");
+      // Same reason as `ScanPage`: a saturated queue answers `heavy_queue_busy`, and that code
+      // used to be the entire body of the error panel.
+      setError(scanErrorText(uploadError, locale !== "en"));
       setPhase("error");
     }
-  }, [frame, navigate]);
+  }, [frame, locale, navigate]);
 
   useEffect(() => {
     void startCamera();
@@ -374,6 +378,13 @@ export default function SkinScanPage() {
                   <Check size={16} /> {phase === "uploading" ? copy.uploading : copy.submit}
                 </button>
               </div>
+              {/* What "analyse" means here, said before the photograph is sent rather than after.
+                  `skin_engine` measures the signals with OpenCV on our own server, and that is
+                  the whole of what "analyse" buys here. The written description an external
+                  vision model would add is gated behind `SKIN_VISION_ENABLED`, which is false in
+                  every environment shipped so far — so this screen must not imply one is coming,
+                  and it does not. See `backend/doodee/skin_vision.py`. */}
+              <small className="capture-review__note">{copy.submitNote}</small>
             </div>
           ) : (
             <div className="capture-guidance">

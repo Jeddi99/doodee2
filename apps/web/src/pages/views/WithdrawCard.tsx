@@ -56,6 +56,8 @@ const COPY = {
       no_payout_account: "เพิ่มบัญชีรับเงินก่อนถึงจะถอนได้",
       no_balance: "ยังไม่มีเครดิตให้ถอน",
       below_minimum: "ยอดยังไม่ถึงขั้นต่ำ",
+      payout_not_configured: "ระบบยังตั้งค่าการถอนเงินไม่เสร็จ จึงยังรับบัญชีรับเงินไม่ได้ ติดต่อทีมงาน",
+      minimum_unknown: "ตอนนี้ยังอ่านยอดขั้นต่ำไม่ได้ ลองใหม่อีกครั้งในสักครู่",
     } as Record<string, string>,
     errors: {
       payout_not_configured: "ระบบยังตั้งค่าการถอนเงินไม่เสร็จ ติดต่อทีมงาน",
@@ -98,6 +100,8 @@ const COPY = {
       no_payout_account: "Add an account before you can withdraw.",
       no_balance: "No credit to withdraw yet.",
       below_minimum: "Not enough to withdraw yet.",
+      payout_not_configured: "Withdrawals are not fully set up here yet, so we cannot take your account details. Contact us.",
+      minimum_unknown: "The minimum could not be read just now. Try again in a moment.",
     } as Record<string, string>,
     errors: {
       payout_not_configured: "Withdrawals are not fully set up yet. Contact us.",
@@ -165,16 +169,35 @@ export default function WithdrawCard() {
   const saved = account.data?.account;
   const banks: Bank[] = account.data?.banks ?? [];
   const balance = Number(state.withdrawable_satang || 0);
-  const minimum = Number(state.minimum_satang || 0);
+  /**
+   * The floor, or null when the server did not state one.
+   *
+   * `Number(state.minimum_satang || 0)` read a missing field as ฿0, which is the worst default
+   * available on this card: it printed "ถอนขั้นต่ำ ฿0" as a fact, and `canWithdraw`'s
+   * `balance < minimum` can never fire against zero, so the button also went live on any balance
+   * at all. The real floor is `SiteSetting.withdrawal_min_satang` — ฿300 — and the request would
+   * have come back `below_minimum`. Unknown is now unknown: no figure is printed and the button
+   * waits, rather than inviting a request the server will refuse.
+   */
+  const minimum =
+    typeof state.minimum_satang === "number" ? state.minimum_satang : null;
+  // Whether this deployment can store a bank account at all (PAYOUT_ENCRYPTION_KEY). Absent on an
+  // older server, and treated as "yes" there — the previous behaviour, a 503 on submit, rather
+  // than hiding a form that in fact works.
+  const payoutConfigured = account.data?.payout_configured !== false;
 
   // A reason code, not a boolean — a disabled button with no explanation is a support message.
-  const blocked = canWithdraw({
-    enabled: state.withdrawal_enabled !== false,
-    hasAccount: Boolean(saved),
-    hasOpenRequest: Boolean(state.has_open_request),
-    balance,
-    minimum,
-  });
+  const blocked = !payoutConfigured
+    ? "payout_not_configured"
+    : minimum === null
+      ? "minimum_unknown"
+      : canWithdraw({
+        enabled: state.withdrawal_enabled !== false,
+        hasAccount: Boolean(saved),
+        hasOpenRequest: Boolean(state.has_open_request),
+        balance,
+        minimum,
+      });
   const numberProblem = editing ? checkNumber(form.method, form.number) : "";
 
   return (
@@ -183,8 +206,12 @@ export default function WithdrawCard() {
 
       <strong className="referral-balance">{baht(balance)}</strong>
       <p className="referral-note">
-        {copy.balance} · {copy.minimum(baht(minimum))}
-        {blocked === "below_minimum" && ` · ${copy.shortBy(baht(shortfall(balance, minimum)))}`}
+        {copy.balance}
+        {/* The minimum is only stated when the server stated one. */}
+        {minimum !== null ? ` · ${copy.minimum(baht(minimum))}` : ""}
+        {blocked === "below_minimum" && minimum !== null
+          ? ` · ${copy.shortBy(baht(shortfall(balance, minimum)))}`
+          : ""}
       </p>
 
       <button
@@ -197,11 +224,22 @@ export default function WithdrawCard() {
       </button>
       {/* The reason is always on screen, never only in a tooltip on a disabled control. */}
       {blocked && <p className="referral-note">{copy.reasons[blocked]}</p>}
-      <p className="referral-note">{copy.deducted}</p>
-      <p className="referral-note">{copy.manual}</p>
+      {/* Both of these describe what happens when a request goes through, so neither is said on
+          a deployment where none can. */}
+      {payoutConfigured && (
+        <>
+          <p className="referral-note">{copy.deducted}</p>
+          <p className="referral-note">{copy.manual}</p>
+        </>
+      )}
 
       <h3>{copy.accountTitle}</h3>
-      {saved && !editing ? (
+      {/* The form is not drawn when nothing can be stored. It asked for a bank account, a name and
+          a number, and `payout.save_account` fails closed without PAYOUT_ENCRYPTION_KEY — so every
+          field was collected and then refused. The reason above the button already says so. */}
+      {!payoutConfigured ? (
+        <p className="referral-note">{copy.reasons.payout_not_configured}</p>
+      ) : saved && !editing ? (
         <div className="referral-account">
           <span>
             {saved.method === "promptpay" ? copy.promptpay : saved.bank_label} · {saved.masked}

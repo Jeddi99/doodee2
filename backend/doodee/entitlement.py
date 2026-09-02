@@ -53,6 +53,12 @@ def _free_plan():
     return Plan(
         code="free", name_th="ฟรี", name_en="Free", price_satang=0,
         analysis_depth=Plan.AnalysisDepth.PARTIAL, tier_rank=0,
+        # Spelled out rather than left to the column default, which is 0 — the safe default for a
+        # brand new plan row an operator has not filled in yet, and the wrong answer for this
+        # one. Since migration 0041 the seeded free row grants three previews so that the three
+        # saves it also grants can be reached, and a stand-in that disagreed would lock
+        # simulation on exactly the databases where nobody is watching: unseeded ones.
+        simulation_previews_per_month=3,
     )
 
 
@@ -109,10 +115,19 @@ def _granted_by_group(user, exclude_groups=()):
 
     Two plans can name the same group, and both cases are real: `plus` and `plus_year` both grant
     `plus_member`, and the retired `member` tier shares `pro_member` with `pro`. A bare group
-    lookup therefore cannot say *which* plan, so the cheapest is taken. That is the conservative
-    reading in both cases — a hand-granted group is the base tier, not the yearly upsell, and
-    "ให้สิทธิ์ Member" must keep meaning the thing that button has always meant rather than
-    silently promoting every hand-granted account to Pro.
+    lookup therefore cannot say *which* plan, so the cheapest is taken — a hand-granted group is
+    the base tier, not the yearly upsell.
+
+    Cheapest *among the plans still on sale*, though, which is the part that used to be missing.
+    `member` is ฿149 and retired; `pro` is ฿799 and current; both grant `pro_member`. Taking the
+    cheapest of all of them meant every account an admin put on โปร was silently served the
+    retired ฿149 tier instead — three saved simulations a month and 300 chat turns rather than
+    the unlimited both are on Pro — while the badge in the app read "Member". Nobody can buy
+    `member` any more, so it cannot be what granting that group now means.
+
+    A retired plan is still the answer when no live plan grants the group at all: someone who
+    bought a tier before it was withdrawn keeps what they bought, because the alternative is
+    revoking paid access as a side effect of a price-list change.
 
     `exclude_groups` drops groups a subscription already accounts for, so the precise plan named
     by a payment always wins over the guess this function has to make.
@@ -120,11 +135,14 @@ def _granted_by_group(user, exclude_groups=()):
     groups = set(user.groups.values_list("name", flat=True)) - set(exclude_groups)
     if not groups:
         return []
+    # `-is_active` first, so a live plan is picked over a retired one at any price, and only a
+    # group with nothing live falls through to what it used to sell.
+    ordered = Plan.objects.filter(grants_group__in=groups).exclude(
+        grants_group="",
+    ).order_by("-is_active", "price_satang")
     cheapest = {}
-    for plan in Plan.objects.filter(grants_group__in=groups).exclude(grants_group=""):
-        held = cheapest.get(plan.grants_group)
-        if held is None or plan.price_satang < held.price_satang:
-            cheapest[plan.grants_group] = plan
+    for plan in ordered:
+        cheapest.setdefault(plan.grants_group, plan)
     return list(cheapest.values())
 
 
@@ -162,7 +180,9 @@ def current_plan(user, now=None):
 
 
 def plan_code(user, now=None):
-    """The label the API has always used: free / vip / member / clinic / plus / pro.
+    """The label the API has always used: free / vip / plus / pro, and `member` for the people
+    still holding the retired ฿149 tier. (`clinic` was one of these until migration 0041 removed
+    a row nobody had ever bought.)
 
     "vip" is not a Plan code and cannot be: it is granted by a redeemed PromoCode and is
     deliberately off the price list (migration 0011 explains why). So it is reported here only

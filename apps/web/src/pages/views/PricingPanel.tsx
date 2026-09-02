@@ -125,7 +125,55 @@ type ApiPlan = {
   interval: string;
   features: string[];
   self_serve: boolean;
+  /** `Plan.UNLIMITED` is -1. Optional because an older server does not send these at all. */
+  simulation_previews_per_month?: number;
+  simulation_saves_per_month?: number;
+  chat_turns_per_month?: number;
 };
+
+/**
+ * The allowances a card states, read off the plan row rather than written here.
+ *
+ * These are the columns `entitlement.quota` enforces, so what the price list promises and what
+ * the server permits are the same number by construction. -1 is `Plan.UNLIMITED` and 0 means the
+ * tier cannot do it at all — both are facts worth printing, and both used to be invisible: the
+ * page said "โควตาของแต่ละแผนแสดงอยู่บนการ์ด" while showing no allowance anywhere, and only the
+ * Plus description happened to mention its own numbers in prose.
+ *
+ * A plan that omits a field (an older server) contributes no row, rather than a zero — absent and
+ * "none included" are different answers and 0 is the more alarming of the two.
+ */
+const QUOTA_ROWS: { key: keyof ApiPlan; th: string; en: string }[] = [
+  { key: "simulation_previews_per_month", th: "จำลองใบหน้า", en: "Face simulations" },
+  { key: "simulation_saves_per_month", th: "บันทึกภาพจำลอง", en: "Saved simulations" },
+  { key: "chat_turns_per_month", th: "แชท", en: "Chat messages" },
+];
+
+function quotaLines(plan: ApiPlan, lang: "th" | "en") {
+  // A tier with no previews cannot reach saving either: `SimulationViewSet.create` checks
+  // `_simulation_locked` — quota(PREVIEWS) === 0 — before it looks at the save allowance, so the
+  // free row's `simulation_saves_per_month: 3` is a number nobody on that plan can ever spend.
+  // Printing it would have been this fix inventing its own small lie on the way past.
+  const simulationLocked = plan.simulation_previews_per_month === 0;
+
+  return QUOTA_ROWS.flatMap(({ key, th, en }) => {
+    if (simulationLocked && key === "simulation_saves_per_month") return [];
+    const value = plan[key];
+    if (typeof value !== "number") return [];
+    const label = lang === "th" ? th : en;
+    if (value < 0) {
+      return [{ key, included: true, text: lang === "th" ? `${label} ไม่จำกัด` : `Unlimited ${label.toLowerCase()}` }];
+    }
+    if (value === 0) {
+      return [{ key, included: false, text: lang === "th" ? `ไม่มี${label}` : `No ${label.toLowerCase()}` }];
+    }
+    return [{
+      key,
+      included: true,
+      text: lang === "th" ? `${label} ${value} ครั้ง/เดือน` : `${value} ${label.toLowerCase()} a month`,
+    }];
+  });
+}
 
 type Quote = { discount_satang: number; total_satang: number; coupon: string };
 
@@ -323,6 +371,15 @@ export default function PricingPanel() {
                 <p>{lang === "th" ? plan.description_th : plan.description_en}</p>
               </div>
               <ul>
+                {/* The allowances lead, above the marketing ticks. They are what the plan
+                    actually limits, they are read from the plan row the server enforces, and
+                    `copy.note` at the foot of the page has always claimed they were here. */}
+                {quotaLines(plan, lang).map((row) => (
+                  <li className={row.included ? "" : "is-excluded"} key={String(row.key)}>
+                    {row.included ? <Check /> : <Minus />}
+                    {row.text}
+                  </li>
+                ))}
                 {FEATURE_ORDER.map((id) => {
                   const included = plan.features.includes(id);
                   return (

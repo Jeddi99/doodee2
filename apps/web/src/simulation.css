@@ -289,6 +289,84 @@
   z-index: -1;
 }
 
+/* ---- the picture that is not what you selected ---------------------------------------------
+ *
+ * Selecting a procedure no longer renders it: the user ticks as many as they want and presses one
+ * button. That buys back most of the renders this screen used to spend, and it creates a state the
+ * screen never had — the face on display belonging to a *previous* selection while a newer one
+ * sits in the panel. Everything in this block exists to make that state impossible to miss.
+ *
+ * Four signals, not one, and deliberately so: colour alone fails a colourblind reader, a filter
+ * alone fails anyone who has not seen the unfiltered version, and a sentence alone fails whoever
+ * is looking at the face rather than reading. So the image is drained and dimmed, a badge sits on
+ * it, a sentence naming the missing procedures sits under it, and the rows in the panel say which
+ * of them are not in the picture. The sentence is also announced, through role="status".
+ */
+.simulation-viewer-stage { position: relative; }
+.simulation-viewer-stage.is-stale .simulation-compare > img {
+  filter: grayscale(0.72) contrast(0.9);
+  opacity: 0.62;
+}
+/* The frame is hatched rather than merely tinted: a flat overlay reads as a loading state, and
+   this is not one — the image is finished, it is simply the answer to an older question. */
+.simulation-viewer-stage.is-stale::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: var(--dd-radius-frame);
+  pointer-events: none;
+  box-shadow: inset 0 0 0 3px #d0a13a;
+  background: repeating-linear-gradient(
+    135deg,
+    rgba(208, 161, 58, 0.14) 0 10px,
+    rgba(208, 161, 58, 0) 10px 24px
+  );
+}
+.simulation-stale-badge {
+  position: absolute;
+  left: 50%;
+  top: 14px;
+  translate: -50% 0;
+  z-index: 4;
+  padding: 7px 14px;
+  border-radius: var(--dd-radius-pill);
+  background: #8b5c16;
+  color: var(--dd-canvas);
+  font-size: 0.72rem;
+  font-weight: 800;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+.simulation-pending {
+  display: flex;
+  align-items: center;
+  gap: var(--dd-space-2);
+  flex-wrap: wrap;
+  margin: 10px 0 0;
+  padding: 11px 13px;
+  border-radius: 12px;
+  border: 1px solid #d0a13a;
+  background: #fff4df;
+  color: #8b5c16;
+  font-size: 0.75rem;
+  line-height: 1.5;
+}
+.simulation-pending svg { flex: none; }
+.simulation-pending strong { flex: none; }
+.simulation-pending span { flex: 1; min-width: 14ch; }
+.simulation-pending button {
+  flex: none;
+  border: 0;
+  border-radius: var(--dd-radius-pill);
+  padding: 7px 14px;
+  background: #8b5c16;
+  color: var(--dd-canvas);
+  font-weight: 800;
+  font-size: 0.72rem;
+}
+.simulation-pending button:disabled { opacity: 0.5; }
+
 .simulation-placeholder {
   aspect-ratio: 4 / 3;
   border: 1px dashed var(--dd-line);
@@ -329,6 +407,39 @@
   color: var(--dd-muted);
 }
 .simulation-measurement a { color: var(--dd-blue-strong); }
+
+/* ---- what the renderer did to the doses ------------------------------------------------------
+ *
+ * These sit above the evidence list, and they are the mechanism that replaced the six-procedure
+ * cap: a large stack can have its doses clamped to a ceiling, or cancelled to nothing by an
+ * opposing procedure, and neither is visible in the face. A cancellation is red rather than amber
+ * because it is not a caveat about the image — it is the statement that a procedure the user chose
+ * is absent from it, which is a different sentence and must not be skimmed as the same one.
+ */
+.simulation-dose-notes {
+  margin-top: 10px;
+  padding: 11px var(--dd-space-3);
+  border-radius: var(--dd-radius-card);
+  background: var(--dd-ice);
+  border: 1px solid var(--dd-line);
+}
+.simulation-dose-notes .simulation-group-title { color: #8b5c16; margin-bottom: 8px; }
+.simulation-dose-notes > small { display: block; margin-top: 8px; font-size: 0.66rem; color: var(--dd-muted); }
+.simulation-dose-note {
+  padding: 8px 11px;
+  border-radius: 10px;
+  border-left: 3px solid #d0a13a;
+  background: #fff4df;
+  color: #8b5c16;
+}
+.simulation-dose-note + .simulation-dose-note { margin-top: 6px; }
+.simulation-dose-note.is-serious {
+  border-left-color: #b42318;
+  background: #fdeceb;
+  color: #8a201a;
+}
+.simulation-dose-note strong { display: block; font-size: 0.72rem; text-transform: capitalize; }
+.simulation-dose-note p { margin: 3px 0 0; font-size: 0.72rem; line-height: 1.55; }
 
 /* ---- the panel ---------------------------------------------------------------------------- */
 
@@ -414,6 +525,21 @@
   flex-wrap: wrap;
 }
 .simulation-stack-row.is-locked { border-color: var(--dd-blue); background: var(--dd-blue-soft); }
+/* A row that is chosen but not in the picture yet. Dashed rather than tinted, so it still reads
+   as chosen — it is — while looking unfinished, which it is. */
+.simulation-stack-row.is-unrendered { border-style: dashed; border-color: #d0a13a; }
+.simulation-row-pending {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 7px;
+  border-radius: var(--dd-radius-pill);
+  background: #fff4df;
+  color: #8b5c16;
+  font-size: 0.62rem;
+  font-style: normal;
+  font-weight: 800;
+  white-space: nowrap;
+}
 .simulation-stack-row > span:first-child { flex: 1; min-width: 8ch; }
 .simulation-stack-row strong { color: var(--dd-ink); }
 .simulation-stack-row > button {
@@ -510,7 +636,41 @@
   font-size: 0.7rem;
 }
 
+/* ---- select all, and the button that spends the render -------------------------------------- */
+
+.simulation-select-all {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: var(--dd-space-2);
+  padding: 6px 11px;
+  border: 1px dashed var(--dd-blue);
+  border-radius: var(--dd-radius-pill);
+  background: transparent;
+  color: var(--dd-blue-strong);
+  font-size: 0.7rem;
+  font-weight: 800;
+}
+.simulation-select-all:disabled { opacity: 0.45; }
+
+/* Filled and blue while something is unrendered, flat and quiet once the picture matches the
+   selection. A button that looks urgent whether or not it has anything to do is a button people
+   learn to press without reading, which is the habit this whole change is trying to break. */
+.simulation-create {
+  margin: 4px 0 0;
+  background: var(--dd-ice-strong);
+  color: var(--dd-muted);
+}
+.simulation-create.is-pending {
+  background: var(--dd-blue);
+  color: var(--dd-canvas);
+  box-shadow: 0 6px 18px rgba(38, 99, 235, 0.28);
+}
+.simulation-create:disabled { opacity: 0.5; }
+.simulation-create + .simulation-note { margin-top: 6px; }
+
 .simulation-primary,
+.simulation-create,
 .simulation-save,
 .simulation-download,
 .simulation-empty button {
@@ -584,7 +744,14 @@
   .simulation-viewer-card,
   .simulation-controls-card { border-radius: 18px; }
   .simulation-compare { aspect-ratio: 1 / 1; }
-  .simulation-save { position: sticky; bottom: 10px; z-index: 5; }
+  /* The sticky button is the one that gets pressed repeatedly, and that is now Create: on a phone
+     the controls card sits above the image, so ticking happens at the foot of a long grid with the
+     Create button scrolled off the top. Save was sticky before and no longer is — it is pressed
+     once, at the end, after the picture is right, and two sticky buttons stacked at the foot of a
+     phone screen would take a third of it. It is only sticky while it has something to do, so an
+     already-rendered selection gets the whole screen back. */
+  .simulation-create.is-pending { position: sticky; bottom: 10px; z-index: 5; }
+  .simulation-stale-badge { top: 10px; font-size: 0.66rem; }
 }
 
 /* The note that says a correct render is one the user cannot see. Amber rather than the ordinary

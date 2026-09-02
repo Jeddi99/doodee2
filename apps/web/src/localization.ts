@@ -1,6 +1,22 @@
+import {
+  CATALOG_MEASURED, CATALOG_TOTAL, MEASURED_METRICS, PLAN_LIMITS, PLAN_PRICE_BAHT,
+  REFERENCE_AGE_RANGE, REFERENCE_OBSERVATIONS, REFERENCE_SAMPLE, baht,
+  // Explicit extension: `npm test` loads this file directly under node, whose ESM resolver will
+  // not guess one. Same reason `lib/uploadSlot.ts` spells out `../scanQuality.ts`.
+} from "./lib/productFacts.ts";
+
 export type Locale = "th" | "en";
 export type Market = "TH" | "GLOBAL";
 
+/**
+ * Every count in the public copy is interpolated from `lib/productFacts`, never typed in.
+ *
+ * This block used to hold "85+ facial measurements" and "80+ facial measurements" nine lines
+ * apart, both wrong and each wrong in a different direction, and both invisible to every test in
+ * the repository because a number inside a string is not connected to anything. Interpolating them
+ * makes the marketing copy fail the build when the engine changes, which is the only way a page
+ * that is read by customers before it is read by anyone else stays honest.
+ */
 export const siteCopy = {
   en: {
     nav: ["Product", "Research", "Safety", "Clinics", "Pricing"],
@@ -11,13 +27,15 @@ export const siteCopy = {
       "Understand it. Invest in yourself. Improve with intention. We analyze your face to show what matters most and build a personalized path beyond generic advice.",
     assurances: [
       "Secure processing",
-      "85+ facial measurements",
+      `${MEASURED_METRICS} measured ratios and angles`,
       "Your data stays private",
     ],
     analysisTitle: "You can’t improve what you can’t see.",
     analysisBody:
-      "We map 80+ facial measurements to reveal your proportions, balance, and highest-impact opportunities.",
+      `We measure ${MEASURED_METRICS} ratios and angles from your facial landmarks, covering ${CATALOG_MEASURED} of the ${CATALOG_TOTAL} characteristics in our catalogue. The other ${CATALOG_TOTAL - CATALOG_MEASURED} are listed as not measured, each with the reason a single photograph cannot answer it.`,
     interactive: "Interactive sample · Hover or tap a metric",
+    experimental:
+      `Every measurement is marked experimental in our own engine. ${REFERENCE_OBSERVATIONS} of them can be compared with a published cohort of ${REFERENCE_SAMPLE} Thai adults aged ${REFERENCE_AGE_RANGE}; the rest describe your face against itself.`,
     safetyTitle: "Built for informed decisions, not pressure.",
     safety: [
       [
@@ -39,33 +57,43 @@ export const siteCopy = {
     ],
     pricingTitle: "Start with clarity.\nKeep improving every month.",
     pricingBody:
-      "Start free, then upgrade for ongoing analysis, previews and progress tracking.",
-    freeTitle: "Free analysis",
-    freeBody: "A useful first look across your key factors.",
+      "Start free, then upgrade for the full set of measurements, a development plan and face simulations.",
+    freeTitle: "Free",
+    freeBody: "A partial read: your overall score and a few standout metrics.",
     freeFeatures: [
-      "Basic factor analysis",
-      "Top improvement priorities",
-      "One preview direction",
+      "Overall score and a few standout metrics",
+      "Prioritised questions to bring to a consultation",
+      `${PLAN_LIMITS.free.chatTurns} chat questions a month`,
     ],
+    // Said on the card rather than discovered after signing up. Free renders a face — three
+    // previews and three saves a month — but the analysis stays partial and there is no plan.
+    freeNote: `${PLAN_LIMITS.free.simulations} simulations a month. Partial analysis, and no development plan on this tier.`,
     startFree: "Start free",
-    completeTitle: "Complete plan",
+    completeTitle: "Plus",
     membership: "Monthly membership",
-    completeBody: "Ongoing guidance that evolves with your goals and progress.",
+    completeBody:
+      "Every measurement the engine produces, and a development plan built from your own numbers.",
     completeFeatures: [
-      "Full 85+ factor analysis",
-      "Monthly progress reassessment",
-      "New illustrative previews",
-      "Shareable consultation report",
+      `All ${MEASURED_METRICS} measured metrics, nothing withheld`,
+      "A development plan built from your own measurements",
+      `${PLAN_LIMITS.plus.simulations} face simulations a month`,
+      `${PLAN_LIMITS.plus.chatTurns} chat questions a month`,
     ],
-    startMonthly: "Start monthly plan",
+    proNote: `Pro is ${baht(PLAN_PRICE_BAHT.pro)}/month for unlimited simulations and chat.`,
+    // There is no card form yet — an Omise merchant account needs a registered company. Orders are
+    // settled by bank transfer and activated by hand, which is what `PricingPanel` already does and
+    // what a price with a buy button beside it has to admit before the click, not after it.
+    paymentNote:
+      "Paid plans are settled by bank transfer and activated once we confirm it. There is no card checkout yet.",
+    startMonthly: "Choose Plus",
     cancel: "Cancel anytime.",
     forYou: "For you",
     userCtaTitle: "Build a plan for your face.",
     userCtaBody: "Understand. Preview. Decide.",
     forClinics: "For clinics",
-    clinicCtaTitle: "Bring 3D into the consultation.",
-    clinicCtaBody: "Join the early clinic program.",
-    joinPilot: "Join the pilot",
+    clinicCtaTitle: "Bring your measurements into the consultation.",
+    clinicCtaBody: "We are looking for the first clinics to try this with.",
+    joinPilot: "Talk to us about a pilot",
     footer: "Educational analysis only. Not medical advice.",
     about: {
       label: "About us",
@@ -105,7 +133,7 @@ export const siteCopy = {
         ],
         [
           "Thai photographic reference",
-          "Experimental comparison against mean and SD from 240 Thai adults aged 18–35. A reference population, not a beauty standard.",
+          `Experimental comparison against mean and SD from ${REFERENCE_SAMPLE} Thai adults aged ${REFERENCE_AGE_RANGE}. Only ${REFERENCE_OBSERVATIONS} of the ${MEASURED_METRICS} measurements have a published figure to be scored against; the rest are your face compared with itself. A reference population, not a beauty standard.`,
         ],
         [
           "Private storage",
@@ -144,7 +172,12 @@ export const siteCopy = {
       apply: "Apply",
       referralIdle: "Your code will be linked to this account.",
       referralTooShort: "Enter your referral code.",
-      referralSaved: "Referral code applied.",
+      // Not "applied": nothing has been. The form only checks the code is long enough to exist —
+      // there is no account to attach it to until Google has answered — and the redemption
+      // happens after sign-in, where it can still be refused.
+      referralSaved: "Code saved. It is claimed once you sign in.",
+      referralRejected: "You are signed in, but the code %s could not be claimed. It may be mistyped, already used, or expired.",
+      referralContinue: "Continue without it",
       legalLead: "By continuing, you agree to the",
       terms: "Terms",
       legalMid: "and acknowledge the",
@@ -217,7 +250,9 @@ export const siteCopy = {
       progress: "%d of %d complete",
       exit: "Exit face scan",
       preview: "Live camera preview",
-      onDevice: "On-device processing",
+      // Named for what it is. "On-device processing" on a screen whose next act is to upload
+      // three photographs to a server reads as a promise that nothing leaves the phone.
+      onDevice: "Face tracking runs on your device",
       fpsLive: "%d FPS live",
       fpsTarget: "60 FPS target",
       loading: "Opening camera and loading face tracking…",
@@ -226,11 +261,21 @@ export const siteCopy = {
       uploadFailed: "Upload failed.",
       retry: "Try again",
       complete: "Capture complete.",
-      completeBody: "Three verified angles are ready. Sending them for analysis…",
-      holdLabel: "Selecting the best frame",
-      hintCapturing: "Selecting the sharpest frame",
+      // Not "three verified angles": nothing on this device verifies anything about them beyond
+      // the pose and exposure gate that let the shutter fire. The measurement happens server-side
+      // afterwards, and it is allowed to reject them. The Thai copy always said this correctly.
+      completeBody: "All three angles are captured. Sending them for analysis…",
+      // `holdLabel` ("Selecting the best frame") is gone with the element that carried it — see
+      // the note in ScanPage where the three-dot strip used to be. These two say what the hold
+      // actually is: frames are counted, not compared, and the current one is taken at the end.
+      hintCapturing: "Hold still — the photo is taken for you",
       hintMoving: "Move naturally to any uncaptured angle",
-      technical: ["1.5–2 metres away", "High-resolution capture", "Hair away from face"],
+      // The first line used to read "1.5–2 metres away", which is advice the app's own gate
+      // refuses: `measurePose` rejects a face under 0.22 of the frame height as `too_far`, and a
+      // face at two metres on a typical front camera is well under that. Following the printed
+      // instruction produced "Move closer" — so the instruction now names the thing that is
+      // actually measured.
+      technical: ["Close enough to fill the guide", "High-resolution capture", "Hair away from face"],
       steps: {
         front: { label: "Front", short: "Face the camera" },
         left_profile: { label: "Left 90°", short: "Turn fully left" },
@@ -262,7 +307,7 @@ export const siteCopy = {
           finding_face: "Finding your face…",
           checking_angle: "Checking the angle…",
           hold_still: "Keep completely still",
-          selecting_frame: "Selecting the clearest frame",
+          selecting_frame: "Angle is good — hold it for the shutter",
           position_for_step: "Move your face into the guide",
           face_too_small: "The face in this photo is too small to measure",
           sideways: "This photo is on its side",
@@ -340,13 +385,15 @@ export const siteCopy = {
       "เราใช้เทคโนโลยีวิเคราะห์โครงสร้างใบหน้าของคุณด้วยข้อมูลเชิงลึก เพื่อให้คุณเข้าใจจุดเด่นและสัดส่วนของใบหน้า พร้อมรับคำแนะนำที่ออกแบบให้เหมาะกับคุณ",
     assurances: [
       "ประมวลผลข้อมูลอย่างปลอดภัย",
-      "วิเคราะห์โครงหน้าเชิงลึกกว่า 85 จุด",
+      `วัดอัตราส่วนและมุมบนใบหน้า ${MEASURED_METRICS} ค่า`,
       "ข้อมูลปลอดภัย และเป็นส่วนตัว",
     ],
     analysisTitle: "เข้าใจความสมดุลและจุดเด่นบนใบหน้าคุณ",
     analysisBody:
-      "เราวิเคราะห์สัดส่วนและองค์ประกอบของใบหน้ามากกว่า 80 จุด เพื่อช่วยให้คุณเข้าใจความสมดุลของใบหน้าและจุดเด่นที่สำคัญ",
+      `เราวัดอัตราส่วนและมุมบนใบหน้า ${MEASURED_METRICS} ค่า ครอบคลุม ${CATALOG_MEASURED} จาก ${CATALOG_TOTAL} หัวข้อในรายการของเรา อีก ${CATALOG_TOTAL - CATALOG_MEASURED} หัวข้อระบุไว้ว่ายังวัดไม่ได้ พร้อมเหตุผลว่าทำไมภาพถ่ายภาพเดียวจึงตอบไม่ได้`,
     interactive: "ตัวอย่างผลวิเคราะห์ · แตะเพื่อดูรายละเอียด",
+    experimental:
+      `ค่าที่วัดได้ทุกค่าถูกกำกับว่าเป็นค่าเชิงทดลองในระบบของเราเอง มี ${REFERENCE_OBSERVATIONS} ค่าที่เทียบกับกลุ่มอ้างอิงคนไทย ${REFERENCE_SAMPLE} คน อายุ ${REFERENCE_AGE_RANGE} ปีได้ ส่วนที่เหลือเป็นการเทียบใบหน้าคุณกับตัวเอง`,
     safetyTitle: "ข้อมูลที่ชัดขึ้น เพื่อการตัดสินใจที่เป็นของคุณ",
     safety: [
       [
@@ -368,34 +415,38 @@ export const siteCopy = {
     ],
     pricingTitle: "เห็นภาพชัดขึ้นในวันนี้\nและติดตามความเปลี่ยนแปลงต่อไป",
     pricingBody:
-      "เริ่มใช้ฟรี แล้วเลือกอัปเกรดเมื่อคุณต้องการวิเคราะห์เพิ่มเติม ดูภาพจำลอง และติดตามผลอย่างต่อเนื่อง",
-    freeTitle: "ผลวิเคราะห์เบื้องต้น",
-    freeBody: "ดูภาพรวมเบื้องต้นของใบหน้าคุณ",
+      "เริ่มใช้ฟรี แล้วเลือกอัปเกรดเมื่อต้องการค่าที่วัดได้ครบทุกค่า แผนพัฒนาตนเอง และการจำลองใบหน้า",
+    freeTitle: "ฟรี",
+    freeBody: "เห็นบางส่วน: คะแนนรวมและค่าที่โดดเด่นบางตัว",
     freeFeatures: [
-      "จุดวัดหลักที่ส่งผลต่อภาพรวม",
-      "ลำดับการพัฒนาที่ควรเริ่มก่อน",
-      "ภาพจำลอง 1 แนวทาง",
+      "คะแนนรวมและค่าที่โดดเด่นบางตัว",
+      "คำถามสำคัญสำหรับไปปรึกษาแพทย์",
+      `ถามแชทได้ ${PLAN_LIMITS.free.chatTurns} ข้อความต่อเดือน`,
     ],
+    freeNote: `จำลองใบหน้าได้ ${PLAN_LIMITS.free.simulations} ครั้งต่อเดือน · ผลวิเคราะห์แบบบางส่วน และไม่มีแผนพัฒนาตนเอง`,
     startFree: "เริ่มวิเคราะห์ฟรี",
-    completeTitle: "แผนสำหรับคุณ",
+    completeTitle: "พลัส",
     membership: "สมาชิกแบบรายเดือน",
     completeBody:
-      "การวิเคราะห์เต็มรูปแบบที่ติดตามเป้าหมายและความเปลี่ยนแปลงของคุณในทุกเดือน",
+      "ได้ค่าที่วัดได้ครบทุกค่า พร้อมแผนพัฒนาตนเองที่สร้างจากตัวเลขของคุณเอง",
     completeFeatures: [
-      "ผลวิเคราะห์มากกว่า 85 จุด",
-      "เปรียบเทียบพัฒนาการรายเดือน",
-      "สำรวจภาพจำลองเพิ่มเติม",
-      "รายงานพร้อมใช้ก่อนเข้าปรึกษา",
+      `ค่าที่วัดได้ครบทั้ง ${MEASURED_METRICS} ค่า ไม่มีการซ่อน`,
+      "แผนพัฒนาตนเองที่สร้างจากค่าที่วัดได้ของคุณ",
+      `จำลองใบหน้าได้ ${PLAN_LIMITS.plus.simulations} ครั้งต่อเดือน`,
+      `ถามแชทได้ ${PLAN_LIMITS.plus.chatTurns} ข้อความต่อเดือน`,
     ],
-    startMonthly: "เลือก Complete",
+    proNote: `แผนโปร ${baht(PLAN_PRICE_BAHT.pro)}/เดือน จำลองใบหน้าและแชทได้ไม่จำกัด`,
+    paymentNote:
+      "แผนแบบเสียเงินชำระด้วยการโอนเงิน และเปิดสิทธิ์หลังทีมงานยืนยันการชำระเงิน ยังไม่มีการตัดบัตรอัตโนมัติ",
+    startMonthly: "เลือกแผนพลัส",
     cancel: "ยกเลิกได้ทุกเมื่อ",
     forYou: "สำหรับคุณ",
     userCtaTitle: "รู้ว่าควรเริ่มตรงไหนบนใบหน้าคุณ",
     userCtaBody: "วิเคราะห์ เห็นภาพ และวางลำดับอย่างชัดเจน",
     forClinics: "สำหรับคลินิก",
-    clinicCtaTitle: "สร้างประสบการณ์ปรึกษาที่เห็นภาพด้วย 3D",
-    clinicCtaBody: "ให้คนไข้เข้าใจทางเลือกและคุยกับแพทย์ได้ตรงประเด็นขึ้น",
-    joinPilot: "ขอเดโมสำหรับคลินิก",
+    clinicCtaTitle: "นำค่าที่วัดได้เข้าไปใช้ในห้องปรึกษา",
+    clinicCtaBody: "เรากำลังมองหาคลินิกกลุ่มแรกที่จะทดลองใช้ด้วยกัน",
+    joinPilot: "คุยกับเราเรื่องการทดลองใช้",
     footer:
       "ผลวิเคราะห์ใช้เพื่อประกอบการตัดสินใจ ไม่ใช่คำวินิจฉัยหรือคำแนะนำทางการแพทย์",
     about: {
@@ -436,7 +487,7 @@ export const siteCopy = {
         ],
         [
           "ค่าอ้างอิงจากภาพถ่ายคนไทย",
-          "เปรียบเทียบเชิงทดลองกับค่าเฉลี่ยและส่วนเบี่ยงเบนจากคนไทย 240 คน อายุ 18–35 ปี เป็นประชากรอ้างอิง ไม่ใช่เกณฑ์ความสวย",
+          `เปรียบเทียบเชิงทดลองกับค่าเฉลี่ยและส่วนเบี่ยงเบนจากคนไทย ${REFERENCE_SAMPLE} คน อายุ ${REFERENCE_AGE_RANGE} ปี มีเพียง ${REFERENCE_OBSERVATIONS} ค่าจาก ${MEASURED_METRICS} ค่าที่มีตัวเลขตีพิมพ์ให้เทียบได้ ที่เหลือเป็นการเทียบใบหน้าคุณกับตัวเอง เป็นประชากรอ้างอิง ไม่ใช่เกณฑ์ความสวย`,
         ],
         [
           "พื้นที่จัดเก็บส่วนตัว",
@@ -475,7 +526,9 @@ export const siteCopy = {
       apply: "ใช้โค้ด",
       referralIdle: "โค้ดจะถูกผูกกับบัญชีนี้",
       referralTooShort: "กรอกโค้ดแนะนำเพื่อนของคุณ",
-      referralSaved: "ใช้โค้ดแนะนำเพื่อนแล้ว",
+      referralSaved: "เก็บโค้ดไว้แล้ว จะใช้ให้ตอนเข้าสู่ระบบ",
+      referralRejected: "เข้าสู่ระบบแล้ว แต่ใช้โค้ด %s ไม่ได้ อาจพิมพ์ผิด ถูกใช้ไปแล้ว หรือหมดอายุ",
+      referralContinue: "ไปต่อโดยไม่ใช้โค้ด",
       legalLead: "การดำเนินการต่อถือว่าคุณยอมรับ",
       terms: "ข้อกำหนดการใช้งาน",
       legalMid: "และรับทราบ",
@@ -546,7 +599,7 @@ export const siteCopy = {
       progress: "ถ่ายแล้ว %d จาก %d มุม",
       exit: "ออกจากการสแกน",
       preview: "ภาพสดจากกล้อง",
-      onDevice: "ประมวลผลในเครื่อง",
+      onDevice: "ระบบตรวจจับใบหน้าทำงานบนเครื่องคุณ",
       fpsLive: "%d FPS",
       fpsTarget: "เป้าหมาย 60 FPS",
       loading: "กำลังเปิดกล้องและโหลดระบบตรวจจับใบหน้า…",
@@ -556,10 +609,9 @@ export const siteCopy = {
       retry: "ลองอีกครั้ง",
       complete: "ถ่ายครบแล้ว",
       completeBody: "ได้ครบสามมุมแล้ว กำลังส่งไปวิเคราะห์…",
-      holdLabel: "กำลังเลือกเฟรมที่ดีที่สุด",
-      hintCapturing: "กำลังเลือกเฟรมที่ชัดที่สุด",
+      hintCapturing: "อยู่นิ่ง ๆ ระบบจะถ่ายให้เอง",
       hintMoving: "ขยับหน้าไปมุมไหนก็ได้ที่ยังไม่ได้ถ่าย",
-      technical: ["ห่างจากกล้อง 1.5–2 เมตร", "ถ่ายความละเอียดสูง", "เก็บผมให้พ้นใบหน้า"],
+      technical: ["เข้าใกล้พอให้ใบหน้าเต็มกรอบ", "ถ่ายความละเอียดสูง", "เก็บผมให้พ้นใบหน้า"],
       steps: {
         front: { label: "หน้าตรง", short: "หันหน้าเข้ากล้อง" },
         left_profile: { label: "ซ้าย 90°", short: "หันซ้ายจนสุด" },
@@ -588,7 +640,7 @@ export const siteCopy = {
           finding_face: "กำลังหาใบหน้า…",
           checking_angle: "กำลังตรวจมุม…",
           hold_still: "อยู่นิ่งๆ สักครู่",
-          selecting_frame: "กำลังเลือกเฟรมที่ชัดที่สุด",
+          selecting_frame: "มุมใช้ได้ · นิ่งไว้ กำลังจะถ่าย",
           position_for_step: "จัดใบหน้าให้อยู่ในกรอบ",
           face_too_small: "ใบหน้าในรูปนี้เล็กเกินกว่าจะวัดได้",
           sideways: "รูปนี้ตะแคง",

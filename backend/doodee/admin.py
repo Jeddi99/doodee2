@@ -27,10 +27,33 @@ from . import payout
 from .billing import activate, claw_back
 
 
-# Every group that stands for paid access. `plus_member` joined when the ฟรี/พลัส/โปร tiers
-# replaced the single `member` plan; `revoke_membership` reads this list, and a group missing from
-# it is a group the revoke action silently leaves behind.
-MEMBERSHIP_GROUPS = ("plus_member", "pro_member", "clinic_partner")
+# Every group that stands for paid access, read from the plans rather than written out here.
+#
+# `billing.activate` grants `plan.grants_group` (billing.py:220-222), so that column already is
+# the definition of what a paid tier is. This module used to keep a second copy of it, and the
+# copy went stale the moment ฟรี/พลัส/โปร replaced the single `member` plan: the membership
+# dropdown still offered "Member" — which quietly granted `pro_member`, the ฿799 tier — and had
+# no value at all for `plus_member`, so พลัส could not be granted from admin, showed as "Free"
+# on the user page, and was stripped from anyone who happened to press Save.
+#
+# Retired plans are included on purpose: `member` is `is_active=False` but still grants
+# `pro_member`, and a group that can exist on a user has to be a group `revoke_membership` and
+# `save_related` can see, or revoking would silently leave it behind.
+def membership_groups():
+    return set(Plan.objects.exclude(grants_group="").values_list("grants_group", flat=True))
+
+
+def membership_choices():
+    """`(group name, label)` for the permanent tiers a person can be put on, ฟรี first.
+
+    Only active plans are offered — you should not be able to newly assign a retired tier — and
+    plans sharing a group (พลัส with พลัส รายปี) collapse to one entry, labelled with whichever
+    comes first by `sort_order`, because the group is what is actually granted.
+    """
+    seen = {}
+    for plan in Plan.objects.filter(is_active=True).exclude(grants_group="").order_by("sort_order", "code"):
+        seen.setdefault(plan.grants_group, plan.name_th)
+    return [("", "ฟรี — ไม่มีสิทธิ์ถาวร"), *seen.items()]
 
 
 class ConfirmingModelAdmin(admin.ModelAdmin):
@@ -99,19 +122,31 @@ def real_users(queryset):
 
 
 class UserChangeForm(DjangoUserChangeForm):
+    # Choices are filled in `__init__`, not here: they come from the Plan table, and evaluating
+    # a queryset at class-definition time would freeze whatever the rows were at import.
     membership = forms.ChoiceField(
-        choices=(("free", "Free"), ("member", "Member"), ("clinic", "Clinic")),
-        label="Permanent membership",
-        help_text="Free removes only permanent membership. An active VIP promotion remains valid.",
+        choices=(),
+        required=False,
+        label="สิทธิ์ถาวร",
+        help_text="ค่าที่เลือกคือสิทธิ์ทั้งหมดที่จะเหลืออยู่ · เลือก ฟรี เพื่อถอนสิทธิ์ถาวร "
+                  "โปรโมชั่น VIP ที่ยังไม่หมดอายุไม่ถูกแตะ",
     )
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        choices = membership_choices()
+        current = ""
         if self.instance.pk:
-            groups = set(self.instance.groups.values_list("name", flat=True))
-            self.fields["membership"].initial = (
-                "clinic" if "clinic_partner" in groups else "member" if "pro_member" in groups else "free"
-            )
+            groups = set(self.instance.groups.values_list("name", flat=True)) & membership_groups()
+            # A tier the user holds but no active plan offers — a retired plan they bought before
+            # it was withdrawn. It is added rather than ignored, because a value missing from the
+            # list would come back as ฟรี and be taken away by the save that follows.
+            offered = {value for value, _ in choices}
+            for name in sorted(groups - offered):
+                choices.append((name, f"{name} (แผนที่ปิดการขายแล้ว)"))
+            current = next((value for value, _ in choices if value and value in groups), "")
+        self.fields["membership"].choices = choices
+        self.fields["membership"].initial = current
 
 
 class PlanFilter(admin.SimpleListFilter):
@@ -119,7 +154,7 @@ class PlanFilter(admin.SimpleListFilter):
     parameter_name = "plan"
 
     def lookups(self, request, model_admin):
-        return ((plan, plan.title()) for plan in ("free", "vip", "member", "clinic"))
+        return ((plan, plan.title()) for plan in ("free", "vip", "plus", "pro", "clinic"))
 
     def queryset(self, request, queryset):
         return queryset.filter(_effective_plan=self.value()) if self.value() else queryset
@@ -179,13 +214,17 @@ class UserAdmin(DjangoUserAdmin):
         active_vip = PromoRedemption.objects.filter(user_id=OuterRef("pk"), expires_at__gt=timezone.now())
         return super().get_queryset(request).select_related("firebase_identity").annotate(
             _is_clinic=Exists(group_through.filter(group__name="clinic_partner")),
-            _is_member=Exists(group_through.filter(group__name="pro_member")),
+            _is_pro=Exists(group_through.filter(group__name="pro_member")),
+            _is_plus=Exists(group_through.filter(group__name="plus_member")),
             _is_vip=Exists(active_vip),
             _vip_expires_at=Subquery(active_vip.order_by("-expires_at").values("expires_at")[:1]),
         ).annotate(
             _effective_plan=Case(
+                # Highest tier first: someone who bought โปร after พลัส holds both groups, and
+                # the page should say what they are paying for now, not what they paid for once.
                 When(_is_clinic=True, then=Value("clinic")),
-                When(_is_member=True, then=Value("member")),
+                When(_is_pro=True, then=Value("pro")),
+                When(_is_plus=True, then=Value("plus")),
                 When(_is_vip=True, then=Value("vip")),
                 default=Value("free"),
                 output_field=CharField(),
@@ -216,16 +255,19 @@ class UserAdmin(DjangoUserAdmin):
     def reactivate_users(self, request, queryset):
         self._set_active(request, queryset, True)
 
-    @admin.action(description="ให้สิทธิ์ Member กับที่เลือก")
+    # Named `grant_member` when there was one paid plan called Member. It grants `pro_member`,
+    # which is now โปร — the ฿799 tier — so the label says so rather than leaving an operator to
+    # find out from the customer. For any other tier, use สิทธิ์ถาวร on the user page.
+    @admin.action(description="ให้สิทธิ์ โปร (pro_member) กับที่เลือก")
     def grant_member(self, request, queryset):
         group, _ = Group.objects.get_or_create(name="pro_member")
         for user in queryset:
             user.groups.add(group)
-        self.message_user(request, f"ให้สิทธิ์ Member กับ {queryset.count()} บัญชีแล้ว")
+        self.message_user(request, f"ให้สิทธิ์ โปร กับ {queryset.count()} บัญชีแล้ว")
 
     @admin.action(description="ถอนสิทธิ์ถาวรของที่เลือก (VIP ที่ยังไม่หมดอายุไม่กระทบ)")
     def revoke_membership(self, request, queryset):
-        groups = Group.objects.filter(name__in=MEMBERSHIP_GROUPS)
+        groups = Group.objects.filter(name__in=membership_groups())
         for user in queryset:
             user.groups.remove(*groups)
         self.message_user(request, f"ถอนสิทธิ์ถาวรของ {queryset.count()} บัญชีแล้ว")
@@ -253,7 +295,8 @@ class UserAdmin(DjangoUserAdmin):
             total=Count("pk"),
             free=Count("pk", filter=Q(_effective_plan="free")),
             vip=Count("pk", filter=Q(_effective_plan="vip")),
-            member=Count("pk", filter=Q(_effective_plan="member")),
+            plus=Count("pk", filter=Q(_effective_plan="plus")),
+            pro=Count("pk", filter=Q(_effective_plan="pro")),
             clinic=Count("pk", filter=Q(_effective_plan="clinic")),
         )
         return super().changelist_view(request, {**(extra_context or {}), "plan_counts": counts})
@@ -297,8 +340,9 @@ class UserAdmin(DjangoUserAdmin):
         if "membership" not in form.cleaned_data:
             return
         user = form.instance
-        user.groups.remove(*Group.objects.filter(name__in=MEMBERSHIP_GROUPS))
-        group_name = {"member": "pro_member", "clinic": "clinic_partner"}.get(form.cleaned_data["membership"])
+        # The submitted value *is* the group name, so there is no second mapping to keep in step.
+        user.groups.remove(*Group.objects.filter(name__in=membership_groups()))
+        group_name = form.cleaned_data["membership"]
         if group_name:
             user.groups.add(Group.objects.get_or_create(name=group_name)[0])
 

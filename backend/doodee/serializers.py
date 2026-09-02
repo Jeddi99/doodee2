@@ -99,13 +99,14 @@ class SimulationSerializer(serializers.ModelSerializer):
     preset = serializers.SerializerMethodField()
     visibility = serializers.SerializerMethodField()
     view_urls = serializers.SerializerMethodField()
+    dose_notes = serializers.SerializerMethodField()
 
     class Meta:
         model = Simulation
         fields = (
             "id", "scan_id", "status", "progress", "kind", "region", "preset", "selections", "source_view", "measurements",
             "related_procedures", "model_version", "before_url", "after_url", "error_code", "error_message",
-            "visibility", "view_urls", "expires_at", "created_at", "started_at", "finished_at",
+            "visibility", "view_urls", "dose_notes", "expires_at", "created_at", "started_at", "finished_at",
         )
         read_only_fields = fields
 
@@ -156,6 +157,21 @@ class SimulationSerializer(serializers.ModelSerializer):
         does not measure it — the client treats an absent number as "no claim", not as zero.
         """
         return (obj.parameters or {}).get("visibility") or {}
+
+    def get_dose_notes(self, obj):
+        """What the stack asked for and the renderer would not draw.
+
+        A stack sums its members' slider values and the renderer clamps that sum to
+        `evidence.SETTING_MAX`; a one-way control whose members sum negative floors at zero and
+        the procedure disappears from the picture entirely. Both of those used to happen in
+        silence, and a render that quietly did two-thirds of what was asked looks exactly like a
+        render that did all of it.
+
+        Each entry is `{"control", "requested", "applied", "reason"}` with `reason` one of
+        `clamped`, `cancelled` or `outside_evidence`. `[]` means nothing was changed — and also
+        covers every row rendered before this was recorded, which is the same claim: no note.
+        """
+        return (obj.parameters or {}).get("dose_notes") or []
 
     def get_preset(self, obj):
         """Whichever catalog this row's `preset_id` came from.
@@ -211,9 +227,23 @@ class PlanSerializer(serializers.ModelSerializer):
         model = Plan
         # Prices go out in satang; formatting to baht is the client's job, and doing it here
         # would mean a float on the wire.
+        #
+        # The three allowance columns go out too. The pricing page has told the reader "โควตาของ
+        # แต่ละแผนแสดงอยู่บนการ์ด" / "Each plan's allowances are on its card" since it was written,
+        # and no allowance has ever been on a card — these fields were not on the wire, so the
+        # sentence described a table that did not exist. They are the numbers `entitlement.quota`
+        # actually enforces, and 0021's whole argument for moving them onto `Plan` was that a
+        # quota change should be an admin edit rather than a deploy; that only holds if the price
+        # list reads the row instead of keeping its own copy.
+        #
+        # `Plan.UNLIMITED` (-1) travels as -1 rather than as null. The client has one place that
+        # turns it into "ไม่จำกัด", the same way `entitlement.quota` has one place that turns it
+        # into no ceiling, and a sentinel translated twice is a sentinel that eventually disagrees
+        # with itself.
         fields = (
             "code", "name_th", "name_en", "description_th", "description_en",
             "price_satang", "interval", "features", "self_serve", "sort_order",
+            "simulation_previews_per_month", "simulation_saves_per_month", "chat_turns_per_month",
         )
         read_only_fields = fields
 

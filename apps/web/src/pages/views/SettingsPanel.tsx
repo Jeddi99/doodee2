@@ -9,6 +9,26 @@ import { firebaseSignOut, resendEmailVerification } from "../../lib/firebase";
 import { canSubmitCode, daysRemaining, normalizeCode } from "../../lib/promoCode";
 import { useLocale } from "../../useLocale";
 
+/**
+ * Two numbers were removed from `redeemBody`, in both languages, and neither should come back
+ * without a payload behind it.
+ *
+ * "เจ็ดวัน" / "seven days" was `PromoCode.days`' model default, not a property of codes. The column
+ * is per-row and an operator sets it when they mint the code; the response to `POST /redeem/`
+ * carries the real `days` and `vip_expires_at`, and `redeemActive` below already prints the
+ * remaining days off the latter — so the honest figure was on screen directly underneath the
+ * invented one.
+ *
+ * "สามครั้งต่อเดือนทุกแผน" / "three per month on every plan" was false on every plan that is not
+ * the free tier: `simulation_saves_per_month` is 10 on Plus and `Plan.UNLIMITED` on Pro and on
+ * clinic. It was also false about the grant being described — `settings.PROMO_GRANTS_PLAN`
+ * defaults to `pro`, whose saves are unlimited — so the sentence capped the very allowance the
+ * code exists to hand out.
+ *
+ * What would bring a number back: `chat_turns_per_month` and the two simulation columns now
+ * travel on `GET /plans/` (PlanSerializer), so the Plans page states them per tier. If this card
+ * is to state them too, it needs the granted plan's row, which `/session/` does not send.
+ */
 const COPY = {
   th: {
     eyebrow: "ตั้งค่าระบบ",
@@ -16,8 +36,13 @@ const COPY = {
     intro: "เราเก็บอะไรไว้ นานแค่ไหน และจะยกเลิกได้อย่างไร",
     language: "ภาษา",
     retention: "การเก็บรักษาข้อมูล",
+    // Both windows check out against the server: `_scan_fields` sets `expires_at` to 24 hours for
+    // a minor and 30 days for an adult, and `cleanup_expired_data` queues `purge_scan_images` on
+    // it. What was missing is what that task does *not* delete — it empties `image_objects` and
+    // saves the scan, so the measurements and scores outlive the photograph. Saying only that
+    // images go reads as the analysis going with them, which is the opposite of the design.
     retentionBody:
-      "รูปต้นฉบับของผู้ใหญ่จะถูกลบภายใน 30 วัน ของผู้เยาว์ภายใน 24 ชั่วโมง คุณลบเองก่อนกำหนดได้ตลอดเวลาจากหน้าประวัติการสแกน",
+      "รูปต้นฉบับของผู้ใหญ่จะถูกลบภายใน 30 วัน ของผู้เยาว์ภายใน 24 ชั่วโมง · ค่าที่วัดได้และคะแนนไม่ได้ถูกลบไปด้วย ยังดูย้อนหลังได้ · คุณลบทั้งหมดเองก่อนกำหนดได้ตลอดเวลาจากหน้าประวัติการสแกน",
     legal: "เอกสารข้อกำหนดและความเป็นส่วนตัว",
     legalBody:
       "นโยบายความเป็นส่วนตัวบอกครบว่าเราเก็บอะไร นานแค่ไหน ใครได้รับบ้าง และคุณใช้สิทธิตาม PDPA ได้อย่างไร",
@@ -44,8 +69,10 @@ const COPY = {
     verifyAlready: "อีเมลของคุณยืนยันแล้ว",
     verifyFailed: "ส่งไม่สำเร็จในตอนนี้ ลองใหม่อีกครั้งในอีกสักครู่",
     redeem: "ใช้โค้ด",
+    // Every number that used to be in this sentence was wrong, so none of them are in it now.
+    // See the note above COPY.
     redeemBody:
-      "โค้ดให้สิทธิ์ดูภาพจำลองแบบไม่จำกัดเป็นเวลาเจ็ดวัน ส่วนการบันทึกภาพเต็มยังจำกัดสามครั้งต่อเดือนทุกแผน",
+      "โค้ดเปิดสิทธิ์แบบเสียเงินให้ชั่วคราว จำนวนวันขึ้นอยู่กับแต่ละโค้ด · โควตาที่ได้จริงและวันหมดอายุจะขึ้นที่นี่และในหน้าโปรไฟล์หลังกดใช้โค้ด",
     redeemActive: (days: number) => `ใช้งานอยู่ · เหลืออีก ${days} วัน`,
     redeemPlaceholder: "กรอกโค้ด",
     redeemLabel: "ใช้โค้ดส่วนลด",
@@ -69,7 +96,7 @@ const COPY = {
     language: "Language",
     retention: "Data retention",
     retentionBody:
-      "Adult source images are deleted within 30 days and minors’ within 24 hours. You can delete sooner from History at any time.",
+      "Adult source images are deleted within 30 days and minors’ within 24 hours. The measurements and scores are not deleted with them and stay readable. You can delete everything sooner from History at any time.",
     legal: "Terms and privacy",
     legalBody:
       "The Privacy Policy sets out in full what we collect, for how long, who else receives it, and how to exercise your rights under the PDPA.",
@@ -95,7 +122,7 @@ const COPY = {
     verifyFailed: "Could not send it just now. Try again in a few minutes.",
     redeem: "Redeem a code",
     redeemBody:
-      "A code gives unlimited simulation previews for seven days. Saving full images stays capped at three per month on every plan.",
+      "A code opens paid access for a while. How long depends on the code — the allowances you get and the exact end date appear here and on your profile once it is redeemed.",
     redeemActive: (days: number) => `Active · ${days} day${days === 1 ? "" : "s"} left`,
     redeemPlaceholder: "Enter code",
     redeemLabel: "Redeem code",

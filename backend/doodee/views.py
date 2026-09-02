@@ -291,10 +291,15 @@ def redeem(request):
 def _simulation_locked(user, plan=None):
     """Whether this user's plan grants no simulations at all.
 
-    A plan-level zero, not a spent monthly allowance: someone on Plus who has used all twenty
-    previews this month is rate-limited (429), not locked (403), and the client says something
-    different for each. Enforced on the server rather than by hiding the button, or anyone
-    calling the API directly would walk straight past it.
+    A plan-level zero, not a spent monthly allowance: someone who has spent this month's previews
+    is rate-limited (429), not locked (403), and the client says something different for each. The
+    number is deliberately not named here — it is a column on `Plan` that an operator can edit
+    without a deploy, and a figure copied into a comment is a figure that goes wrong silently.
+
+    No plan sells zero as of migration 0041: the free tier grants three previews so that the three
+    saves it advertises can actually be reached. This is therefore the answer for a plan an
+    operator has deliberately set to zero, and it stays enforced on the server rather than by
+    hiding the button, or anyone calling the API directly would walk straight past it.
     """
     return entitlement.quota(user, PREVIEWS, plan) == 0
 
@@ -1182,6 +1187,7 @@ def _redact_assessment(payload):
     from .percentile import redact
 
     redacted = redact(payload)
+    locked_categories = set(redacted.get("locked_categories") or ())
     improvements = payload.get("improvements") or []
     visible, hidden = (improvements[:VISIBLE_FINDINGS_WHEN_REDACTED],
                        improvements[VISIBLE_FINDINGS_WHEN_REDACTED:])
@@ -1194,6 +1200,23 @@ def _redact_assessment(payload):
                "group": item.get("group"), "locked": True} for item in hidden),
         ],
         "locked_findings": [item.get("key") for item in hidden],
+        # The metrics a locked category was averaged from, withheld with it.
+        #
+        # `redact` blanks the three category scores and its own docstring is explicit about why
+        # that alone is not enough: "a client that receives every figure and paints a blur over
+        # three of them has not withheld anything". This endpoint was doing exactly that one
+        # level down. A category score is the mean of its metrics (`reference_scoring`), and
+        # every metric shipped with its `category` and its `score` attached, so the three blanked
+        # numbers could be recomputed from the same response body. Measured on a real scan: the
+        # API answered lips/chin/nose as null and the payload rebuilt them as 79, 70 and 53 —
+        # the paid half of the analysis, one line of arithmetic away for anyone with a network tab.
+        #
+        # Dropping the score is not enough either: the observed `value` is here and so is the
+        # published `reference` the score is derived from, so the row has to go rather than be
+        # thinned. The category key stays in `categories` and in `locked_categories`, which is
+        # what lets the screen show that a locked measurement exists without saying what it says.
+        "metrics": [item for item in (payload.get("metrics") or [])
+                    if item.get("category") not in locked_categories],
     }
 
 
@@ -1876,6 +1899,13 @@ def referral_overview(request):
         "withdrawal_enabled": config.withdrawal_enabled,
         "has_payout_account": PayoutAccount.objects.filter(user=request.user).exists(),
         "has_open_withdrawal": bool(payout.open_request(request.user)),
+        # How many rewards this inviter can actually vest in a calendar month. The invite screen
+        # promised `reward_satang` "ต่อเพื่อนหนึ่งคน" with no ceiling attached, which is not what
+        # `billing.vest_referral_reward` does: past this count the referral goes to HELD for a
+        # person to review rather than paying out. The cap is real money policy and it belongs
+        # beside the promise, not only in the code that enforces it. 0 means no cap, matching
+        # `SiteSetting.max_qualified_per_month`'s own help text.
+        "max_qualified_per_month": config.max_qualified_per_month,
         # The invitee's side of the deal: what they were given and have not spent yet. Shown as
         # a card rather than a code to type, because `requires_grant` means the server applies
         # it and there is nothing for the user to remember.
@@ -1981,6 +2011,13 @@ def payout_account(request):
         return Response({
             "account": payout.account_summary(account),
             "banks": [{"code": code, "label": label} for code, label in payout.BANKS],
+            # Whether this deployment holds the key that `payout.save_account` encrypts with.
+            # Without it saving fails closed — correctly, see payout.py — but the only place that
+            # said so was the 503 the user got *after* choosing a method, naming their account and
+            # typing a bank number. A form that collects a bank account and can never store one is
+            # a working-looking control with nothing behind it, so the client is told up front.
+            # The key itself is never sent, only whether there is one.
+            "payout_configured": payout.configured(),
         })
 
     try:

@@ -40,7 +40,12 @@ REQUIRED_PACKAGES = {
         "baht": 0,
         "analysis_depth": Plan.AnalysisDepth.PARTIAL,   # "บอกแค่ส่วนน้อย"
         "has_development_plan": False,                  # "ไม่มีแผนการพัณนา"
-        "simulations": 0,                               # "ไม่มีการจำลองใบหน้า"
+        # The document used to say "ไม่มีการจำลองใบหน้า" and the row agreed with it, which is how
+        # the three saves on the same row became an allowance nobody could spend: the save route
+        # is gated on the preview quota too. The owner changed the decision, the document was
+        # changed with it, and the figure is read from the document as this file always does.
+        "simulations": 3,                               # "จำลองใบหน้าได้ 3 ครั้งต่อเดือน"
+        "chat_turns": 5,                                # "ai chat ได้ 5 ข้อความต่อเดือน"
     },
     "plus": {
         "baht": 499,
@@ -141,7 +146,7 @@ class PackageCatalogTest(TestCase):
 
 
 class FreePackageTest(TestCase):
-    """ฟรี — "บอกการวิเคราะห์ แต่บอกแค่ส่วนน้อย ไม่มีแผนการพัฒนา ไม่มีการจำลองใบหน้า"."""
+    """ฟรี — "บอกการวิเคราะห์ แต่บอกแค่ส่วนน้อย ไม่มีแผนการพัฒนา จำลองใบหน้าได้ 3 ครั้งต่อเดือน"."""
 
     def setUp(self):
         self.user = _user("free-user")
@@ -177,27 +182,36 @@ class FreePackageTest(TestCase):
         response = self.client.get(f"/api/v1/scans/{self.scan.id}/development-plan/")
         self.assertEqual(response.status_code, 403)
 
-    def test_no_simulation(self):
-        self.assertEqual(entitlement.quota(self.user, entitlement.PREVIEWS), 0)
-        response = self.client.post("/api/v1/simulations/preview/", {
-            "scan_id": str(self.scan.id), "region": "nose", "preset_id": "x",
-            "simulation_consent_version": "1",
-        }, format="json", HTTP_IDEMPOTENCY_KEY="k1")
-        self.assertEqual(response.status_code, 403)
-        self.assertEqual(response.json()["detail"], "simulation_requires_entitlement")
+    def test_simulation_is_metered_rather_than_locked(self):
+        """"จำลองใบหน้าได้ 3 ครั้งต่อเดือน" — an allowance, so neither route may answer 403.
 
-    def test_no_simulation_by_the_save_route_either(self):
-        """Two endpoints render a face; blocking only the one the UI calls blocks nothing.
-
-        `simulation_saves_per_month` is 3 on the free row, which would be an allowance if this
-        route were gated on quota alone.
+        403 is the lock, and it is a plan-level zero: `_simulation_locked` refuses the preview
+        *and* the save route whenever a plan grants no previews at all. While the free row said
+        zero, the three saves it also advertised were unreachable. So what this asserts is the
+        absence of that answer, not a particular success — the render itself needs a real image
+        and belongs to the simulation tests.
         """
-        response = self.client.post("/api/v1/simulations/", {
-            "scan_id": str(self.scan.id), "region": "nose", "preset_id": "x",
-            "simulation_consent_version": "1",
-        }, format="json", HTTP_IDEMPOTENCY_KEY="k2")
-        self.assertEqual(response.status_code, 403)
-        self.assertEqual(response.json()["detail"], "simulation_requires_entitlement")
+        self.assertEqual(entitlement.quota(self.user, entitlement.PREVIEWS), 3)
+        self.assertEqual(entitlement.quota(self.user, entitlement.SAVES), 3)
+        for route, key in (("preview/", "k1"), ("", "k2")):
+            with self.subTest(route=route or "create"):
+                response = self.client.post(f"/api/v1/simulations/{route}", {
+                    "scan_id": str(self.scan.id), "region": "nose", "preset_id": "x",
+                    "simulation_consent_version": "1",
+                }, format="json", HTTP_IDEMPOTENCY_KEY=key)
+                self.assertNotEqual(response.status_code, 403, response.content)
+
+    def test_the_saves_it_advertises_can_be_reached(self):
+        """The defect this replaced a 403 to fix, stated as arithmetic rather than as a route.
+
+        A plan that sells saves has to sell at least as many previews, or the last save is
+        committed without the user ever having seen what they were committing to.
+        """
+        free = Plan.objects.get(code="free")
+        self.assertGreaterEqual(
+            free.simulation_previews_per_month, free.simulation_saves_per_month,
+            "the free tier advertises saves it has no preview left to decide on",
+        )
 
 
 class PlusPackageTest(TestCase):

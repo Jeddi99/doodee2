@@ -4,6 +4,7 @@ import { Activity, ArrowLeft, Lock, ScanFace, Ticket } from 'lucide-react';
 import { getMeshLegend, getScan, getScanAssessment, getScanMesh, getScans } from '../lib/api';
 import { latestCraniofacialScan } from '../lib/latestScan';
 import { curvePath } from '../lib/distributionCurve';
+import { scanErrorText } from '../lib/scanError';
 import '../assessment.css';
 
 const VIEW_NAMES = {
@@ -63,6 +64,27 @@ function DistributionChart({ distribution, score, isTh }) {
         : `Drawn from ${drawn} scores · ranked against ${sampleSize}`}</small>
     </figure>
   );
+}
+
+/**
+ * Who the reference means came from, read off the scan rather than asserted.
+ *
+ * `reference` is written by `reference_scoring.score_observations` and carries the population, the
+ * age range and how many people were measured. When a scan predates it, or was scored by something
+ * that did not record one, the honest answer is that nobody can be named — not a plausible default.
+ */
+function cohortText(reference, isTh) {
+  const { sample_size: sampleSize, population, age_range: ageRange } = reference || {};
+  if (!sampleSize || !population) {
+    return isTh
+      ? 'ผลสแกนนี้ไม่ได้บันทึกไว้ว่าใช้กลุ่มอ้างอิงใด จึงบอกไม่ได้ว่าเทียบกับใคร และนี่ไม่ใช่คะแนนความสวย'
+      : 'This scan did not record which cohort it was scored against, so there is nobody to name. Not an attractiveness score.';
+  }
+  // The population name comes from the study and is written in English there ("Thai adults"), so
+  // the Thai sentence carries it as a value rather than translating a cohort the source never named.
+  return isTh
+    ? `เทียบกับค่าเฉลี่ยที่ตีพิมพ์จาก ${sampleSize} คน · ${population}${ageRange ? ` · อายุ ${ageRange} ปี` : ''} ไม่ใช่คะแนนความสวย`
+    : `Against published means from ${sampleSize} ${population}${ageRange ? `, aged ${ageRange}` : ''}. Not an attractiveness score.`;
 }
 
 /** One finding: what it is, what the measurement says, and what a clinic does about it. */
@@ -191,7 +213,14 @@ export default function AssessmentView({ lang = 'th', onNavigate }) {
     return <div className="assessment-page assessment-blank"><Activity className="capture-spin" />{isTh ? 'กำลังเปิดผลวิเคราะห์…' : 'Opening the assessment…'}</div>;
   }
   if (assessment.isError) {
-    return <div className="assessment-page assessment-blank"><p>{assessment.error.message}</p></div>;
+    // `assessment.error.message` is whatever the API layer pulled off the response, and for this
+    // endpoint that is a machine code: a scan on another account, or one already deleted, answers
+    // `scan_not_found`, which reached the screen as those two words and nothing else.
+    return (
+      <div className="assessment-page assessment-blank">
+        <p>{scanErrorText(assessment.error, isTh)}</p>
+      </div>
+    );
   }
 
   const strengths = data.strengths || [];
@@ -205,9 +234,13 @@ export default function AssessmentView({ lang = 'th', onNavigate }) {
         <div>
           <span>ASSESSMENT</span>
           <h1>{isTh ? 'อะไรที่เด่น และอะไรที่ต่างจากค่าอ้างอิง' : 'What stands out, and what sits away from the reference'}</h1>
-          <p>{isTh
-            ? 'เทียบกับค่าเฉลี่ยที่ตีพิมพ์ของคนไทย 240 คน อายุ 18–35 ปี ไม่ใช่คะแนนความสวย'
-            : 'Against the published means of 240 Thai adults aged 18–35. Not an attractiveness score.'}</p>
+          {/* The cohort is named from the payload, never from a literal. "240 Thai adults aged
+              18–35" was written into this heading, so a scan scored against a different reference
+              — the payload carries the population, the age range and the sample size, and the
+              scorer can be given others — would have described itself with somebody else's study.
+              A scan that did not record its cohort says so rather than borrowing the current one,
+              the same rule the ratio modal on the dashboard follows. */}
+          <p>{cohortText(data.reference, isTh)}</p>
         </div>
         {typeof data.overall_score === 'number' && (
           <div className="assessment-score"><strong>{data.overall_score}</strong><span>/100</span></div>
@@ -237,11 +270,13 @@ export default function AssessmentView({ lang = 'th', onNavigate }) {
               ? `ยังมีคนวัดไว้ ${data.distribution.sample_size} คน ซึ่งน้อยกว่า ${data.distribution.reliable_at} คนที่จะเรียกว่าอันดับได้จริง ตัวเลขนี้จึงเป็นแค่การเทียบคร่าว ๆ`
               : `${data.distribution.sample_size} people have been measured, fewer than the ${data.distribution.reliable_at} it takes to call this a rank. Read it as a rough comparison.`}</p>
           )}
-          {data.distribution?.synthetic_sample_size > 0 && (
-            <p className="assessment-warning">{isTh
-              ? `ในกราฟนี้มีคะแนนตัวอย่างที่สร้างขึ้น ${data.distribution.synthetic_sample_size} รายการ ไม่ใช่คนจริงทั้งหมด`
-              : `${data.distribution.synthetic_sample_size} of the scores drawn here are placeholders, not real people.`}</p>
-          )}
+          {/* REMOVED: the `distribution.synthetic_sample_size` warning ("N of the scores drawn here
+              are placeholders"). The field no longer exists — `score_distribution.py` deleted it
+              along with the whole seeding mechanism, and says at length why it should not come
+              back. Reading a field the server does not send meant this branch could never fire,
+              so the screen carried a reassurance it was structurally incapable of giving. If
+              seeded scores are ever reintroduced, they arrive with that field and this warning
+              comes back with them — not before. */}
           {data.views?.length > 0 && (
             <ul className="assessment-views">
               {data.views.map((item) => (

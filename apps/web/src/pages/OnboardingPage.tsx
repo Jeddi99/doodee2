@@ -53,21 +53,12 @@ const COPY = {
     personB: "คนที่ B",
     candidateAlt: (which: string) => `ผู้สมัคร ${which}`,
     sameSkills: "ทักษะเท่ากัน · ประสบการณ์เท่ากัน",
-    q2ResultLabel: "ตัวเลือกของคุณเทียบกับคนอื่น",
-    q2TitleA: "คุณเลือกคนที่คนส่วนน้อยเลือก",
-    q2TitleB: "คุณเลือกเหมือนคนส่วนใหญ่",
-    q2LeadA: () => (
-      <>มีเพียง <strong>18%</strong> ที่เลือกคนที่ A ทั้งที่ผู้สมัครทั้งสองมีคุณสมบัติเท่ากัน</>
+    q2ResultLabel: "งานวิจัยพบว่า",
+    q2Title2: "คุณเพิ่งเลือกจากรูปลักษณ์",
+    q2Lead: () => (
+      <>ผู้สมัครทั้งสองมี <strong>คุณสมบัติเท่ากัน</strong> สิ่งเดียวที่ต่างกันคือรูปลักษณ์ — และนั่นคือสิ่งที่คุณใช้ตัดสิน</>
     ),
-    q2LeadB: () => (
-      <><strong>82%</strong> เลือก <strong>คนที่ B</strong> ทั้งที่ผู้สมัครทั้งสองมี <strong>คุณสมบัติเท่ากัน</strong> ความแตกต่างที่มองเห็นได้มีเพียงรูปลักษณ์</>
-    ),
-    q2ChartLabel: (percent: number, person: string) => `${percent} เปอร์เซ็นต์เลือก${person}ในตัวอย่างนี้`,
-    q2Caption: (person: string) => `เลือก${person}ในตัวอย่างนี้`,
-    q2BodyA: () => (
-      <>งานวิจัยพบว่าผู้สมัครที่หน้าตาดีได้รับการติดต่อกลับจากนายจ้าง <strong>มากกว่าถึง 82%</strong></>
-    ),
-    q2BodyB1: "และรูปแบบนี้เกิดขึ้นจริงในการจ้างงาน",
+    q2BodyB1: "รูปแบบนี้เกิดขึ้นจริงในการจ้างงาน",
     q2BodyB2: () => (
       <>ในการทดลองภาคสนามที่ใช้ <strong>เรซูเม่ 4,899 ฉบับ</strong> ผู้สมัครที่หน้าตาดีได้รับการติดต่อกลับ <strong>เกือบสองเท่า</strong> ของผู้สมัครที่มีคุณสมบัติใกล้เคียงกันแต่ถูกประเมินว่าหน้าตาด้อยกว่า</>
     ),
@@ -149,21 +140,12 @@ const COPY = {
     personB: "Person B",
     candidateAlt: (which: string) => `Candidate ${which}`,
     sameSkills: "Same skills · Same experience",
-    q2ResultLabel: "How your choice compares",
-    q2TitleA: "You chose the less popular candidate.",
-    q2TitleB: "You chose what most people chose.",
-    q2LeadA: () => (
-      <>Only <strong>18%</strong> chose Person A — even though both candidates had the same qualifications.</>
+    q2ResultLabel: "What the research found",
+    q2Title2: "You just chose on appearance.",
+    q2Lead: () => (
+      <>Both candidates had the <strong>same qualifications</strong>. Appearance was the only thing separating them — and it is what you decided on.</>
     ),
-    q2LeadB: () => (
-      <><strong>82%</strong> chose <strong>Person B</strong>, even though both candidates had the <strong>same qualifications</strong>. Appearance was the main visible difference.</>
-    ),
-    q2ChartLabel: (percent: number, person: string) => `${percent} percent chose ${person} in this example`,
-    q2Caption: (person: string) => `chose ${person} in this example`,
-    q2BodyA: () => (
-      <>Research found that attractive applicants received <strong>82% more callbacks</strong> from employers.</>
-    ),
-    q2BodyB1: "And this pattern shows up in real hiring.",
+    q2BodyB1: "This pattern shows up in real hiring.",
     q2BodyB2: () => (
       <>In a field experiment involving <strong>4,899 résumés</strong>, attractive candidates received <strong>nearly twice as many callbacks</strong> as similarly qualified candidates rated as less attractive.</>
     ),
@@ -503,34 +485,30 @@ export default function OnboardingPage() {
               </>
             ) : (
               <>
+                {/* One result for either choice, and no bar.
+
+                    What stood here: "82% chose Person B in this example", over a bar filled to a
+                    hardcoded 82% width, with "18% chose Person A" on the other branch. Nobody has
+                    ever counted how visitors answer this — the two photographs are stock images
+                    and the choice is not even sent anywhere — so both figures described a survey
+                    that does not exist. The 82 was borrowed from the study cited below, where it
+                    is a *callback premium* and not a share of people; printing it as "82% chose"
+                    was the same number asserting a different, unmeasured fact.
+
+                    So the screen now says the one thing this step really established, which is
+                    what the reader themselves just did, and hands the statistics back to the
+                    citation that can carry them. If the choice is ever recorded server-side, a
+                    real share can come back — with the count of respondents beside it. */}
                 <div className="survey-result-heading" role="status">
                   <p className="onboarding-label">{c.q2ResultLabel}</p>
-                  <h1>{candidate === "a" ? c.q2TitleA : c.q2TitleB}</h1>
-                  <p>{candidate === "a" ? c.q2LeadA() : c.q2LeadB()}</p>
+                  <h1>{c.q2Title2}</h1>
+                  <p>{c.q2Lead()}</p>
                 </div>
 
-                <figure
-                  className={`survey-result-chart ${candidate === "a" ? "survey-result-chart--minority" : ""}`}
-                  aria-label={c.q2ChartLabel(candidate === "a" ? 18 : 82, candidate === "a" ? c.personA : c.personB)}
-                >
-                  <div className="survey-result-chart__bar" aria-hidden="true">
-                    <span className={candidate === "a" ? "survey-result-chart__candidate-minority" : "survey-result-chart__candidate-majority"} />
-                  </div>
-                  <figcaption>
-                    <span><strong>{candidate === "a" ? "18%" : "82%"}</strong><small>{c.q2Caption(candidate === "a" ? c.personA : c.personB)}</small></span>
-                  </figcaption>
-                </figure>
-
                 <div className="survey-result-copy">
-                  {candidate === "a" ? (
-                    <p>{c.q2BodyA()}</p>
-                  ) : (
-                    <>
-                      <p>{c.q2BodyB1}</p>
-                      <p>{c.q2BodyB2()}</p>
-                      <p>{c.q2BodyB3()}</p>
-                    </>
-                  )}
+                  <p>{c.q2BodyB1}</p>
+                  <p>{c.q2BodyB2()}</p>
+                  <p>{c.q2BodyB3()}</p>
                   <div className="response-research__links">
                     <a href="https://www.tandfonline.com/doi/pdf/10.1016/S1514-0326%2817%2930002-8" target="_blank" rel="noreferrer">
                       {c.q2Source} <ArrowRight size={14} />

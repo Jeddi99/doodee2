@@ -31,6 +31,22 @@ import { latestCraniofacialScan } from "../../lib/latestScan";
  * toggle switched nothing; its slot in the header now shows the turns left this month, which
  * is a real number the server enforces. And "85+ measurements connected" was never true: the
  * count comes from the scan.
+ *
+ * Two numbers under the composer were the same fault in smaller type, and are gone the same way.
+ *
+ * The privacy line said a typed question goes upstream "พร้อมค่าที่วัดได้ 12 ค่า" / "along with
+ * your 12 measurements". Twelve is the size of the full catalogue, not of any particular scan:
+ * `chat.scan_context` walks `reference_scores.metrics`, which is however many measurements that
+ * photograph actually yielded, and sends `NO_SCAN_CONTEXT` — no measurements at all — when there
+ * is no completed scan. This is the single sentence in the product that tells a user what leaves
+ * the machine when they press send, so it now counts the same list the header does.
+ *
+ * The out-of-turns card said "แผนฟรีคุยได้ 5 ครั้งต่อเดือน" / "The free plan includes 5 turns a
+ * month". Five is `Plan.chat_turns_per_month` on the free row, which migration 0021 moved onto
+ * `Plan` precisely so an operator could change it without a deploy — and `/session/` sends
+ * `chat_remaining`, never the ceiling, so a client-side copy of it can go stale silently and
+ * nothing on this screen would notice. The card now says the allowance is spent and points at
+ * the Plans page, which does read the row.
  */
 
 const COPY = {
@@ -53,17 +69,29 @@ const COPY = {
     disclaimer: "DOODEE Chat ตอบผิดได้ การตัดสินใจทางการแพทย์ต้องปรึกษาแพทย์",
     // Said before the box, not buried in a policy page: typing a question is the one action
     // in DOODEE that sends anything outside this system.
-    privacy: (provider: string) => provider
-      ? `คำถามที่พิมพ์เองจะถูกส่งไปยัง ${provider} พร้อมค่าที่วัดได้ 12 ค่า ภาพใบหน้าไม่ถูกส่งออกไป คำถามสำเร็จรูปด้านบนตอบจากในระบบ ไม่ส่งข้อมูลออก`
+    privacy: (provider: string, metrics: number) => provider
+      ? `คำถามที่พิมพ์เองจะถูกส่งไปยัง ${provider}${metrics ? ` พร้อมค่าที่วัดได้ ${metrics} ค่า` : " โดยยังไม่มีค่าที่วัดได้แนบไป เพราะคุณยังไม่มีผลสแกน"} ภาพใบหน้าไม่ถูกส่งออกไป คำถามสำเร็จรูปด้านบนตอบจากในระบบ ไม่ส่งข้อมูลออก`
       : "คำถามที่พิมพ์เองประมวลผลบนเครื่องที่รันระบบนี้ ไม่ได้ส่งออกไปที่ไหน ภาพใบหน้าก็ไม่ถูกส่งเช่นกัน",
     turnsLeft: (n: number) => `เหลือ ${n} ครั้งเดือนนี้`,
     quotaTitle: "ใช้ครบโควตาเดือนนี้แล้ว",
-    quotaBodyFree: "แผนฟรีคุยได้ 5 ครั้งต่อเดือน โควตาจะรีเซ็ตต้นเดือนหน้า",
+    quotaBodyFree: "โควตาแชทของแผนฟรีเดือนนี้หมดแล้ว จะรีเซ็ตต้นเดือนหน้า · ดูจำนวนต่อเดือนของแต่ละแผนได้ที่หน้าแผน",
     quotaBodyPaid: "ถึงเพดานการใช้งานของเดือนนี้แล้ว ติดต่อทีมงานถ้าต้องใช้เพิ่ม",
     seePlans: "ดูแผน",
     offTitle: "แชทยังไม่เปิดใช้งาน",
     offBody: "คำถามพิมพ์เองต้องเชื่อมกับผู้ให้บริการโมเดลก่อน แต่คำถามด้านบนยังกดได้ตามปกติ",
     failed: "ส่งข้อความไม่สำเร็จ",
+    // `errorMessage` reads `detail`, and for an upstream failure `detail` is the machine code
+    // `chat_upstream_error` — so the largest text on a failed turn was a code. Mapped like every
+    // other coded failure in these panels.
+    failures: {
+      chat_upstream_error: "ผู้ให้บริการโมเดลปฏิเสธคำขอจากฝั่งเรา ไม่ใช่ปัญหาของบัญชีคุณ · โควตาของคุณไม่ถูกหัก",
+      chat_rate_limited: "ส่งถี่เกินไป รอสักครู่แล้วลองใหม่",
+      chat_quota_exhausted: "ใช้ครบโควตาเดือนนี้แล้ว",
+    } as Record<string, string>,
+    // Labelled as the provider's own words. Unlabelled, Google's "Your project has been denied
+    // access. Please contact support." reads as the reader's account being blocked, which is a
+    // false statement about them — the project being refused is ours.
+    providerSaid: "ข้อความจากผู้ให้บริการ:",
     freeChip: "ตอบจากตัวเลข ไม่กินโควตา",
     retry: "ลองใหม่",
     deleteChat: "ลบแชทนี้",
@@ -88,17 +116,23 @@ const COPY = {
     send: "Send",
     thinking: "Thinking…",
     disclaimer: "DOODEE Chat can make mistakes. Medical decisions require a qualified professional.",
-    privacy: (provider: string) => provider
-      ? `A question you type is sent to ${provider} along with your 12 measurements. Your photos are never sent. The suggested questions above are answered inside DOODEE and send nothing.`
+    privacy: (provider: string, metrics: number) => provider
+      ? `A question you type is sent to ${provider}${metrics ? ` along with your ${metrics} measurements` : ", with no measurements attached, because you have no scan yet"}. Your photos are never sent. The suggested questions above are answered inside DOODEE and send nothing.`
       : "A question you type is processed on the machine running this system and is not sent anywhere. Your photos are not sent either.",
     turnsLeft: (n: number) => `${n} left this month`,
     quotaTitle: "You've used this month's turns",
-    quotaBodyFree: "The free plan includes 5 turns a month. It resets at the start of next month.",
+    quotaBodyFree: "You've used the free plan's chat for this month. It resets at the start of next month — the per-plan allowances are on the Plans page.",
     quotaBodyPaid: "You've hit this month's usage ceiling. Contact us if you need more.",
     seePlans: "See plans",
     offTitle: "Chat isn't switched on",
     offBody: "Typing your own question needs a model provider. The questions above still work.",
     failed: "Message failed to send",
+    failures: {
+      chat_upstream_error: "The model provider refused the request from our side, not from your account. Your quota was not charged.",
+      chat_rate_limited: "Too many messages too quickly. Wait a moment and try again.",
+      chat_quota_exhausted: "This month's turns are used up.",
+    } as Record<string, string>,
+    providerSaid: "The provider said:",
     freeChip: "Answered from your numbers. Does not use a turn.",
     retry: "Try again",
     deleteChat: "Delete this chat",
@@ -383,15 +417,28 @@ export default function ChatPanel() {
                     <ScanFace />
                   </span>
                   <p>
-                    {copy.failed} — {errorMessage(send.error || ask.error)}
+                    {/* `detail` is a machine code, so it goes through the same kind of table every
+                        other coded failure in these panels uses. Unmapped codes still fall through
+                        to the raw string rather than being swallowed. */}
+                    {copy.failed} —{" "}
+                    {copy.failures[errorMessage(send.error || ask.error)]
+                      || errorMessage(send.error || ask.error)}
                     {/* The code above says which gate refused; this says why the provider did.
                         Without it "chat_upstream_error" is all a misconfigured key ever shows,
                         which reads as the feature being broken rather than as something fixable
-                        in the admin. Credentials are stripped by `errorReason`. */}
+                        in the admin. Credentials are stripped by `errorReason`.
+
+                        Attributed, though. It is upstream text quoted verbatim, and the Gemini
+                        project behind this deployment currently answers
+                        `PERMISSION_DENIED: "Your project has been denied access. Please contact
+                        support."` — which, printed bare under the reader's own failed message,
+                        says that *their* account has been blocked. It has not; ours has. */}
                     {errorReason(send.error || ask.error) ? (
                       <>
                         <br />
-                        <small className="gpt-error-reason">{errorReason(send.error || ask.error)}</small>
+                        <small className="gpt-error-reason">
+                          {copy.providerSaid} {errorReason(send.error || ask.error)}
+                        </small>
                       </>
                     ) : null}
                   </p>
@@ -488,7 +535,11 @@ export default function ChatPanel() {
         <small className="gpt-disclaimer">{copy.disclaimer}</small>
         {/* Only shown where free text is actually reachable: with chat off or the quota gone
             the composer is not rendered, and nothing can leave. */}
-        {!chatOff && !outOfTurns && <small className="gpt-disclaimer">{copy.privacy(session.data?.chat_provider ?? "")}</small>}
+        {!chatOff && !outOfTurns && (
+          <small className="gpt-disclaimer">
+            {copy.privacy(session.data?.chat_provider ?? "", metricCount)}
+          </small>
+        )}
       </GlassCard>
     </div>
   );

@@ -15,58 +15,29 @@ import { latestCraniofacialScan } from "../../lib/latestScan";
  * ranking, so this uses qijek's light GlassCard.
  */
 
-/** Curve geometry, matched to the path drawn in DistributionCurve below. */
-const CURVE = { centreX: 380, baselineY: 174, peakHeight: 136, sigmaPx: 61.4, minX: 42, maxX: 718 };
-
-function markerPoint(z: number) {
-  // The drawn path is a normal; place the marker at the same z on it.
-  const x = Math.min(CURVE.maxX, CURVE.centreX + z * CURVE.sigmaPx);
-  const y = CURVE.baselineY - CURVE.peakHeight * Math.exp(-((x - CURVE.centreX) ** 2) / (2 * CURVE.sigmaPx ** 2));
-  return { x, y };
-}
-
-function DistributionCurve({ z, label }: { z: number; label: string }) {
-  const { x, y } = markerPoint(z);
-  const labelAbove = y > 90;
-  return (
-    <svg
-      className="score-curve"
-      viewBox="0 0 760 220"
-      role="img"
-      aria-label={`ตำแหน่งของคุณบนการแจกแจงของกลุ่มอ้างอิง: ${label}`}
-    >
-      <defs>
-        <linearGradient id="scoreCardCurveFill" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0" stopColor="#1687ff" stopOpacity=".2" />
-          <stop offset="1" stopColor="#1687ff" stopOpacity="0" />
-        </linearGradient>
-      </defs>
-      <path className="score-curve__grid" d="M40 174H720M40 128H720M40 82H720" />
-      <path
-        className="score-curve__fill"
-        d="M42 174C158 174 195 167 249 140C308 111 322 44 380 38C438 44 452 111 511 140C565 167 602 174 718 174V200H42Z"
-      />
-      <path
-        className="score-curve__line"
-        d="M42 174C158 174 195 167 249 140C308 111 322 44 380 38C438 44 452 111 511 140C565 167 602 174 718 174"
-      />
-      {/* Near the peak the curve leaves no headroom, so the label goes below the marker
-          instead of colliding with it. */}
-      <line className="score-curve__marker" x1={x} y1={labelAbove ? y - 60 : y + 14} x2={x} y2={labelAbove ? 181 : 181} />
-      <circle cx={x} cy={y} r="7" />
-      <text
-        x={Math.max(CURVE.minX + 24, Math.min(x, CURVE.maxX - 24))}
-        y={labelAbove ? y - 72 : y + 34}
-        textAnchor="middle"
-      >
-        คุณ
-      </text>
-      <text className="score-curve__axis" x={CURVE.centreX} y="200" textAnchor="middle">
-        ค่าเฉลี่ยกลุ่มอ้างอิง
-      </text>
-    </svg>
-  );
-}
+/*
+ * REMOVED, on purpose: `DistributionCurve`, `markerPoint` and the `CURVE` geometry.
+ *
+ * It drew a bell as a pair of fixed cubics — `d="M42 174C158 174 195 167 249 140…"` — with a
+ * marker placed on an assumed normal of sigma 61.4 screen pixels. Every viewer got the same
+ * curve, because there is no curve in this payload to get: `GET /scans/<id>/score-card/`
+ * (percentile.score_card) returns `similarity_percentile` and `marker_z` and nothing whatever
+ * about a distribution. The shape was decoration wearing a statistic's clothes, which is the
+ * one thing `DashboardPage.test.js` already refuses by name for the identical literal.
+ *
+ * It cannot be repaired by pointing it at the assessment screen's curve either. That curve is
+ * `score_distribution.density_curve` over this deployment's own `overall_score` values — seven
+ * of them today — while `marker_z` is `percentile.equivalent_z`, a chi-square tail against the
+ * published 240-person Thai study translated into normal space. Two different populations and
+ * two different quantities; plotting one marker on the other's axis would be a worse lie than
+ * the drawing it replaced.
+ *
+ * WHAT WOULD BRING IT BACK: a `distribution` block on the score-card response, built the way
+ * the assessment route already builds one, over the same quantity `marker_z` is measured in.
+ * Then draw it with `curvePath(distribution.curve, …)` from `lib/distributionCurve.ts`, which
+ * exists for exactly this and is what the dashboard now uses. Until that block is on the wire,
+ * the percentile sentence below is the whole honest answer.
+ */
 
 // Two photos, front and side, as the card was designed. Both are optional: the numbers
 // outlive the photographs by design, so a card with neither still reads correctly.
@@ -142,8 +113,16 @@ export default function ScoreCardPanel() {
       <div className="app-page-title">
         <span className="eyebrow">การ์ดคะแนน</span>
         <h1>เทียบกับกลุ่มอ้างอิง</h1>
+        {/* The cohort half of this sentence is only said when the scan carries a cohort to
+            name. `reference` is absent on a scan scored before that block existed, and the
+            template then rendered "เทียบกับคนไทย  คน อายุ  ปี" — a comparison with a
+            population whose size and age band are both blank, which reads as a rendering fault
+            and is really a claim with nothing behind it. */}
         <p>
-          วัดจาก {data.metric_count} ค่า เทียบกับคนไทย {data.sample_size} คน อายุ {data.age_range} ปี
+          วัดจาก {data.metric_count} ค่า
+          {data.sample_size && data.age_range
+            ? ` เทียบกับคนไทย ${data.sample_size} คน อายุ ${data.age_range} ปี`
+            : ""}
         </p>
       </div>
 
@@ -199,10 +178,36 @@ export default function ScoreCardPanel() {
           </div>
         ) : percentile !== null ? (
           <div className="score-card__percentile">
-            <strong>{percentile}%</strong>
+            {/* `similarity_percentile` is `round(survival * 100, 1)`, so a face far enough into
+                the tail comes back as exactly 0.0 and rendered as "0%" — which claims that *no
+                one* in the reference cohort sits further from the mean than this reader. What the
+                server actually computed is "below the smallest figure this rounds to". This
+                account is one of them, so it was on screen, not hypothetical. */}
+            <strong>{percentile === 0 ? "<0.1%" : `${percentile}%`}</strong>
             {/* The one sentence that keeps the whole card honest: this measures closeness to
                 the cohort mean, not attractiveness. */}
-            <span>ของกลุ่มอ้างอิงอยู่ห่างจากค่าเฉลี่ยมากกว่าคุณ</span>
+            <span>
+              ของกลุ่มอ้างอิงอยู่ห่างจากค่าเฉลี่ยมากกว่าคุณ
+              {/* The approximation warning, beside the number rather than only in the footer.
+                  `percentile.similarity_percentile` sums z² over the metrics and reads it off a
+                  chi-square with df = len(metrics) — which assumes the twelve measurements are
+                  independent. They are not (midface and lower-face height both scale with the
+                  same face), the published study reports no covariance matrix to do better with,
+                  and that module's own docstring says the assumption "pushes the percentile
+                  toward the extremes" and that "the UI has to state the assumption rather than
+                  present this as exact".
+
+                  On this account that is not theoretical: chi² = 33.4 on 12 degrees of freedom
+                  gives 0.1%, which is drawn as a headline figure directly under an overall score
+                  of 77/100. A reader who takes the big number at face value has been told
+                  something the statistic cannot support, and the footer saying so 400px further
+                  down is the arrangement DevelopmentPlanPanel already rejects in as many words —
+                  a qualifier said once at the bottom of a page is not said beside the thing it
+                  is about. */}
+              {data.assumes_independent_metrics ? (
+                <em className="score-card__approximate"> · ค่าประมาณ ไม่ใช่ค่าที่แม่นยำ (ดูหมายเหตุด้านล่าง)</em>
+              ) : null}
+            </span>
           </div>
         ) : (
           <p className="score-card__withheld" role="status">
@@ -210,10 +215,6 @@ export default function ScoreCardPanel() {
             ตัวเลขที่วัดได้ยังใช้ได้ตามปกติ
           </p>
         )}
-
-        {percentile !== null && typeof data.marker_z === "number" ? (
-          <DistributionCurve z={data.marker_z} label={`${percentile}%`} />
-        ) : null}
 
         {data.categories?.length ? (
           <div className="score-card__categories">

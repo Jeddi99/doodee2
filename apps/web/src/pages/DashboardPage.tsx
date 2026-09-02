@@ -18,7 +18,7 @@ import { errorMessage } from "../lib/apiError";
 import { dashboardGate } from "../lib/dashboardGate";
 import { describeScanFailure } from "../lib/scanFailure";
 import { statusPollInterval } from "../lib/pollInterval.js";
-import type { RatioRow } from "../lib/dashboardData";
+import type { InsightRow, RatioRow } from "../lib/dashboardData";
 import {
   CATALOG_SIZE,
   catalogAvailability,
@@ -28,6 +28,7 @@ import {
   pillarsFor,
   ratioRows,
   METRIC_SIMULATION_REGION,
+  METRIC_VIEW,
   type ReferenceCohort,
   referenceCohortFor,
   strengthsFor,
@@ -65,6 +66,8 @@ import {
 import Brand from "../Brand";
 import NotificationBell from "../components/NotificationBell";
 import { latestCraniofacialScan } from "../lib/latestScan";
+import { coverFit } from "../lib/makeupGeometry.js";
+import { allSegments, referenceSegments, viewGeometry } from "../lib/metricLines.js";
 
 type AppView =
   | "overview"
@@ -134,6 +137,11 @@ type ScanData = {
   views: ReturnType<typeof viewScoresFor>;
   cohort: ReferenceCohort;
   availability: ReturnType<typeof catalogAvailability>;
+  /**
+   * The stored analysis itself, for the one thing derived rows cannot carry: the coordinates
+   * each measurement was taken between. `lib/metricLines` reads `metric_geometry` off this.
+   */
+  analysisData: Record<string, unknown> | null;
 };
 
 const emptyScanData: ScanData = {
@@ -145,10 +153,17 @@ const emptyScanData: ScanData = {
   views: viewScoresFor(null),
   cohort: referenceCohortFor(null),
   availability: catalogAvailability(null),
+  analysisData: null,
 };
 
-/** Shared row shape for the strengths and improvements cards. */
-type InsightItem = { name: string; score: string; detail: string; ratios: string[]; level?: string };
+/** Shared row shape for the strengths and improvements cards. `lib/dashboardData` builds them. */
+type InsightItem = InsightRow;
+
+/** How many insight rows are visible before the card is expanded. */
+const INSIGHT_PREVIEW = 3;
+
+/** How many ratio rows a partial-depth plan may read. See `analysisRedacted` in `Analysis`. */
+const FREE_RATIO_ROWS = 3;
 
 /**
  * Every figure the dashboard renders comes from here. qijek held these as module-level literals;
@@ -171,20 +186,64 @@ const useScanData = () => useContext(ScanDataContext);
  * Carried in context rather than threaded as a prop because five components render the photo
  * and none of them should have to know the difference.
  */
-type ScanPhotoState = { url: string | null; expired: boolean };
-const ScanPhotoContext = createContext<ScanPhotoState>({ url: null, expired: false });
+type ScanPhotoState = { views: Record<string, string>; expired: boolean };
+const ScanPhotoContext = createContext<ScanPhotoState>({ views: {}, expired: false });
 
-function ScanPhoto({ alt, className }: { alt: string; className?: string }) {
-  const { url, expired } = useContext(ScanPhotoContext);
+/**
+ * Which stored photograph the word "side" refers to on this scan.
+ *
+ * The order `ScanSerializer.side_url` uses, so this screen and the score card can never show two
+ * different profiles for one scan. Null when no profile was captured — a front-only scan has no
+ * side photograph, and there is nothing to substitute for it.
+ */
+const PROFILE_VIEWS = ["left_profile", "right_profile", "left_oblique", "right_oblique"] as const;
+const profileViewKey = (views: Record<string, string>) =>
+  PROFILE_VIEWS.find((view) => views[view]) ?? null;
+
+/** Resolves an on-screen angle to the stored view whose photograph it names. */
+const photoViewKey = (views: Record<string, string>, angle: FaceAngle) =>
+  angle === "front" ? (views.front ? "front" : null) : profileViewKey(views);
+
+/**
+ * One of the scan's photographs, named by the angle it is meant to be.
+ *
+ * The angle is load-bearing rather than decorative. Every ScanPhoto on this screen used to read
+ * one `front_url` out of context, so the Side button, the "ด้านข้าง" figure on the overall card
+ * and the whole `analysis-face-card--side` panel were the *front* photograph — panned and scaled
+ * 1.16x by a CSS rule written to make it pass for a profile. `view_urls` carries a signed link
+ * per captured view (`ScanSerializer.get_view_urls`), so the side is now the side, and a scan
+ * with no profile says so instead of showing the front face again under a different label.
+ */
+function ScanPhoto({
+  alt,
+  className,
+  angle = "front",
+  style,
+}: {
+  alt: string;
+  className?: string;
+  angle?: FaceAngle;
+  style?: React.CSSProperties;
+}) {
+  const { views, expired } = useContext(ScanPhotoContext);
   const { locale } = useLocale();
   const th = locale !== "en";
-  if (url) return <img src={url} alt={alt} className={className} />;
+  const key = photoViewKey(views, angle);
+  if (key) return <img src={views[key]} alt={alt} className={className} style={style} />;
+  // Three absences, three sentences. A deleted photo is the privacy promise being kept, a
+  // missing profile is a scan that was only ever taken from the front, and everything else is a
+  // signing failure worth a refresh.
+  const missingProfile = angle === "side" && Boolean(views.front);
   const title = expired
     ? th ? "ภาพถูกลบแล้ว" : "Photo deleted"
-    : th ? "โหลดภาพไม่ได้" : "Photo unavailable";
+    : missingProfile
+      ? th ? "ไม่มีภาพด้านข้าง" : "No side photo"
+      : th ? "โหลดภาพไม่ได้" : "Photo unavailable";
   const detail = expired
     ? th ? "ตามกำหนด 30 วัน ค่าที่วัดได้ยังอยู่ครบ" : "On schedule after 30 days. Your measurements are still here."
-    : th ? "ลองรีเฟรชหน้านี้อีกครั้ง" : "Try refreshing the page.";
+    : missingProfile
+      ? th ? "สแกนนี้ถ่ายเฉพาะหน้าตรง" : "This scan was captured from the front only."
+      : th ? "ลองรีเฟรชหน้านี้อีกครั้ง" : "Try refreshing the page.";
   return (
     <span className={`scan-photo-placeholder ${className || ""}`} role="img" aria-label={`${alt} — ${title}. ${detail}`}>
       {expired ? <ShieldCheck aria-hidden="true" /> : <ImageOff aria-hidden="true" />}
@@ -262,6 +321,20 @@ export function GlassCard({
   );
 }
 
+/**
+ * The two ranked lists, and the three numbers that used to be written into them.
+ *
+ * The counter read "3 of 18" and the button "Show 15 more". This scan is scored on twelve
+ * measurements at most, both cards rank the same twelve, and neither eighteen nor fifteen exists
+ * anywhere in the system — nor did pressing the button ever add a row, because the caller handed
+ * this component exactly three items and expanding only changed the label. Every figure here is
+ * now `items.length`, which is the ranking it was actually given.
+ *
+ * The third was the status chip: a strength has no severity of its own, so the fallback printed
+ * "Ideal" on every one of them. `deviationStatus` never returns that word and the scorer never
+ * makes that claim — the closest it says is that a measurement sits near a published mean. Both
+ * cards now carry the real band, so there is nothing left to fall back to.
+ */
 function InsightList({
   kind,
   items,
@@ -271,40 +344,52 @@ function InsightList({
 }) {
   const [open, setOpen] = useState(0);
   const [expanded, setExpanded] = useState(false);
+  const { locale } = useLocale();
+  const th = locale !== "en";
+  const visible = expanded ? items : items.slice(0, INSIGHT_PREVIEW);
+  const hidden = items.length - visible.length;
+  if (!items.length) return null;
   return (
     <GlassCard className={`insight-panel insight-panel--${kind}`}>
       <header>
         <div>
+          {/* The wording AssessmentView uses for the same two rankings. "What already works" is a
+              verdict on a face; what these actually rank is distance from a published mean. */}
           <span className="eyebrow">
-            {kind === "strength" ? "Key strengths" : "Areas to improve"}
+            {kind === "strength"
+              ? th ? "ใกล้ค่าอ้างอิง" : "Closest to the reference"
+              : th ? "ต่างจากค่าอ้างอิง" : "Furthest from the reference"}
           </span>
           <h2>
             {kind === "strength"
-              ? "What already works."
-              : "Where effort matters."}
+              ? th ? "ค่าที่ใกล้ค่าเฉลี่ยที่ตีพิมพ์ที่สุด" : "Nearest the published means."
+              : th ? "ค่าที่ห่างจากค่าเฉลี่ยที่ตีพิมพ์ที่สุด" : "Furthest from the published means."}
           </h2>
         </div>
         <span className="insight-count">
-          {expanded ? "All shown" : "3 of 18"}
+          {th
+            ? `${visible.length} จาก ${items.length} ค่า`
+            : `${visible.length} of ${items.length} measured`}
         </span>
       </header>
       <div className="insight-list">
-        {items.map((item, index) => (
+        {visible.map((item, index) => (
           <button
             className={open === index ? "is-open" : ""}
             type="button"
             onClick={() => setOpen(open === index ? -1 : index)}
             key={item.name}
           >
-            <span className="insight-status">
-              {"level" in item ? item.level : "Ideal"}
-            </span>
+            <span className="insight-status">{item.level}</span>
             <strong>{item.name}</strong>
-            <b>{item.score}</b>
+            <b>
+              {item.score}
+              <small>{item.scoreUnit}</small>
+            </b>
             <ChevronDown />
             <div className="insight-detail">
               <p>{item.detail}</p>
-              <small>Contributing ratios</small>
+              <small>{th ? "ค่าที่วัดได้" : "Measured against"}</small>
               {item.ratios.map((ratio) => (
                 <span key={ratio}>{ratio}</span>
               ))}
@@ -312,14 +397,20 @@ function InsightList({
           </button>
         ))}
       </div>
-      <button
-        className="insight-more"
-        type="button"
-        onClick={() => setExpanded(!expanded)}
-      >
-        {expanded ? "Show less" : "Show 15 more"}
-        <ChevronDown />
-      </button>
+      {/* Absent rather than inert once everything fits, which is the normal case on a scan with
+          few scored measurements. */}
+      {(hidden > 0 || expanded) && (
+        <button
+          className="insight-more"
+          type="button"
+          onClick={() => setExpanded(!expanded)}
+        >
+          {expanded
+            ? th ? "แสดงน้อยลง" : "Show fewer"
+            : th ? `แสดงอีก ${hidden} ค่า` : `Show ${hidden} more`}
+          <ChevronDown />
+        </button>
+      )}
     </GlassCard>
   );
 }
@@ -336,6 +427,10 @@ type PlanRow = {
   code: string;
   name_th: string;
   name_en: string;
+  // Served by `PlanSerializer` and edited in the admin. The unlock dialog renders this instead of
+  // the sentence that used to be written here, which promised things the system does not do.
+  description_th: string;
+  description_en: string;
   price_satang: number;
   interval: string;
   self_serve: boolean;
@@ -525,9 +620,24 @@ function Overview({
               {item.label}
               <ArrowRight />
             </span>
-            <strong className={item.locked ? "locked-score-shell" : undefined}>
+            {/* A blurred number is a promise that a number exists behind it. For `unmeasurable`
+                none does, so the card shows an em dash and says why, rather than teasing a score
+                no plan and no rescan will ever reveal. */}
+            <strong
+              className={
+                !item.locked
+                  ? undefined
+                  : item.lockReason === "unmeasurable"
+                    ? "pillar-score--none"
+                    : "locked-score-shell"
+              }
+            >
               {item.locked ? (
-                <LockedNumber />
+                item.lockReason === "unmeasurable" ? (
+                  "—"
+                ) : (
+                  <LockedNumber />
+                )
               ) : (
                 <>
                   {item.score}
@@ -537,7 +647,13 @@ function Overview({
             </strong>
             {item.locked ? (
               <span className="pillar-unlock">
-                <LockKeyhole /> {th ? "ปลดล็อกคะแนน" : "Unlock your score"}
+                {item.lockReason === "unmeasurable" ? (
+                  th ? "ยังไม่มีค่ามาตรฐานให้เทียบ" : "No published reference"
+                ) : (
+                  <>
+                    <LockKeyhole /> {th ? "ปลดล็อกคะแนน" : "Unlock your score"}
+                  </>
+                )}
               </span>
             ) : (
               <span className="pillar-unlock pillar-unlock--open">
@@ -580,6 +696,7 @@ function Overview({
                 <ScanPhoto
                   alt={th ? "ภาพด้านข้างของคุณ" : "Your side scan"}
                   className="is-side"
+                  angle="side"
                 />
                 <figcaption>{th ? "ด้านข้าง" : "Side"}</figcaption>
               </figure>
@@ -664,7 +781,10 @@ const RATIO_MODAL_COPY = {
     closeDetails: "ปิดรายละเอียดสัดส่วน",
     photoAlt: (name: string) => `ค่าที่วัดได้ของ${name}`,
     score: "คะแนน",
-    reference: "ค่าอ้างอิง",
+    reference: "ตรงค่าอ้างอิง",
+    // The two ends of the score bar. `metric_score` is 100 - 20|z|, so the right end is the
+    // published mean and the left is five standard deviations from it.
+    farFromReference: "ห่าง 5 SD",
     ideal: (value: string) => `ค่าอ้างอิง ${value}`,
     tabs: { overview: "ภาพรวม", reference: "กลุ่มอ้างอิง", simulate: "จำลอง" },
     about: "เกี่ยวกับสัดส่วนนี้",
@@ -696,7 +816,10 @@ const RATIO_MODAL_COPY = {
     closeDetails: "Close ratio details",
     photoAlt: (name: string) => `Your ${name} measurement`,
     score: "Score",
-    reference: "Reference",
+    reference: "At the reference",
+    // The two ends of the score bar. `metric_score` is 100 - 20|z|, so the right end is the
+    // published mean and the left is five standard deviations from it.
+    farFromReference: "5 SD away",
     ideal: (value: string) => `Ideal ${value}`,
     tabs: { overview: "Overview", reference: "Reference cohort", simulate: "Simulate" },
     about: "About this ratio",
@@ -781,7 +904,10 @@ function RatioModal({
         </header>
         <div className="ratio-modal__hero">
           <figure>
-            <ScanPhoto alt={c.photoAlt(metric.name)} />
+            {/* The photograph this measurement was read off, not whichever one was to hand.
+                Three of the twelve are profile angles, and showing a front face beside a
+                nasolabial angle says the angle was measured there. */}
+            <ScanPhoto alt={c.photoAlt(metric.name)} angle={METRIC_VIEW[metric.id] ?? "front"} />
             <span>{metric.value}</span>
           </figure>
           <div className="ratio-modal__score">
@@ -790,13 +916,17 @@ function RatioModal({
               {metric.score.toFixed(1)}
               <small>/10</small>
             </strong>
+            {/* Where the marker sits, and what the ends of the bar mean.
+                `metric_score` is `100 - 20|z|`, so the right-hand end of this bar is the
+                published mean itself and the left is five standard deviations off it. The
+                "Reference" caption was pinned to the midpoint by the stylesheet, which put the
+                reference where a score of 5.0 sits and made every reading of this bar wrong by
+                half its width. The marker was also clamped into 8-92%, so a 0.0 and a 0.8 landed
+                on the same pixel — a floor and a ceiling on a figure that has neither. */}
             <div className="ratio-range">
-              <i
-                style={{
-                  left: `${Math.min(92, Math.max(8, metric.score * 10))}%`,
-                }}
-              />
-              <span>{c.reference}</span>
+              <i style={{ left: `${metric.score * 10}%` }} />
+              <span style={{ left: 0, transform: "none" }}>{c.farFromReference}</span>
+              <span style={{ left: "100%", transform: "translateX(-100%)" }}>{c.reference}</span>
             </div>
             <b>{metric.value}</b>
             <p>{c.ideal(metric.ideal)}</p>
@@ -1137,12 +1267,14 @@ function UnlockModal({
   const plan = (plans.data as PlanRow[] | undefined)
     ?.filter((row) => row.interval !== "year" && row.self_serve && row.price_satang > 0)
     .sort((a, b) => a.price_satang - b.price_satang)[0];
-  const [stage, setStage] = useState<"unlocking" | "offer">("unlocking");
-
-  useEffect(() => {
-    const timer = window.setTimeout(() => setStage("offer"), 1050);
-    return () => window.clearTimeout(timer);
-  }, []);
+  /* The "unlocking" stage is gone.
+   *
+   * It was a `setTimeout` of 1050ms behind a scanning animation, a progress bar and the line
+   * "Preparing your full analysis. Checking all 85 facial characteristics." Nothing was being
+   * prepared and nothing was being checked: this is a price list, the analysis finished before
+   * the screen it was opened from could render, and the only thing the timer measured was
+   * itself. A progress bar that tracks a timer is the same fiction as a score that tracks
+   * nothing — it just tells the lie in motion. */
 
   return (
     <div
@@ -1157,7 +1289,7 @@ function UnlockModal({
         onClick={onClose}
         aria-label="Close unlock dialog"
       />
-      <section className={`unlock-modal app-glass unlock-modal--${stage}`}>
+      <section className="unlock-modal app-glass unlock-modal--offer">
         <button
           className="unlock-modal__close"
           type="button"
@@ -1166,33 +1298,27 @@ function UnlockModal({
         >
           <X />
         </button>
-        {stage === "unlocking" ? (
-          <div className="unlock-loading" aria-live="polite">
-            <div className="unlock-loading__visual" aria-hidden="true">
-              <img src="/assets/doodee-analysis-glass-v1.webp" alt="" />
-              <span className="unlock-loading__scan" />
-              <span className="unlock-loading__landmarks" />
-              <div className="unlock-loading__pill">
-                <i /> Unlocking…
-              </div>
-            </div>
-            <div className="unlock-loading__copy">
-              <span className="eyebrow">DOODEE Complete</span>
-              <h2 id="unlock-title">Preparing your full analysis.</h2>
-              <p>Checking all {CATALOG_SIZE} facial characteristics.</p>
-              <div className="unlock-loading__progress"><i /></div>
-            </div>
-          </div>
-        ) : (
           <div className="unlock-offer">
             <div className="unlock-modal__heading">
               <div className="unlock-orb">
                 <LockKeyhole />
               </div>
               <div>
-                <span className="eyebrow">DOODEE Complete</span>
-                <h2 id="unlock-title">Unlock every detail.</h2>
-                <p>Full analysis, clear limits and a plan that updates with you.</p>
+                <span className="eyebrow">{th ? "\u0e41\u0e1e\u0e47\u0e01\u0e40\u0e01\u0e08" : "Plans"}</span>
+                <h2 id="unlock-title">
+                  {th ? "\u0e14\u0e39\u0e04\u0e48\u0e32\u0e17\u0e35\u0e48\u0e27\u0e31\u0e14\u0e44\u0e14\u0e49\u0e17\u0e31\u0e49\u0e07\u0e2b\u0e21\u0e14" : "See every measurement this scan produced."}
+                </h2>
+                {/* The plan's own description, written by whoever edits the price list. The
+                    three sentences here before it — "Unlock every detail", "Full analysis, clear
+                    limits and a plan that updates with you" — described a product nobody had
+                    specified, and the four ticks below promised "all 85 analysis checks" (paying
+                    does not make an unmeasured characteristic measurable), a "monthly" plan
+                    (`development_plan.py` has no cadence at all) and a "consultation report"
+                    (nothing in this system produces one). What a plan grants is a server-owned
+                    list on the plan row; the pricing screen renders it against the allowances
+                    `entitlement.quota` enforces, and this dialog links there rather than keeping
+                    a second copy that can disagree with it. */}
+                <p>{plan ? (th ? plan.description_th : plan.description_en) : ""}</p>
               </div>
             </div>
             <div className="unlock-price">
@@ -1209,24 +1335,6 @@ function UnlockModal({
                 <small>{th ? "ดูราคาที่หน้าแพ็กเกจ" : "See plans for pricing"}</small>
               )}
             </div>
-            <ul>
-              <li>
-                <Check />
-                All {CATALOG_SIZE} analysis checks
-              </li>
-              <li>
-                <Check />
-                Confidence, capture needs and limitations
-              </li>
-              <li>
-                <Check />
-                Personalized monthly improvement plan
-              </li>
-              <li>
-                <Check />
-                Treatment previews and consultation report
-              </li>
-            </ul>
             {/* Was <a href="/login">, which sent an already-signed-in user back
                 to sign in. The purchase lives on the pricing screen. */}
             <button
@@ -1239,16 +1347,111 @@ function UnlockModal({
               {th ? "ดูแพ็กเกจ" : "See plans"} <ArrowRight />
             </button>
             <button className="unlock-modal__free" type="button" onClick={onClose}>
-              Continue with free analysis
+              {th ? "\u0e14\u0e39\u0e1c\u0e25\u0e17\u0e35\u0e48\u0e21\u0e35\u0e15\u0e48\u0e2d\u0e44\u0e1b" : "Continue with what is shown"}
             </button>
             <small>
-              Educational guidance only. Results are not a diagnosis or a measure
-              of human worth.
+              {th
+                ? "\u0e40\u0e1e\u0e37\u0e48\u0e2d\u0e01\u0e32\u0e23\u0e28\u0e36\u0e01\u0e29\u0e32\u0e40\u0e17\u0e48\u0e32\u0e19\u0e31\u0e49\u0e19 \u0e44\u0e21\u0e48\u0e43\u0e0a\u0e48\u0e01\u0e32\u0e23\u0e27\u0e34\u0e19\u0e34\u0e08\u0e09\u0e31\u0e22 \u0e41\u0e25\u0e30\u0e44\u0e21\u0e48\u0e43\u0e0a\u0e48\u0e01\u0e32\u0e23\u0e27\u0e31\u0e14\u0e04\u0e38\u0e13\u0e04\u0e48\u0e32\u0e02\u0e2d\u0e07\u0e04\u0e19"
+                : "Educational guidance only. Results are not a diagnosis or a measure of human worth."}
             </small>
           </div>
-        )}
       </section>
     </div>
+  );
+}
+
+/**
+ * The measured spans, drawn on the photograph they were measured on.
+ *
+ * This card was empty. What used to sit here was a fixed decorative path — five rules and two
+ * dots at constant coordinates in a 600x760 box — laid over the customer's own photograph where
+ * measured landmarks belong; it was removed because nothing served the coordinates to replace it
+ * with. `analysis_data.metric_geometry` now carries them: for every emitted number, the endpoints
+ * the server divided, normalised 0..1 against the stored image (`analysis_engine._metric_geometry`).
+ * Every line below was measured by the same code that produced the figure beside it.
+ *
+ * Three deliberate choices:
+ *
+ * - The mapping is `lib/metricLines`, not a table of landmark indices kept here. The server says
+ *   which two points a ratio divides, so a drawn line and its number cannot disagree.
+ * - The SVG carries the photograph's own pixel size as its viewBox and `xMidYMid slice`, which is
+ *   exactly `object-fit: cover` with a centred `object-position`. The `<img>` beneath is pinned to
+ *   the same alignment inline, so the two scale together by construction rather than by a
+ *   correction factor — the failure that used to put the try-on's blush on the jaw.
+ * - Nothing is drawn when there is no geometry, which is the normal state for every scan analysed
+ *   before the field existed and for every scan past its 30-day image purge. An empty photograph
+ *   is the honest picture of "we did not keep the points"; a plausible line is not.
+ */
+function MeasuredFace({
+  analysisData,
+  viewKey,
+  activeKey,
+  keys,
+  label,
+}: {
+  analysisData: Record<string, unknown> | null;
+  viewKey: string | null;
+  activeKey: string | null;
+  keys: string[];
+  label: string;
+}) {
+  const drawing = useMemo(() => {
+    if (!analysisData || !viewKey) return null;
+    const view = viewGeometry(analysisData, viewKey);
+    const size = view?.image_size;
+    if (!view || !Array.isArray(size) || !(size[0] > 0 && size[1] > 0)) return null;
+    const [width, height] = size as [number, number];
+    // Identity fit: the SVG's viewBox *is* the stored image, so a normalised point is simply its
+    // pixel position. `coverFit` is still what computes it, so the one mapping the try-on and the
+    // overlay share stays the one mapping.
+    const fit = coverFit({ width, height }, { width, height });
+    const context = allSegments(view, keys, fit).filter(
+      (segment: { points: { x: number; y: number }[] }) => segment.points.length > 1,
+    );
+    const active = activeKey ? referenceSegments(view, activeKey, fit) : [];
+    if (!context.length && !active.length) return null;
+    return { width, height, context, active };
+  }, [analysisData, viewKey, activeKey, keys]);
+
+  if (!drawing) return null;
+  const line = (points: { x: number; y: number }[]) =>
+    points.map((point, index) => `${index ? "L" : "M"}${point.x.toFixed(1)},${point.y.toFixed(1)}`).join(" ");
+  return (
+    <svg
+      className="analysis-face-lines"
+      viewBox={`0 0 ${drawing.width} ${drawing.height}`}
+      preserveAspectRatio="xMidYMid slice"
+      role="img"
+      aria-label={label}
+    >
+      {/* Every other span this pillar covers, held back so the selected one reads as selected. */}
+      {drawing.context.map((segment: { points: { x: number; y: number }[] }, index: number) => (
+        <path
+          key={`context-${index}`}
+          d={line(segment.points)}
+          opacity={0.34}
+          vectorEffect="non-scaling-stroke"
+        />
+      ))}
+      {/* The highlighted row. `denominator` and `baseline` come back first from
+          `referenceSegments`, so "divided by what" is drawn under the span itself. */}
+      {drawing.active.map((segment: { role: string; points: { x: number; y: number }[] }, index: number) => (
+        <path
+          key={`active-${index}`}
+          d={line(segment.points)}
+          stroke={segment.role === "measured" ? "#5ac8ff" : "rgba(255,255,255,.72)"}
+          strokeDasharray={segment.role === "measured" ? undefined : "5 5"}
+          vectorEffect="non-scaling-stroke"
+        />
+      ))}
+      {drawing.active
+        .filter((segment: { role: string }) => segment.role === "measured")
+        .flatMap((segment: { points: { x: number; y: number }[] }, index: number) =>
+          segment.points.map((point, at) => (
+            <circle key={`dot-${index}-${at}`} cx={point.x} cy={point.y} r={Math.max(drawing.width, drawing.height) / 190} />
+          )),
+        )}
+    </svg>
   );
 }
 
@@ -1279,7 +1482,10 @@ function Analysis({
   const [selectedMetric, setSelectedMetric] = useState<RatioMetric | null>(
     null,
   );
-  const { pillars, rows, strengths, improvements, views } = useScanData();
+  const { pillars, rows, strengths, improvements, views, analysisData } = useScanData();
+  const { views: photoViews } = useContext(ScanPhotoContext);
+  const { locale } = useLocale();
+  const th = locale !== "en";
   // The two numbers beside the two photographs, averaged over the measurements read off
   // each one. They belong to the scan, not to the pillar tab: the strip used to print one
   // constant on the front button whenever the harmony tab was open and the word Locked
@@ -1288,9 +1494,54 @@ function Analysis({
   const frontView = views.find((item) => item.key === "front");
   const sideView = views.find((item) => item.key === "side");
   const unlockedCount = pillars.filter((item) => !item.locked).length;
-  const list = rows.filter((row) => pillarOf(row.category) === pillar);
+  /**
+   * The rows for the pillar *and* the photograph on screen.
+   *
+   * The angle used to change the picture and nothing else, so pressing Side left nine front
+   * measurements sitting under a heading reading "Your Side Ratios", with the card over the
+   * profile photograph captioned "SIDE · Midface height" — a measurement named after a view it
+   * was not taken from. `METRIC_VIEW` mirrors `reference_scoring.VIEW_OF`, which is where the
+   * server records which photograph each observation was read off, and it is also what decides
+   * whether the overlay has a span to draw: a front key has no geometry on a profile view, so an
+   * unfiltered list would silently draw nothing for half the rows.
+   */
+  const list = rows.filter(
+    (row) => pillarOf(row.category) === pillar && (METRIC_VIEW[row.id] ?? "front") === angle,
+  );
   const visible = showAll ? list : list.slice(0, 7);
-  const pillarLocked = pillar !== "harmony";
+  const activePillar = pillars.find((item) => item.id === pillar);
+  /**
+   * Whether this pillar is readable, from the pillar itself.
+   *
+   * It used to be `pillar !== "harmony"` — a constant, and one the rest of the product
+   * contradicted on screen: the overview's pillar cards print real Angularity and Features
+   * scores from `reference_scores.categories`, and clicking through to the same pillar here
+   * covered every row with a padlock and offered to sell it back. `pillarsFor` already decides
+   * this per scan, and it is the only thing that can: a category the backend did not score is
+   * locked, a category no published reference measures is `unmeasurable`, and a category this
+   * scan scored is neither.
+   */
+  const pillarLocked = activePillar?.locked ?? true;
+  /**
+   * Whether this account's plan withholds the deeper rows, decided by the server.
+   *
+   * The gate here used to be `index > 2` — the fourth row onwards padlocked for everybody,
+   * including a Pro subscriber who had already paid for them, under a button offering to sell
+   * what they hold. `analysis_depth` is the entitlement that actually governs how much of an
+   * analysis a plan may read, and `GET /session/` publishes it exactly so the rule is not
+   * re-decided in the client (views.py:152).
+   *
+   * It is still only a curtain: `GET /scans/<id>/status/` serves `reference_scores` in full to
+   * every plan, so the withheld figures are already in the browser. Making the lock real means
+   * redacting them there, the way `score_card` and `skin-trend` already do — a backend change,
+   * noted here rather than papered over.
+   */
+  const session = useQuery({ queryKey: ["session"], queryFn: getSession });
+  const analysisRedacted = session.data?.score_card_redacted === true;
+  // The photograph on screen, and the geometry that goes with it, are the same view — the
+  // measured spans are stored per captured view and cannot be drawn on any other one.
+  const geometryView = photoViewKey(photoViews, angle);
+  const activeRow = list[activeIndex] ?? list[0] ?? null;
 
   useEffect(() => {
     setShowAll(false);
@@ -1359,16 +1610,23 @@ function Analysis({
           type="button"
           onClick={() => setAngle("side")}
         >
-          <ScanPhoto className="is-side" alt="Side view" />
+          <ScanPhoto className="is-side" alt="Side view" angle="side" />
           <span>
             <small>Side</small>
             <strong title={viewScoreTitle(sideView, "side")}>{sideView?.score ?? "—"}</strong>
           </span>
         </button>
         <div>
-          <span className="eyebrow">{CATALOG_SIZE} analysis checks</span>
+          {/* What this scan produced, not what the catalogue can measure in principle. The
+              eyebrow read "{CATALOG_SIZE} analysis checks" above a pillar holding two or three
+              rows, which is a count of the product rather than of the reader's result. */}
+          <span className="eyebrow">
+            {th
+              ? `${rows.length} ค่าที่ให้คะแนนได้ในสแกนนี้`
+              : `${rows.length} scored on this scan`}
+          </span>
           <strong>
-            {pillars.find((item) => item.id === pillar)?.label} analysis
+            {activePillar?.label} analysis
           </strong>
           <small>
             {angle === "front" ? "Front ratios" : "Side-profile ratios"}
@@ -1380,38 +1638,45 @@ function Analysis({
         <GlassCard
           className={`analysis-face-card analysis-face-card--${angle}`}
         >
-          <ScanPhoto alt={`Your ${angle} facial analysis`} />
-          {/* The proportion lines that used to sit here are gone.
-              They were a fixed decorative path — five rules and two dots at constant
-              coordinates in a 600x760 box — laid over the customer's own photograph in
-              the place measured landmarks belong. Nothing about them came from this
-              face, and on a photograph of any other shape they did not even land on it.
-
-              What it would take to draw them for real: landmark coordinates for this
-              scan, which no endpoint serves as this is written. `analysis_data` keeps the
-              ratios and the scores, never the points they were measured between, and
-              `GET /scans/<id>/mesh/<view>/` re-detects the landmarks server-side and
-              answers with a PNG precisely because the browser cannot rebuild the geometry
-              from what it has (urls.py:141, views.py:1155).
-
-              That gap is being closed elsewhere: landmark coordinates are being added to
-              the scan payload, and a component that draws the measured spans from them
-              will be wired in here once it lands. `src/data/faceMetrics.js` already holds
-              the other half — `REFERENCE_METRIC_SPANS` maps each scored key to its
-              MediaPipe landmark indices. So this space is waiting for that component and
-              for nothing else. Do not fill it with a placeholder in the meantime: a
-              decorative line over a real face is indistinguishable from a measurement,
-              which is how the last one reached a paying screen. */}
+          {/* The lines are drawn in the SVG's own coordinate space, which is the photograph's
+              pixel grid. Alignment is pinned here rather than left to the stylesheet, whose rule
+              for this card offsets the crop to 31% and, on `--side`, panned and scaled the front
+              photo by 1.16 to pass it off as a profile. Either would slide the face out from
+              under a line that was measured on it. */}
+          <ScanPhoto
+            alt={`Your ${angle} facial analysis`}
+            angle={angle}
+            style={{ objectPosition: "50% 50%", transform: "none" }}
+          />
+          <MeasuredFace
+            analysisData={analysisData}
+            viewKey={geometryView}
+            activeKey={pillarLocked ? null : activeRow?.id ?? null}
+            keys={pillarLocked ? [] : list.map((row) => row.id)}
+            label={
+              th
+                ? `เส้นที่ใช้วัด${activeRow ? activeRow.name : ""}บนภาพของคุณ`
+                : `The spans ${activeRow ? activeRow.name : "these ratios"} was measured across on your own photograph`
+            }
+          />
           <div className="analysis-face-overlay">
             <span>
-              {angle} {pillars.find((item) => item.id === pillar)?.label}
+              {angle} {activePillar?.label}
             </span>
+            {/* Three states, and the middle one used to be missing. A pillar this scan did not
+                score reads as unscored; a pillar no published reference measures says that
+                instead, because paying does not reveal it. With no row under the cursor at all
+                the slot is empty — it used to interpolate `undefined/10`. */}
             <strong>
-              {pillarLocked
-                ? "Locked"
-                : `${list[activeIndex]?.score.toFixed(1)}/10`}
+              {activePillar?.lockReason === "unmeasurable"
+                ? th ? "ยังให้คะแนนไม่ได้" : "Not measurable"
+                : pillarLocked
+                  ? th ? "สแกนนี้ยังไม่ได้ให้คะแนน" : "Not scored on this scan"
+                  : activeRow
+                    ? `${activeRow.score.toFixed(1)}/10`
+                    : "—"}
             </strong>
-            <small>{list[activeIndex]?.name}</small>
+            <small>{pillarLocked ? activePillar?.note : activeRow?.name}</small>
           </div>
           <div className="analysis-face-controls">
             <button
@@ -1443,7 +1708,7 @@ function Analysis({
             <div>
               <span className="eyebrow">
                 Understanding{" "}
-                {pillars.find((item) => item.id === pillar)?.label}
+                {activePillar?.label}
               </span>
               <h1>Your {angle === "front" ? "Front" : "Side"} Ratios</h1>
             </div>
@@ -1451,23 +1716,23 @@ function Analysis({
               <button type="button" onClick={() => openView("doodeegpt")}>
                 <MessageCircle /> Ask DOODEE GPT
               </button>
+              {/* Was "Unlock 70+ ratios". There is no seventy anywhere in this system: the
+                  catalogue holds {CATALOG_SIZE} entries, `analysis_engine` measures 51 of them
+                  and only the 12 with a published mean can be scored. The button now offers
+                  what the plans page actually sells, without naming a count it cannot back. */}
               <button className="ratio-unlock" type="button" onClick={onUnlock}>
-                <LockKeyhole /> Unlock 70+ ratios
+                <LockKeyhole /> {th ? "ดูแพ็กเกจ" : "See plans"}
               </button>
             </div>
           </header>
-          <p className="ratio-panel__intro">
-            {pillar === "harmony"
-              ? "How your features work together as one face."
-              : pillar === "angularity"
-                ? "Shape, projection and definition across your facial structure."
-                : pillar === "dimorphism"
-                  ? "How selected traits compare with your chosen reference."
-                  : "The individual proportions that shape your overall appearance."}
-          </p>
+          {/* The pillar's own note, from `pillarsFor`. The four sentences written here included
+              "How selected traits compare with your chosen reference" over Dimorphism — there is
+              no chosen reference, no trait comparison, and no published study that measures the
+              pillar at all, which is precisely what its note says. */}
+          <p className="ratio-panel__intro">{activePillar?.note}</p>
           <div className="ratio-list">
             {visible.map((metric, index) => {
-              const locked = pillarLocked || index > 2;
+              const locked = pillarLocked || (analysisRedacted && index >= FREE_RATIO_ROWS);
               return (
                 <button
                   className={`ratio-row ${activeIndex === index ? "is-active" : ""} ${locked ? "is-locked" : ""}`}
@@ -1483,9 +1748,16 @@ function Analysis({
                     <strong>{metric.name}</strong>
                     <small>{metric.status}</small>
                   </span>
+                  {/* The bar used to be drawn at full score under a padlocked figure, so the
+                      length of the fill gave away the number the row claimed to be hiding. A
+                      locked row draws no bar at all. */}
                   <div className="ratio-row__track">
-                    <i style={{ width: `${metric.score * 10}%` }} />
-                    <b style={{ left: `${metric.score * 10}%` }} />
+                    {!locked && (
+                      <>
+                        <i style={{ width: `${metric.score * 10}%` }} />
+                        <b style={{ left: `${metric.score * 10}%` }} />
+                      </>
+                    )}
                   </div>
                   <em className={locked ? "locked-metric-value" : undefined}>
                     {locked ? <LockKeyhole /> : metric.value}
@@ -1497,6 +1769,21 @@ function Analysis({
                 </button>
               );
             })}
+            {/* Nothing to list, and three different reasons for it. The panel used to render an
+                empty list under a heading that promised ratios. */}
+            {!visible.length && (
+              <p className="ratio-panel__intro">
+                {activePillar?.lockReason === "unmeasurable"
+                  ? activePillar.note
+                  : rows.some((row) => pillarOf(row.category) === pillar)
+                    ? th
+                      ? `ค่าของมิตินี้ไม่ได้วัดจากภาพ${angle === "front" ? "หน้าตรง" : "ด้านข้าง"}`
+                      : `No measurement in this pillar is read off the ${angle} photograph.`
+                    : th
+                      ? "สแกนนี้ไม่มีค่าที่ให้คะแนนได้ในมิตินี้"
+                      : "This scan produced no scored measurements for this pillar."}
+              </p>
+            )}
           </div>
           {list.length > 7 && (
             <button
@@ -1517,28 +1804,50 @@ function Analysis({
         <InsightList kind="strength" items={strengths} />
         <InsightList kind="improve" items={improvements} />
       </section>
+      {/* The four letters were a progress meter with the first one always filled: H marked done
+          and A, D, F pending, on every account, whatever the scan measured. Filled from the same
+          `pillars` the row above counts now, so the picture and the sentence beside it agree.
+
+          The three buttons were "Start Angularity / Dimorphism / Features", which promised work
+          that could be started. Two of them only switch tab, and the third switched to a pillar
+          no published reference measures — the overview's own card disables it for exactly that
+          reason. Unmeasurable pillars are dropped and the rest say what they do. */}
       <GlassCard className="continue-analysis">
-        <div className="continue-analysis__letters">
-          <span className="is-done">H</span>
-          <span>A</span>
-          <span>D</span>
-          <span>F</span>
+        {/* The letter is the pillar's id, not its label: a Thai label's first character is not an
+            initial and four of them in four boxes is noise. Decoration either way — the reading
+            is which of them are filled, and the sentence beside it says the same thing in words,
+            which is why the strip is hidden from assistive technology rather than duplicated. */}
+        <div className="continue-analysis__letters" aria-hidden="true">
+          {pillars.map((item) => (
+            <span key={item.id} className={item.locked ? undefined : "is-done"}>
+              {item.id.slice(0, 1).toUpperCase()}
+            </span>
+          ))}
         </div>
         <div>
-          <span className="eyebrow">Progress</span>
-          <h2>{unlockedCount} of {pillars.length} pillars analyzed</h2>
-          <p>Complete every pillar for a more accurate full-face view.</p>
+          <span className="eyebrow">{th ? "ความครอบคลุม" : "Coverage"}</span>
+          <h2>
+            {th
+              ? `ให้คะแนนได้ ${unlockedCount} จาก ${pillars.length} มิติ`
+              : `${unlockedCount} of ${pillars.length} pillars scored`}
+          </h2>
+          {/* Was "Complete every pillar for a more accurate full-face view", which reads as an
+              instruction the reader can follow. They cannot: what is scored is decided by which
+              photographs were captured and which measurements have a published mean. */}
+          <p>
+            {th
+              ? "จำนวนมิติที่ให้คะแนนได้ขึ้นกับภาพที่ถ่ายไว้ และค่าที่มีงานวิจัยตีพิมพ์ไว้ให้เทียบ"
+              : "What can be scored depends on the photographs captured and on which measurements have a published reference."}
+          </p>
         </div>
         <div className="continue-analysis__actions">
-          <button type="button" onClick={() => setPillar("angularity")}>
-            Start Angularity
-          </button>
-          <button type="button" onClick={() => setPillar("dimorphism")}>
-            Start Dimorphism
-          </button>
-          <button type="button" onClick={() => setPillar("features")}>
-            Start Features
-          </button>
+          {pillars
+            .filter((item) => item.id !== pillar && item.lockReason !== "unmeasurable")
+            .map((item) => (
+              <button key={item.id} type="button" onClick={() => setPillar(item.id)}>
+                {th ? `ดู${item.label}` : `View ${item.label}`}
+              </button>
+            ))}
         </div>
       </GlassCard>
       {selectedMetric && (
@@ -1713,19 +2022,33 @@ export default function DashboardPage({ view }: { view: AppView }) {
     refetchInterval: (query) => statusPollInterval(query, IMAGE_BACKED_VIEWS.has(view)),
   });
   const scan = scanQuery.data;
-  // ScanSerializer.get_front_url only signs a URL once the scan completes, so this is null
-  // while Celery is still working — which is exactly when the handoff state should show.
-  const scanImage = scan?.front_url || null;
+  // One signed link per photograph this scan actually holds. `ScanSerializer` only signs them
+  // once the scan completes, so this is empty while Celery is still working — which is exactly
+  // when the handoff state should show. `front_url` is folded in because it is the one link the
+  // serializer guarantees, and the two must never disagree about which photo is the front.
+  const scanPhotos = useMemo<ScanPhotoState>(
+    () => ({
+      views: {
+        ...((scan?.view_urls as Record<string, string> | undefined) ?? {}),
+        ...(scan?.front_url ? { front: scan.front_url as string } : {}),
+      },
+      expired: scan?.images_expired === true,
+    }),
+    [scan],
+  );
   const scanData = useMemo<ScanData>(
     () => ({
       pillars: pillarsFor(scan, locale),
       rows: ratioRows(scan, locale),
-      strengths: strengthsFor(scan, 3, locale),
-      improvements: improvementsFor(scan, 3, locale),
+      // The whole ranking, not a top three: `InsightList` shows three and says how many more
+      // there are, and it can only count them if it is holding them.
+      strengths: strengthsFor(scan, undefined, locale),
+      improvements: improvementsFor(scan, undefined, locale),
       overall: overallScore(scan),
       views: viewScoresFor(scan),
       cohort: referenceCohortFor(scan),
       availability: catalogAvailability(scan),
+      analysisData: (scan?.analysis_data as Record<string, unknown> | undefined) ?? null,
     }),
     [scan, locale],
   );
@@ -1736,7 +2059,8 @@ export default function DashboardPage({ view }: { view: AppView }) {
     () => {
       const labels: Record<AppView, { th: string; en: string }> = {
         overview: { th: "วิเคราะห์รูปหน้า", en: "Face Analysis" },
-        analysis: { th: "สัดส่วน 12 ค่า", en: "Measurements" },
+        // No count. It read "สัดส่วน 12 ค่า" while a front-only scan scores nine.
+        analysis: { th: "ค่าที่วัดได้", en: "Measurements" },
         plan: { th: "แผนพัฒนา", en: "Plan" },
         simulate: { th: "สตูดิโอจำลอง", en: "Simulation Studio" },
         doodeegpt: { th: "DOODEE AI Chat", en: "DOODEE AI Chat" },
@@ -1946,7 +2270,7 @@ export default function DashboardPage({ view }: { view: AppView }) {
   if (IMAGE_BACKED_VIEWS.has(view) && gate === "waiting")
     return <main className="doodee-app doodee-app--handoff" aria-busy="true" />;
   return (
-    <ScanPhotoContext.Provider value={{ url: scanImage, expired: scan?.images_expired === true }}>
+    <ScanPhotoContext.Provider value={scanPhotos}>
     <ScanDataContext.Provider value={scanData}>
     <main className="doodee-app">
       <aside className={`app-sidebar ${menuOpen ? "is-open" : ""}`}>

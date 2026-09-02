@@ -129,6 +129,44 @@ test('strengths are the highest scores and improvements the largest deviations',
   assert.equal(improvements[1].score, '+0.7');
 });
 
+test('both rankings come back whole, so the card can say how many it is holding', () => {
+  /**
+   * The default was three, and the card that renders them printed "3 of 18" beside a "Show 15
+   * more" button that never added a row. Neither figure existed: both rankings are over the same
+   * scored measurements, four of them on this scan. The whole list comes back so the counter and
+   * the button are readings rather than decoration.
+   */
+  assert.equal(strengthsFor(scan).length, 4);
+  assert.equal(improvementsFor(scan).length, 4);
+  assert.deepEqual(strengthsFor(emptyScan), []);
+  assert.deepEqual(improvementsFor(emptyScan), []);
+});
+
+test('each insight carries the band it falls in and the unit of the figure it prints', () => {
+  /**
+   * Two fixes in one row. The card had no severity for a strength, so its fallback printed
+   * "Ideal" on every one — a verdict `deviationStatus` never returns and the scorer never makes.
+   * And the two cards print different quantities into the same slot: a closeness score out of ten
+   * against a signed distance in standard deviations. A bare "+2.4" beside a bare "9.5" reads as
+   * two numbers on one scale, so the unit travels with the figure.
+   */
+  const [strength] = strengthsFor(scan, 1);
+  assert.equal(strength.name, 'Chin height');
+  assert.equal(strength.score, '9.5');
+  assert.equal(strength.scoreUnit, '/10');
+  // chin_height sits 0.1 SD off the published mean, which is the closest band there is.
+  assert.equal(strength.level, 'Close to reference');
+
+  const [improvement] = improvementsFor(scan, 1);
+  assert.equal(improvement.scoreUnit, 'SD');
+  assert.equal(improvement.level, 'Beyond two SD');
+
+  for (const item of [...strengthsFor(scan), ...improvementsFor(scan)]) {
+    assert.notEqual(item.level, 'Ideal', `${item.name} is being called ideal`);
+    assert.ok(item.level, `${item.name} has no band`);
+  }
+});
+
 /**
  * The Front/Side strip on the analysis screen.
  *

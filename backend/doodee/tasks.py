@@ -209,6 +209,17 @@ def process_simulation(simulation_id):
         output, measurements, _focus, extra = simulate_canonical(
             simulation.scan, selections, download_image, output_format=output_format,
             view=(simulation.parameters or {}).get("view"),
+            # Only a save pays a third party for skin texture. A preview is written on every
+            # slider drag and expires within the hour, and a hosted round trip is seconds against
+            # the sub-150ms the deterministic pass costs — so a preview that reached the network
+            # would be both slower and billed, several calls per view, for a picture nobody keeps.
+            #
+            # Written as `== SAVED` rather than `!= PREVIEW` on purpose: a third kind added later
+            # should have to say out loud that it wants to spend money, not inherit it.
+            refine=simulation.kind == Simulation.Kind.SAVED,
+            # Names the work for the AI ledger. The row id, so that a retry of this task finds its
+            # own reservation and declines to buy the same pictures a second time.
+            budget_key=f"simulation:{simulation.id}",
         )
         source, source_view = extra["before_encoded"], extra["legacy_view"]
         source_type, source_extension = f"image/{after_extension}", after_extension
@@ -264,6 +275,11 @@ def process_simulation(simulation_id):
                 "visibility": {name: view["visible_percent"]
                                for name, view in extra["views"].items()
                                if "visible_percent" in view},
+                # What the stack asked for and the renderer would not draw. Stored beside the
+                # render for the same reason `visibility` is: the requested value existed for
+                # one moment, between compiling the stack and clamping it, and nothing
+                # downstream can reconstruct it from the picture or from `selections`.
+                "dose_notes": extra.get("dose_notes") or [],
             }
         simulation.status, simulation.progress = Simulation.Status.COMPLETED, 100
         simulation.error_code = simulation.error_message = ""

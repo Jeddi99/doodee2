@@ -2,9 +2,9 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
-  DEFAULT_INTENSITY_LEVEL, MAX_PROCEDURES, clearUnlockedProcedures, emptyProcedureStack,
-  isProcedureLocked, procedureCount, procedureItem, removeProcedure, setProcedureIntensity,
-  toProcedureRequest, toggleProcedure, toggleProcedureLock, unlockProcedure,
+  DEFAULT_INTENSITY_LEVEL, addProcedures, clearUnlockedProcedures, emptyProcedureStack,
+  isProcedureLocked, procedureCount, procedureItem, removeProcedure, removeProcedures,
+  setProcedureIntensity, toProcedureRequest, toggleProcedure, toggleProcedureLock, unlockProcedure,
 } from './procedureStack.js';
 
 const build = (...ids) => ids.reduce((stack, id) => toggleProcedure(stack, id), emptyProcedureStack());
@@ -68,13 +68,39 @@ test('clearing when everything is locked changes nothing, by identity', () => {
   assert.equal(clearUnlockedProcedures(stack), stack);
 });
 
-test('a full stack refuses a seventh but still lets the six be changed', () => {
-  // Six is what the backend accepts; a seventh would be refused there with `too_many_selections`
-  // after the user had already been shown it going in.
-  const ids = ['1.1', '1.2', '1.4', '4.1', '4.2', '4.3'];
-  const full = build(...ids);
-  assert.equal(procedureCount(full), MAX_PROCEDURES);
-  assert.equal(toggleProcedure(full, '5.1'), full, 'a seventh is refused');
-  assert.equal(procedureCount(toggleProcedure(full, '1.1')), MAX_PROCEDURES - 1, 'removal still works');
-  assert.equal(procedureItem(setProcedureIntensity(full, '4.1', 2), '4.1').level, 2);
+test('a seventh procedure goes in, and so does a sixteenth', () => {
+  // The six-item ceiling this file used to enforce was inherited from a catalogue of six regions
+  // that allowed one procedure each, and it was never what the API accepted. Removing it is the
+  // point: the largest category alone holds sixteen procedures, and a control offering to select
+  // all of them has to be able to.
+  const six = build('1.1', '1.2', '1.4', '4.1', '4.2', '4.3');
+  const seven = toggleProcedure(six, '5.1');
+  assert.equal(procedureCount(seven), 7, 'a seventh must go in');
+  assert.notEqual(seven, six, 'and it must be a new array, not a refusal');
+
+  const sixteen = addProcedures(seven, ['5.2', '5.3', '5.4', '6.1', '6.2', '6.3', '7.1', '7.2', '7.3']);
+  assert.equal(procedureCount(sixteen), 16);
+  assert.equal(toProcedureRequest(sixteen).length, 16, 'and all sixteen are sent');
+  // Everything else still behaves at that size.
+  assert.equal(procedureCount(toggleProcedure(sixteen, '1.1')), 15, 'removal still works');
+  assert.equal(procedureItem(setProcedureIntensity(sixteen, '4.1', 2), '4.1').level, 2);
+});
+
+test('selecting a whole category adds what is missing and leaves what is already in alone', () => {
+  // The user set 1.1 to level 5 by hand. A bulk add must not quietly reset it to the default —
+  // that would be the control undoing a decision the user made deliberately.
+  const stack = setProcedureIntensity(build('1.1'), '1.1', 5);
+  const filled = addProcedures(stack, ['1.1', '1.2', '1.3']);
+  assert.deepEqual(filled.map((item) => item.id), ['1.1', '1.2', '1.3']);
+  assert.equal(procedureItem(filled, '1.1').level, 5, 'the level the user chose survives');
+  assert.equal(procedureItem(filled, '1.2').level, DEFAULT_INTENSITY_LEVEL);
+  assert.equal(addProcedures(filled, ['1.1', '1.2']), filled, 'nothing to add, so nothing changes');
+});
+
+test('clearing a category leaves the locked rows standing', () => {
+  const stack = toggleProcedureLock(build('1.1', '1.2', '4.1'), '1.1');
+  const cleared = removeProcedures(stack, ['1.1', '1.2']);
+  assert.deepEqual(cleared.map((item) => item.id), ['1.1', '4.1']);
+  assert.equal(removeProcedures(cleared, ['1.1']), cleared, 'a locked-only clear changes nothing');
+  assert.equal(removeProcedures(cleared, ['9.9']), cleared, 'and neither does an absent one');
 });

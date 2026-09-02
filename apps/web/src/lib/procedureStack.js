@@ -17,8 +17,26 @@
 // settled, now let me try the rest", so every mutation returns the array *unchanged* when it
 // would touch a locked item, and the caller compares by identity to know nothing happened.
 
-/** Matches `MAX_SELECTIONS` in the backend. A seventh is refused there, so it is refused here. */
-export const MAX_PROCEDURES = 6;
+// There is no count ceiling in this file any more, and the removal is the point of this note.
+//
+// It used to hold `MAX_PROCEDURES = 6`, described as matching the backend. It matched nothing: the
+// backend constant said it matched the API, and the API's own validator accepts twelve. Git dates
+// the six to three weeks before the clinical catalogue existed, when the only catalogue had
+// exactly six regions and forbade two procedures in one region — so six selections was six
+// regions, which was the whole catalogue. It was inherited from a shape this file no longer has.
+//
+// It was measured before it was deleted. All 72 supported procedures at intensity 5 move the worst
+// landmark by 0.102 of face width, against a per-control ceiling of 0.115 and a measured folding
+// point near 0.274, and the warp is solved once for the whole stack rather than once per item, so
+// neither the picture nor the cost degrades as the count rises.
+//
+// What a large stack does break is honesty: doses that sum past the renderer's ceiling get clamped,
+// and opposing procedures on a one-way control can cancel to nothing. Those are reported by the
+// server as `dose_notes` and rendered by `lib/doseNotes.js` — that is what replaced the cap, and
+// the cap is only safe to remove because they are on screen.
+//
+// The server keeps whatever ceiling it keeps and refuses what it refuses; the client no longer
+// invents one of its own on top of it.
 
 /** The middle of the catalog's five levels, which is also what the backend assumes. */
 export const DEFAULT_INTENSITY_LEVEL = 3;
@@ -33,14 +51,34 @@ export const procedureCount = (stack) => stack.length;
  * Add a procedure, or take it back out if it is already in.
  *
  * A catalog card is a toggle rather than a radio button because nothing replaces it: unlike a
- * region's shape, two procedures coexist. Returns the same array when the item is locked, or
- * when the stack is full and this would add a seventh.
+ * region's shape, two procedures coexist. Returns the same array when the item is locked.
  */
 export function toggleProcedure(stack, id, level = DEFAULT_INTENSITY_LEVEL) {
   const existing = procedureItem(stack, id);
   if (existing) return existing.locked ? stack : stack.filter((item) => item.id !== id);
-  if (stack.length >= MAX_PROCEDURES) return stack;
   return [...stack, { id, level, locked: false }];
+}
+
+/**
+ * Add every one of these that is not already in, keeping the ones that are.
+ *
+ * For "select all in this category", which is worth offering only now: the largest category holds
+ * sixteen procedures, so under the old ceiling the control could not have completed its own name.
+ * Existing rows are left exactly as they are — a procedure already in at level 5 is not reset to
+ * the default by a bulk add — and the array comes back unchanged when there is nothing to add, so
+ * the caller can tell by identity that the picture on screen is still the selected one.
+ */
+export function addProcedures(stack, ids, level = DEFAULT_INTENSITY_LEVEL) {
+  const missing = ids.filter((id) => !procedureItem(stack, id));
+  if (missing.length === 0) return stack;
+  return [...stack, ...missing.map((id) => ({ id, level, locked: false }))];
+}
+
+/** Drop every one of these that is in and unlocked. Unchanged, by identity, when none are. */
+export function removeProcedures(stack, ids) {
+  const dropping = new Set(ids.filter((id) => procedureItem(stack, id) && !isProcedureLocked(stack, id)));
+  if (dropping.size === 0) return stack;
+  return stack.filter((item) => !dropping.has(item.id));
 }
 
 /** Move one procedure's intensity. Returns the same array when it is locked or absent. */

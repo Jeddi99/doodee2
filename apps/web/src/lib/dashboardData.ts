@@ -438,8 +438,32 @@ export function viewScoresFor(scan: Scan): ViewScore[] {
 
 const byScoreDescending = (a: RatioRow, b: RatioRow) => b.score - a.score;
 
-/** Highest-scoring measurements. Derived, never a stored literal. */
-export function strengthsFor(scan: Scan, limit = 3, locale: 'th' | 'en' = 'en') {
+/**
+ * The two insight cards rank the same measurements two different ways, so the number each one
+ * prints is a different quantity: a strength shows a closeness score out of ten, an improvement
+ * shows a signed distance in standard deviations. They land in the same slot on screen, and a
+ * bare "+2.4" beside a bare "9.5" reads as two scores on one scale. The unit travels with the
+ * figure so it cannot.
+ */
+export type InsightRow = {
+  name: string;
+  score: string;
+  scoreUnit: string;
+  /** How far this measurement sits from the reference, in `deviationStatus`'s own words. */
+  level: string;
+  detail: string;
+  ratios: string[];
+};
+
+/**
+ * Highest-scoring measurements, ranked. Derived, never a stored literal.
+ *
+ * The whole ranking by default rather than a top three: the card that renders these shows three
+ * and offers to show the rest, and it can only say how many "the rest" is if it is holding them.
+ * It used to be handed exactly three under a "3 of 18" counter and a "Show 15 more" button, and
+ * there was neither an eighteen nor a fifteen anywhere in the system.
+ */
+export function strengthsFor(scan: Scan, limit = Infinity, locale: 'th' | 'en' = 'en'): InsightRow[] {
   const refLabel = locale === 'th' ? 'เกณฑ์อ้างอิง' : 'Reference';
   return ratioRows(scan, locale)
     .filter((row) => typeof row.score === 'number')
@@ -448,15 +472,20 @@ export function strengthsFor(scan: Scan, limit = 3, locale: 'th' | 'en' = 'en') 
     .map((row) => ({
       name: row.name,
       score: row.score.toFixed(1),
+      scoreUnit: '/10',
+      // The band this measurement actually falls in. The card used to label every strength
+      // "Ideal", which is a verdict `deviationStatus` never returns and the scorer never makes:
+      // the closest band it knows is "close to the published mean".
+      level: deviationStatus(row.normalizedDeviation, locale),
       detail: row.mayIndicate,
       ratios: [`${row.name} ${row.score.toFixed(1)}`, `${refLabel} ${row.ideal}`],
     }));
 }
 
 /**
- * Measurements furthest from the reference.
+ * Measurements furthest from the reference, ranked. See `strengthsFor` on the default limit.
  */
-export function improvementsFor(scan: Scan, limit = 3, locale: 'th' | 'en' = 'en') {
+export function improvementsFor(scan: Scan, limit = Infinity, locale: 'th' | 'en' = 'en'): InsightRow[] {
   const obsLabel = locale === 'th' ? 'ค่าที่วัดได้' : 'Observed';
   const refLabel = locale === 'th' ? 'เกณฑ์อ้างอิง' : 'Reference';
   return ratioRows(scan, locale)
@@ -468,6 +497,7 @@ export function improvementsFor(scan: Scan, limit = 3, locale: 'th' | 'en' = 'en
       score: row.normalizedDeviation > 0
         ? `+${round1(row.normalizedDeviation)}`
         : String(round1(row.normalizedDeviation)),
+      scoreUnit: 'SD',
       level: deviationStatus(row.normalizedDeviation, locale),
       detail: row.mayIndicate,
       ratios: [`${obsLabel} ${row.value}`, `${refLabel} ${row.ideal}`],

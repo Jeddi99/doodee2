@@ -18,10 +18,20 @@ import WithdrawCard from "./WithdrawCard";
 /**
  * ชวนเพื่อน — both halves of the deal, on one screen.
  *
- * The inviter's ฿30 lands only when the friend they invited actually pays for something, and it
- * can then be spent on a subscription or withdrawn to a bank account. The condition is stated on
- * the card rather than buried in terms: a reward whose conditions are a surprise is a support
- * ticket.
+ * The inviter's reward lands only when the friend they invited actually pays for something, and
+ * it can then be spent on a subscription or withdrawn to a bank account. The conditions are
+ * stated on the card rather than buried in terms: a reward whose conditions are a surprise is a
+ * support ticket.
+ *
+ * Both conditions, now. There is a second one — `SiteSetting.max_qualified_per_month`, ten today
+ * — and `billing.vest_referral_reward` sends everything past it to HELD for a person to look at
+ * instead of paying it. This screen used to promise the amount "ต่อเพื่อนหนึ่งคน" with no ceiling
+ * at all, so the eleventh friend in a month subscribed, nothing arrived, and the counter said
+ * "รอเพื่อนสมัคร" (HELD is deliberately counted as pending, so as not to accuse anyone). The cap
+ * is read from the payload rather than written here, because it is an admin field.
+ *
+ * No figure on this screen is a literal. Every amount comes from `GET /referral/`, which reads
+ * `SiteSetting` — the row that exists so ฿30 can become ฿50 without a deploy.
  *
  * The invited friend has nothing to type. Their discount is bound to their account by a
  * `CouponGrant` on the server, so the checkout applies it — this screen only shows that it is
@@ -45,6 +55,11 @@ const COPY = {
     useAtCheckout: "หักค่าสมาชิกได้ที่หน้าแผนตอนสั่งซื้อ หรือขอถอนเป็นเงินได้ที่การ์ดถัดไป",
     rewardNote: (amount: string) =>
       `คุณได้ ${amount} ต่อเพื่อนหนึ่งคน เมื่อเพื่อนที่ใช้โค้ดของคุณสมัครสมาชิกแบบเสียเงินครั้งแรก`,
+    // Said on the card, not in terms. Beyond the cap the reward is not refused and not paid — it
+    // waits for a person to look at it — and a user who is not told that simply sees a friend
+    // subscribe and no credit arrive.
+    rewardCap: (count: number) =>
+      `จ่ายได้สูงสุด ${count} คนต่อเดือน เกินจากนั้นรายการจะถูกพักไว้ให้ทีมงานตรวจสอบก่อน`,
     historyTitle: "ประวัติเครดิต",
     empty: "ยังไม่มีรายการ",
     yourDiscount: "ส่วนลดที่รออยู่",
@@ -52,6 +67,7 @@ const COPY = {
     haveCode: "มีโค้ดชวนจากเพื่อน?",
     claim: "ใช้โค้ด",
     claimed: "รับส่วนลดแล้ว",
+    unavailable: "ตอนนี้ยังโหลดข้อมูลการชวนเพื่อนไม่ได้",
     errors: {
       already_referred: "บัญชีนี้ใช้โค้ดชวนไปแล้ว หนึ่งบัญชีใช้ได้ครั้งเดียว",
       cannot_refer_yourself: "ใช้โค้ดของตัวเองไม่ได้",
@@ -78,6 +94,8 @@ const COPY = {
     useAtCheckout: "Apply it on the Plans page, or withdraw it using the card below.",
     rewardNote: (amount: string) =>
       `${amount} per friend, paid when someone who used your code takes out their first paid subscription.`,
+    rewardCap: (count: number) =>
+      `Up to ${count} friends a month are paid automatically. Past that, a reward is held for us to review before it is paid.`,
     historyTitle: "Credit history",
     empty: "Nothing yet",
     yourDiscount: "Your discount is waiting",
@@ -85,6 +103,7 @@ const COPY = {
     haveCode: "Got a code from a friend?",
     claim: "Use code",
     claimed: "Discount added",
+    unavailable: "Your invite details could not be loaded just now.",
     errors: {
       already_referred: "This account has already used an invite code. One per account.",
       cannot_refer_yourself: "You cannot use your own code.",
@@ -149,7 +168,30 @@ export default function ReferralPanel() {
   if (session.data?.referral_enabled === false) return null;
   if (referral.isPending) return <div className="app-view" aria-busy="true" />;
 
-  const stats = referral.data ?? {};
+  // `referral.data` is undefined once the query has settled with an error — a 503
+  // `referral_disabled`, or simply a failed request. Falling through to `?? {}` drew the whole
+  // screen out of missing values: an empty code box, "฿0 ต่อเพื่อนหนึ่งคน" as the offer, and
+  // "฿0" as the balance. Every one of those is a plausible-looking number for a state in which
+  // nothing is known, and the balance in particular is somebody's money.
+  if (referral.error || !referral.data) {
+    return (
+      <div className="app-view referral-view">
+        <div className="app-page-title">
+          <span className="eyebrow">{copy.eyebrow}</span>
+          <h1>{copy.heading}</h1>
+        </div>
+        <GlassCard className="referral-card">
+          <p className="referral-note" role="alert">
+            {/* Through the same table the claim form uses, so `referral_disabled` reads as a
+                sentence rather than as a machine code. */}
+            {copy.errors[errorMessage(referral.error)] || copy.unavailable}
+          </p>
+        </GlassCard>
+      </div>
+    );
+  }
+
+  const stats = referral.data;
   const discounts = stats.available_discounts ?? [];
   const alreadyReferred = claim.isSuccess || discounts.length > 0;
 
@@ -172,6 +214,12 @@ export default function ReferralPanel() {
             {copied ? copy.copied : copy.copy}
           </button>
           <p className="referral-note">{copy.rewardNote(baht(stats.reward_satang))}</p>
+          {/* Only when the server states a cap. A number invented here would be the same class
+              of mistake as the missing sentence it replaces, and `max_qualified_per_month: 0`
+              genuinely means "no cap" rather than "nobody gets paid". */}
+          {typeof stats.max_qualified_per_month === "number" && stats.max_qualified_per_month > 0 && (
+            <p className="referral-note">{copy.rewardCap(stats.max_qualified_per_month)}</p>
+          )}
           <div className="referral-stats">
             <span>
               <b>{stats.invited ?? 0}</b> {copy.invited} {copy.people}

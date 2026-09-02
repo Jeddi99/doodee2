@@ -96,6 +96,25 @@ SEED = 1             # fixed, so the same request is the same picture -- what ma
                      # simulation reproducible and a before/after comparison meaningful
 POLL_INTERVAL = 1.0
 POLL_TIMEOUT = 90.0
+
+# What one refinement call costs, in USD. This is the number the monthly AI ceiling holds this
+# module against, and until it existed `flux_refine` was the only spender in the product outside
+# `ai_budget` entirely: chat and skin vision both reserve before they call, and a render could
+# issue several image calls per view with nothing counting them.
+#
+# FLUX bills per image, not per token. The Vercel AI Gateway publishes its per-image prices
+# unauthenticated at `GET https://ai-gateway.vercel.sh/v1/models`, and on 2026-09-02 it quoted
+# `bfl/flux-pro-1.0-fill` — the default GATEWAY_MODEL, and the same model the `bfl` transport
+# calls at FILL_PATH — at $0.05 an image. The dearest model this module can be pointed at,
+# `bfl/flux-kontext-max`, was $0.08.
+#
+# Ten cents is therefore deliberately generous, for the same reason
+# `tasks.SKIN_VISION_RESERVE_INPUT_TOKENS` is: an under-estimate is admitted against the ceiling
+# and then spends more than it held, which is the direction that overruns a budget rather than
+# protecting it. Two models the gateway will serve here (`bfl/flux-2-max`, `bfl/flux-2-pro`,
+# both in MASKLESS_MODELS) publish no price there at all, so the estimate has to cover a number
+# nobody can currently read, and BFL's own Erase endpoint is not on that list either.
+PRICE_USD_PER_CALL = float(os.getenv("FLUX_PRICE_USD_PER_CALL", "0.10"))
 TRANSPORT_TRIES = 3   # attempts at getting *any* reply. Dropped connections only, never a reply
                       # the service actually sent.
 RATE_LIMIT_TRIES = 4  # a rejected 429 was not billed; honour Retry-After before giving up
@@ -232,6 +251,51 @@ def enabled() -> bool:
 def available() -> bool:
     """True when a refine call would be attempted. Callers check this before building a mask."""
     return enabled() and bool(capabilities()["ready"])
+
+
+def reserve_budget(user, key, calls):
+    """Hold `calls` images' worth of the monthly AI ceiling, or refuse. Answers as `ai_budget` does.
+
+    A ledger row, `False` when this key was already reserved (a retry of work that has already
+    been paid for — do not call again), or `None` when the month's ceiling is reached.
+
+    `calls`, not one. A grouped render issues an erase and a fill per distinct prompt and then one
+    shared polish over the union, so reserving for a single call would admit a six-call view
+    against one call's worth of budget and spend the other five outside the ceiling. The caller
+    counts the masks it has actually built before asking.
+
+    `key` must be derived from the work — the simulation and the view — and never from the clock,
+    or `unique_ai_usage_request` stops making a Celery retry free.
+
+    Imported here rather than at module scope: this module is importable without Django (the
+    benchmark and a bare `python -c` both do it), and `ai_budget` reaches the database.
+    """
+    from . import ai_budget
+
+    which = backend()
+    return ai_budget.reserve_usd(
+        user, key,
+        provider=which or "flux",
+        model=(GATEWAY_MODEL if which == "gateway" else "flux-pro-1.0-fill"),
+        usd=calls * PRICE_USD_PER_CALL,
+    )
+
+
+def settle_budget(ledger, calls):
+    """Close a reservation against the number of calls actually put on the wire.
+
+    Attempts, not successes. A call that raised may still have been billed — the reframe check and
+    the decode check both fire after the provider has already run inference, and a dropped socket
+    says nothing either way — so an attempt is charged. Over-counting a call nobody was billed for
+    costs a few satang of headroom; under-counting one that was billed is how a ceiling stops
+    being a ceiling.
+    """
+    from . import ai_budget
+
+    if calls <= 0:
+        ai_budget.refund(ledger)
+        return
+    ai_budget.settle_usd(ledger, calls * PRICE_USD_PER_CALL)
 
 
 def _snap(length):

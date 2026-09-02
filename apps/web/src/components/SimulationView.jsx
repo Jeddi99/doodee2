@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery } from '@tanstack/react-query';
-import { Activity, ArrowLeft, Check, Download, Lock, Maximize2, MoveHorizontal, Save, ScanFace, ShieldCheck, Ticket, Unlock, X, ZoomIn } from 'lucide-react';
+import { Activity, ArrowLeft, Check, Download, ListChecks, Lock, Maximize2, MoveHorizontal, Save, ScanFace, ShieldCheck, Sparkles, Ticket, TriangleAlert, Unlock, X, ZoomIn } from 'lucide-react';
 import { describeVisibility, focusTransform, NO_ZOOM, pollUntilSettled, SIMULATION_CONSENT_VERSION } from '@doodee/shared';
 import { createSimulation, getProcedureCategories, getProcedures, getScan, getScans, getSession, getSimulation, previewSimulation } from '../lib/api';
 import { statusPollInterval } from '../lib/pollInterval.js';
@@ -9,10 +9,15 @@ import { exportFailureText, exportSize, simulationFileName } from '../lib/imageE
 import { describeSimulationError } from '../lib/simulationError';
 import { emptyQueue, request as queueRequest, settle } from '../lib/previewQueue';
 import {
-  MAX_PROCEDURES, clearUnlockedProcedures, emptyProcedureStack,
-  isProcedureLocked, procedureCount, procedureItem, removeProcedure, setProcedureIntensity,
-  toProcedureRequest, toggleProcedure, toggleProcedureLock, unlockProcedure,
+  addProcedures, clearUnlockedProcedures, emptyProcedureStack,
+  isProcedureLocked, procedureCount, procedureItem, removeProcedure, removeProcedures,
+  setProcedureIntensity, toProcedureRequest, toggleProcedure, toggleProcedureLock, unlockProcedure,
 } from '../lib/procedureStack';
+import {
+  emptyRenders, noChanges, pendingChanges, renderFor, renderKey, rowStandings,
+  shownRender, stackFingerprint, stackRendered, storeRender,
+} from '../lib/renderPlan';
+import { describeDoseNotes, doseNotesHeading } from '../lib/doseNotes';
 import { latestCraniofacialScan } from '../lib/latestScan';
 import '../simulation.css';
 
@@ -36,7 +41,6 @@ const ANGLES = [
 ];
 
 const CONSENT_VERSION = SIMULATION_CONSENT_VERSION;
-const noPreviews = () => ({ front: null, left_profile: null, right_profile: null });
 const regionName = (id, isTh) => REGIONS.find(([key]) => key === id)?.[isTh ? 1 : 2] ?? id;
 const angleName = (id, isTh) => ANGLES.find(([key]) => key === id)?.[isTh ? 1 : 2] ?? id;
 
@@ -184,7 +188,10 @@ export default function SimulationView({ lang = 'th', onNavigate }) {
   // fused engine runs across all three views from a single model, so the angle chooses which
   // render comes back — it does not change what is being simulated.
   const [stack, setStack] = useState(emptyProcedureStack);
-  const [previews, setPreviews] = useState(noPreviews);
+  // Every render that has come back, keyed by the stack *and* the angle it was made for. The map it
+  // replaced was keyed by angle alone, which is why the left profile could keep showing the
+  // previous stack's face after the front had been re-rendered. See `lib/renderPlan.js`.
+  const [renders, setRenders] = useState(emptyRenders);
   const [viewAngle, setViewAngle] = useState('front');
   const [renderingView, setRenderingView] = useState(null);
   const [previewError, setPreviewError] = useState('');
@@ -196,6 +203,9 @@ export default function SimulationView({ lang = 'th', onNavigate }) {
   // Which region to point the zoom at. The union of every touched region would frame the whole
   // face once a few are chosen, which is the opposite of zooming.
   const [lastTouched, setLastTouched] = useState(null);
+  // Which (stack, angle) the saved row belongs to. Without it a save made from the front kept
+  // painting itself over the Left tab, which is the angle-keyed bug wearing a different hat.
+  const [savedKey, setSavedKey] = useState('');
   const queueRef = useRef(emptyQueue());
 
   const isReference = targetMode === 'reference';
@@ -220,15 +230,33 @@ export default function SimulationView({ lang = 'th', onNavigate }) {
     || items.some((item) => item.procedure?.views?.includes(view));
   const availableAngles = ANGLES.filter(([id]) => id === 'front' || hasProfiles);
   const activeView = availableAngles.some(([id]) => id === viewAngle) ? viewAngle : 'front';
-  const preview = previews[activeView];
-  const target = isReference ? previews.front?.measurements?.[0] : null;
+
+  // What identifies the thing on screen. Reference mode is folded into the same key rather than
+  // kept in a map of its own: it renders one region into the front view, which is a stack of one
+  // as far as "does this picture answer the current question" is concerned.
+  const fingerprint = isReference ? `reference:${region}` : stackFingerprint(stack);
+  const nothingChosen = !isReference && procedureCount(stack) === 0;
+  // With nothing chosen there is nothing to be stale about, so the map is bypassed rather than
+  // cleared — a stack that gets emptied and rebuilt still finds its old render waiting.
+  const shown = nothingChosen ? { entry: null, stale: false } : shownRender(renders, fingerprint, activeView);
+  const preview = shown.entry?.result || null;
+  // True when the picture belongs to a different selection than the one the user is holding. This
+  // is the state the explicit-render flow creates and the one the screen has to be loud about.
+  const showingOtherStack = shown.stale;
+  const changes = showingOtherStack ? pendingChanges(shown.entry.stack, stack) : noChanges();
+  const standings = rowStandings(showingOtherStack ? shown.entry : null, stack);
+  // Whether pressing Create would actually buy anything: it would not if this exact stack has
+  // already been rendered into this exact angle.
+  const unrendered = !nothingChosen && !renderFor(renders, fingerprint, activeView);
+  const target = isReference ? preview?.measurements?.[0] : null;
 
   const clearPreviews = () => {
     queueRef.current = emptyQueue();
-    setPreviews(noPreviews());
+    setRenders(emptyRenders());
     setRenderingView(null);
     setPreviewError('');
     setSimulationId(null);
+    setSavedKey('');
   };
 
   // Selections arrive faster than the server answers, so requests are queued rather than
@@ -246,7 +274,16 @@ export default function SimulationView({ lang = 'th', onNavigate }) {
         queueRef.current = outcome.state;
         if (outcome.accept) {
           if (error) setPreviewError(error.message);
-          else { setPreviewError(''); setPreviews((current) => ({ ...current, [pick.view]: result })); }
+          else {
+            setPreviewError('');
+            // Filed under the stack it was asked for, not under the stack that happens to be
+            // selected when it lands. Those differ whenever the user carried on ticking while it
+            // was in flight, and filing it under the current one is how a picture ends up
+            // labelled as the answer to a question it was never asked.
+            setRenders((current) => storeRender(current, {
+              fingerprint: pick.fingerprint, view: pick.view, stack: pick.stack, result,
+            }));
+          }
         }
         if (outcome.start) runPreview(outcome.start);
         else setRenderingView(null);
@@ -260,70 +297,124 @@ export default function SimulationView({ lang = 'th', onNavigate }) {
     if (start) runPreview(start);
   };
 
-  /** Render the stack into one angle, or clear that angle's image when nothing is left. */
-  const renderStack = (next, view) => {
+  /**
+   * Spend a render on this exact stack at this exact angle.
+   *
+   * The stack is passed in rather than read from state because the two callers that are not the
+   * Create button — "try the strongest setting", and the angle tabs — know the stack they mean
+   * and would otherwise be reading the previous value of a `useState` they have just written.
+   */
+  const renderNow = (next, view) => {
+    if (!consented || procedureCount(next) === 0) return;
+    requestPreview({
+      view,
+      requestView: view,
+      fingerprint: stackFingerprint(next),
+      stack: next,
+      selections: toProcedureRequest(next),
+    });
+  };
+
+  /**
+   * Change what is selected, without asking for a picture of it.
+   *
+   * This is the whole redesign in one function. Ticking, unticking and re-levelling used to each
+   * fire a render, so `add A → add B → remove B → re-add B` cost four paid renders to look at two
+   * distinct images. The user now assembles the selection for free and presses Create once.
+   *
+   * The saved row is dropped on the way through: it is a stored image of the previous selection,
+   * and it outranks the preview when the picture is chosen, so leaving it would let a save from
+   * two procedures ago keep painting itself over a stack it has nothing to do with.
+   */
+  const changeStack = (next) => {
+    if (next === stack) return;
     setStack(next);
     setSimulationId(null);
-    if (!consented) return;
-    if (procedureCount(next) === 0) {
-      setPreviews(noPreviews());
-      setPreviewError('');
-      return;
-    }
-    requestPreview({ view, requestView: view, selections: toProcedureRequest(next) });
+    setSavedKey('');
   };
 
   const chooseProcedure = (row) => {
     const next = toggleProcedure(stack, row.id);
-    // Unchanged means the procedure is locked or the stack is full — no flicker, no request.
+    // Unchanged means the procedure is locked — no flicker, and nothing to report.
     if (next === stack) return;
     setLastTouched(row.regions?.[0] || null);
-    renderStack(next, activeView);
+    changeStack(next);
   };
 
   const changeIntensity = (id, level) => {
     const next = setProcedureIntensity(stack, id, level);
     if (next === stack) return;
     setLastTouched(proceduresById.get(id)?.regions?.[0] || null);
-    renderStack(next, activeView);
+    changeStack(next);
+  };
+
+  /** The one press that buys an image, and the only path in this mode that spends quota. */
+  const createImage = () => renderNow(stack, activeView);
+
+  /**
+   * Raise one procedure to its strongest setting and show it.
+   *
+   * The exception to "selecting never renders", and a deliberate one: this button appears inside
+   * the sentence "this render changes very little", its label promises a stronger picture, and a
+   * press that answered by lighting up a different button would be answering a question the user
+   * did not ask. One press, one image — which is the rule the Create button follows too.
+   */
+  const raiseIntensity = (id) => {
+    const next = setProcedureIntensity(stack, id, 5);
+    if (next === stack) return;
+    setLastTouched(proceduresById.get(id)?.regions?.[0] || null);
+    changeStack(next);
+    renderNow(next, activeView);
   };
 
   const chooseReferenceTarget = () => {
     setViewAngle('front');
     setLastTouched(region);
     setSimulationId(null);
-    if (consented) requestPreview({ view: 'front', selections: [{ region, preset_id: `reference:${region}` }] });
-  };
-
-  const changeStack = (next) => {
-    if (next === stack) return;
-    renderStack(next, activeView);
+    setSavedKey('');
+    if (consented) {
+      requestPreview({
+        view: 'front',
+        fingerprint: `reference:${region}`,
+        stack: [],
+        selections: [{ region, preset_id: `reference:${region}` }],
+      });
+    }
   };
 
   /**
    * Look at the same stack from another angle.
    *
-   * A render per angle, not one render reused: the fused model draws all three, but a preview
-   * hands back only the one that was asked for. Angles already rendered are not asked for twice.
+   * This one renders on the click, unlike ticking a procedure, and the difference is not a
+   * compromise — it is the same rule read carefully. Ticks accumulate: every intermediate
+   * selection between the first tick and the press is a combination the user never asked to see,
+   * which is exactly what made batching them free. Angles do not accumulate. There is one angle on
+   * screen, choosing it *is* the request to see it, and there is no later press that could mean
+   * anything more than this one already does.
+   *
+   * It fires only for a stack the user has already pressed Create on. Before that, the angle tabs
+   * merely aim the pending render — the Create button names the angle it will spend itself on — so
+   * a person still choosing procedures can look around the tabs without buying anything.
+   *
+   * An angle already rendered for this stack costs nothing, because the map is keyed by both.
    */
   const changeAngle = (view) => {
     setViewAngle(view);
-    if (isReference || !consented || previews[view] || procedureCount(stack) === 0) return;
-    requestPreview({ view, requestView: view, selections: toProcedureRequest(stack) });
+    if (isReference || !consented || procedureCount(stack) === 0) return;
+    if (renderFor(renders, fingerprint, view) || !stackRendered(renders, fingerprint)) return;
+    renderNow(stack, view);
   };
 
   // Consent is separate from analysis consent by design, so nothing renders before it is
   // ticked. Withdrawing it stops the rendering and drops the images, but keeps the stack: the
   // point is to stop processing the face, not to punish the user by wiping their work.
+  //
+  // Giving it no longer starts a render either. It used to catch up a stack that had been chosen
+  // before the box was ticked; now that a render is a press, the press is still there to make and
+  // consent only decides whether it is allowed to.
   const acceptConsent = (checked) => {
     setConsented(checked);
-    if (!checked) {
-      clearPreviews();
-      return;
-    }
-    if (!isReference && procedureCount(stack) > 0 && !previews[activeView]) {
-      requestPreview({ view: activeView, requestView: activeView, selections: toProcedureRequest(stack) });
-    }
+    if (!checked) clearPreviews();
   };
 
   // Changing category keeps the stack. That is the feature: a jaw procedure has to survive a
@@ -359,7 +450,12 @@ export default function SimulationView({ lang = 'th', onNavigate }) {
     mutationFn: () => (isReference
       ? createSimulation(scanId, [{ region, preset_id: `reference:${region}` }], CONSENT_VERSION)
       : createSimulation(scanId, toProcedureRequest(stack), CONSENT_VERSION, activeView)),
-    onSuccess: (result) => setSimulationId(result.id),
+    // Stamped with what was saved, so the stored image stops painting itself the moment the
+    // selection or the angle moves away from it.
+    onSuccess: (result) => {
+      setSimulationId(result.id);
+      setSavedKey(renderKey(fingerprint, activeView));
+    },
   });
   const saved = useQuery({
     queryKey: ['simulation', simulationId], queryFn: () => getSimulation(simulationId), enabled: Boolean(simulationId),
@@ -367,7 +463,10 @@ export default function SimulationView({ lang = 'th', onNavigate }) {
     // polls unconditionally — the ramp is what keeps a queued job from flooding the API.
     refetchInterval: statusPollInterval,
   });
-  const finalResult = saved.data?.status === 'completed' ? saved.data : null;
+  // Only while it is still a picture of what is on screen. `savedKey` carries the stack and the
+  // angle it was saved for; anything else and the preview underneath is the honest image.
+  const finalResult = saved.data?.status === 'completed' && savedKey === renderKey(fingerprint, activeView)
+    ? saved.data : null;
   const beforeUrl = finalResult?.before_url || preview?.before_url || (activeView === 'front' ? scan.data?.front_url : null);
   const afterUrl = finalResult?.after_url || preview?.after_url || preview?.after_data_url;
   // Which stored row the picture on screen came from. Held so its link can be signed again: the
@@ -394,6 +493,43 @@ export default function SimulationView({ lang = 'th', onNavigate }) {
   // must not be dressed up as an unlimited one.
   const previewsLeft = session.data?.preview_remaining;
   const previewsLabel = previewsLeft === null ? '∞' : typeof previewsLeft === 'number' ? previewsLeft : '—';
+
+  const procedureName = (id) => proceduresById.get(id)?.[isTh ? 'name_th' : 'name_en'] || id;
+  const listNames = (rows) => rows.map((row) => procedureName(row.id)).join(isTh ? ' และ ' : ', ');
+
+  /**
+   * The sentence that says what the picture is missing.
+   *
+   * Named procedures rather than a count. "3 changes pending" is a number the user has to decode
+   * by looking back at their own list; "the picture does not yet include the chin implant" is the
+   * thing they actually need to know, and it is the difference between a badge and a warning.
+   */
+  const pendingClauses = [
+    changes.added.length > 0 && (isTh
+      ? `ยังไม่รวม ${listNames(changes.added)}`
+      : `does not include ${listNames(changes.added)}`),
+    changes.removed.length > 0 && (isTh
+      ? `ยังมี ${listNames(changes.removed)} อยู่ในภาพ ทั้งที่เอาออกไปแล้ว`
+      : `still shows ${listNames(changes.removed)}, which you have removed`),
+    changes.relevelled.length > 0 && (isTh
+      ? `ยังเป็นระดับเดิมของ ${listNames(changes.relevelled)}`
+      : `still shows the old level of ${listNames(changes.relevelled)}`),
+  ].filter(Boolean);
+  const pendingText = pendingClauses.join(isTh ? ' · ' : ' · ');
+
+  // Pressing Create buys nothing when this exact stack has already been rendered into this exact
+  // angle, so the button says so by being off rather than by taking the money and changing nothing.
+  const canCreate = !isReference && consented && catalogAvailable && !simulationOff
+    && procedureCount(stack) > 0 && unrendered && !renderingView;
+  const createLabel = renderingView
+    ? (isTh ? 'กำลังสร้างภาพ…' : 'Rendering…')
+    : isTh
+      ? `สร้างภาพ${angleName(activeView, true)} · ${procedureCount(stack)} รายการ`
+      : `Create the ${angleName(activeView, false).toLowerCase()} image · ${procedureCount(stack)} chosen`;
+
+  // What the renderer did to the doses on the way in, which the user cannot see from the picture.
+  // Absent on a server that has not shipped the field; absent means no notes, never a blank box.
+  const notes = describeDoseNotes(preview, isTh);
 
   // Saving is a queued job on the server whose only previous sign of life was the picture
   // silently swapping to the stored copy — success and nothing happening looked identical. Each
@@ -613,23 +749,49 @@ export default function SimulationView({ lang = 'th', onNavigate }) {
               </div>
             </div>
           </div>
-          {beforeUrl && afterUrl ? <FixedImageCompare beforeUrl={beforeUrl} afterUrl={afterUrl} focusBox={focusBox} zoom={zoom} mode={mode} isTh={isTh} />
-            : beforeUrl ? <figure className="simulation-compare is-before"><img className="simulation-image-before" src={beforeUrl} alt={isTh ? 'ภาพก่อนปรับ' : 'Before'} /><figcaption><span>{isTh ? 'ภาพสแกนจริง' : 'Real scan'}</span></figcaption></figure>
-              : <div className="simulation-placeholder">
-                  {renderingView ? <Activity className="capture-spin" /> : <ScanFace />}
-                  <strong>{renderingView ? (isTh ? 'กำลังสร้างภาพ…' : 'Rendering…')
-                    : (isTh ? 'เลือกหัตถการแล้วเห็นผลทันที' : 'Pick a procedure and see it immediately')}</strong>
-                  <span>{isTh ? 'ไม่ต้องกดปุ่มสร้างอีกต่อไป' : 'No generate button needed.'}</span>
-                </div>}
+          {/* The picture is wrapped rather than styled directly, because when it belongs to a
+              different selection the marking has to sit *over* it — a caption underneath is
+              something a person reads after they have already believed the face. */}
+          <div className={`simulation-viewer-stage${showingOtherStack ? ' is-stale' : ''}`}>
+            {beforeUrl && afterUrl ? <FixedImageCompare beforeUrl={beforeUrl} afterUrl={afterUrl} focusBox={focusBox} zoom={zoom} mode={mode} isTh={isTh} />
+              : beforeUrl ? <figure className="simulation-compare is-before"><img className="simulation-image-before" src={beforeUrl} alt={isTh ? 'ภาพก่อนปรับ' : 'Before'} /><figcaption><span>{isTh ? 'ภาพสแกนจริง' : 'Real scan'}</span></figcaption></figure>
+                : <div className="simulation-placeholder">
+                    {renderingView ? <Activity className="capture-spin" /> : <ScanFace />}
+                    <strong>{renderingView ? (isTh ? 'กำลังสร้างภาพ…' : 'Rendering…')
+                      : nothingChosen ? (isTh ? 'เลือกหัตถการที่ต้องการ' : 'Choose the procedures you want')
+                        : (isTh ? `พร้อมสร้างภาพ ${procedureCount(stack)} รายการ` : `Ready to render ${procedureCount(stack)} chosen`)}</strong>
+                    <span>{nothingChosen
+                      ? (isTh ? 'ติ๊กได้หลายรายการ แล้วกดปุ่มสร้างภาพครั้งเดียว' : 'Tick as many as you like, then press create once.')
+                      : (isTh ? 'กดปุ่มสร้างภาพเพื่อเห็นผลของสิ่งที่เลือกไว้' : 'Press create to see what you have chosen.')}</span>
+                  </div>}
+            {showingOtherStack && (
+              <b className="simulation-stale-badge">{isTh ? 'ภาพของการเลือกชุดก่อน' : 'Previous selection'}</b>
+            )}
+          </div>
+          {/* Announced as well as shown: this is the one state on this screen where believing the
+              picture is wrong, so it must not depend on noticing a filter. */}
+          {showingOtherStack && (
+            <p className="simulation-pending" role="status">
+              <TriangleAlert size={16} aria-hidden="true" />
+              <strong>{isTh
+                ? 'ภาพนี้ยังไม่ใช่สิ่งที่คุณเลือกไว้ตอนนี้'
+                : 'This picture is not what you have selected now.'}</strong>
+              <span>{pendingText}</span>
+              <button onClick={createImage} disabled={!canCreate}>{isTh ? 'สร้างภาพใหม่' : 'Create it'}</button>
+            </p>
+          )}
           {renderingView && beforeUrl && <p className="simulation-note" role="status">{isTh ? 'กำลังสร้างภาพ…' : 'Rendering…'}</p>}
           {!isReference && preview && (
             <VisibilityNote
               visibility={visibility}
               raisable={raisable}
               isTh={isTh}
-              onRaise={() => changeIntensity(raisable.id, 5)}
+              onRaise={() => raiseIntensity(raisable.id)}
             />
           )}
+          {/* Above the evidence, not below it: these say the numbers underneath describe less than
+              what was asked for, and a caveat printed after the claim it qualifies is decoration. */}
+          <DoseNotes notes={notes} heading={doseNotesHeading(notes, isTh)} isTh={isTh} />
           {!isReference && <EvidenceList measurements={preview?.measurements} isTh={isTh} />}
           {/* A picture with no numbers beside it looks like numbers that failed to load. */}
           {!isReference && preview && preview.measurements?.length === 0 && (
@@ -650,18 +812,41 @@ export default function SimulationView({ lang = 'th', onNavigate }) {
           </div>
 
           <div className="simulation-consent"><ShieldCheck /><label><input type="checkbox" checked={consented} onChange={(event) => acceptConsent(event.target.checked)} />{isTh ? 'ยินยอมให้ประมวลผลภาพเพื่อสร้างภาพจำลองนี้' : 'I consent to processing for this simulation.'}</label></div>
-          {!consented && <p className="simulation-note">{isTh ? 'ติ๊กยินยอมก่อน แล้วการกดเลือกหัตถการจะสร้างภาพให้ทันที' : 'Tick consent first; after that, choosing a procedure renders it immediately.'}</p>}
+          {!consented && <p className="simulation-note">{isTh ? 'ติ๊กยินยอมก่อน จึงจะกดสร้างภาพได้ การเลือกหัตถการยังทำได้ตามปกติ' : 'Tick consent first; until then the create button is off. Choosing procedures still works.'}</p>}
 
           {/* Locking guards a selection; it does not change the image, so it never re-renders. */}
           {!isReference && items.length > 0 && (
             <ProcedureStackPanel
               items={items}
+              standings={standings}
               isTh={isTh}
               onIntensity={changeIntensity}
               onToggleLock={(item) => setStack(toggleProcedureLock(stack, item.id))}
               onRemove={(item) => changeStack(removeProcedure(stack, item.id))}
               onClearUnlocked={() => changeStack(clearUnlockedProcedures(stack))}
             />
+          )}
+
+          {/* The press that spends the render, between the list of what is chosen and the grid it
+              is chosen from — the two things it is about. It is loud while there is something
+              unrendered and quiet once the picture matches, because a permanently bright button
+              teaches people to stop reading it. */}
+          {!isReference && (
+            <>
+              <button
+                className={`simulation-create${unrendered && consented ? ' is-pending' : ''}`}
+                disabled={!canCreate}
+                title={canCreate ? undefined
+                  : !consented ? (isTh ? 'ติ๊กยินยอมก่อน' : 'Tick consent first')
+                    : procedureCount(stack) === 0 ? (isTh ? 'ยังไม่ได้เลือกหัตถการ' : 'Nothing is chosen yet')
+                      : renderingView ? (isTh ? 'กำลังสร้างภาพอยู่' : 'A render is already running')
+                        : (isTh ? 'ภาพในมุมนี้ตรงกับสิ่งที่เลือกไว้แล้ว' : 'This angle already matches your selection')}
+                onClick={createImage}
+              >{renderingView ? <Activity className="capture-spin" /> : <Sparkles />}{createLabel}</button>
+              <p className="simulation-note">{isTh
+                ? 'การติ๊กเลือกไม่เสียโควตา ระบบสร้างภาพเมื่อกดปุ่มนี้เท่านั้น และหนึ่งครั้งคือหนึ่งภาพต่อหนึ่งมุม'
+                : 'Ticking costs nothing. An image is made only when this button is pressed — one press, one image, for one angle.'}</p>
+            </>
           )}
 
           {isReference ? (
@@ -682,15 +867,15 @@ export default function SimulationView({ lang = 'th', onNavigate }) {
                   ))}
                 </dl>
               )}
-              {previews.front?.already_near_reference && (
+              {preview?.already_near_reference && (
                 <p className="simulation-note">{isTh
                   ? 'บริเวณนี้อยู่ใกล้ค่าเฉลี่ยมากจนการปรับภาพจะมองไม่เห็นความต่าง จึงไม่สร้างภาพ'
                   : 'This region already sits so close to the mean that a warp would be invisible, so no image was made.'}</p>
               )}
-              {previews.front?.cohort_match === 'outside_reference_age_range' && (
+              {preview?.cohort_match === 'outside_reference_age_range' && (
                 <p className="simulation-warning">{isTh ? 'คุณอยู่นอกช่วงอายุ 18–35 ปีของกลุ่มอ้างอิง' : 'You are outside the 18–35 reference age range.'}</p>
               )}
-              {previews.front?.population_match === 'outside_reference_population' && (
+              {preview?.population_match === 'outside_reference_population' && (
                 <p className="simulation-warning">{isTh ? 'ค่าอ้างอิงมาจากประชากรไทย ไม่ได้ปรับตามประเทศที่คุณเลือก' : 'The reference values are Thai and are not adjusted for the country you selected.'}</p>
               )}
             </div>
@@ -701,6 +886,8 @@ export default function SimulationView({ lang = 'th', onNavigate }) {
               disabled={!catalogAvailable}
               isTh={isTh}
               onChoose={chooseProcedure}
+              onSelectAll={() => changeStack(addProcedures(stack, visible.map((row) => row.id)))}
+              onClearCategory={() => changeStack(removeProcedures(stack, visible.map((row) => row.id)))}
             />
           )}
 
@@ -725,11 +912,17 @@ export default function SimulationView({ lang = 'th', onNavigate }) {
           )}
           {downloadStatus.error && <p className="simulation-error" role="alert">{downloadStatus.error}</p>}
 
-          {/* The angle is named, because one save stores the image of one angle. */}
+          {/* The angle is named, because one save stores the image of one angle.
+              Off while the picture belongs to another selection, and that is not tidiness: a save
+              renders the *current* stack on the server and swaps the picture for it, so pressing
+              it here would spend a save and quietly replace the image the user was looking at with
+              a different one. The Create button is the way to see that image first. */}
           <button
             className="simulation-save"
-            disabled={simulationOff || !preview || preview.already_near_reference || saveMutation.isPending || (saved.data && !['completed', 'failed'].includes(saved.data.status))}
-            title={preview ? undefined : (isTh ? 'ยังไม่มีภาพให้บันทึกในมุมนี้' : 'There is no image to save for this angle yet')}
+            disabled={simulationOff || !preview || showingOtherStack || preview.already_near_reference || saveMutation.isPending || (saved.data && !['completed', 'failed'].includes(saved.data.status))}
+            title={showingOtherStack
+              ? (isTh ? 'ภาพที่เห็นยังไม่ใช่สิ่งที่เลือกไว้ กดสร้างภาพก่อนจึงบันทึกได้' : 'The picture is not your current selection yet — create it first, then save')
+              : preview ? undefined : (isTh ? 'ยังไม่มีภาพให้บันทึกในมุมนี้' : 'There is no image to save for this angle yet')}
             onClick={() => saveMutation.mutate()}
           ><Save />{isReference ? (isTh ? 'บันทึกภาพเต็ม · เก็บ 30 วัน' : 'Save full image · 30 days')
             : (isTh ? `บันทึกภาพ${angleName(activeView, true)} · เก็บ 30 วัน` : `Save the ${angleName(activeView, false).toLowerCase()} image · 30 days`)}</button>
@@ -762,18 +955,28 @@ export default function SimulationView({ lang = 'th', onNavigate }) {
  * The intensity lives here rather than on the catalog card because it only means something once
  * a procedure is in the picture — a level on a card nobody chose is a number with no effect.
  */
-function ProcedureStackPanel({ items, isTh, onIntensity, onToggleLock, onRemove, onClearUnlocked }) {
+function ProcedureStackPanel({ items, standings, isTh, onIntensity, onToggleLock, onRemove, onClearUnlocked }) {
   const unlockedCount = items.filter((item) => !item.locked).length;
   return (
     <div className="simulation-stack">
-      <span className="simulation-group-title">{isTh ? 'กำลังจำลอง' : 'Currently simulating'}</span>
+      {/* "Chosen", not "currently simulating". They were the same sentence when every tick
+          rendered; now a row can be chosen and not yet in any picture, and the heading is the
+          first place that has to stop claiming otherwise. */}
+      <span className="simulation-group-title">{isTh ? 'ที่เลือกไว้' : 'Chosen'}</span>
       <ul aria-live="polite">
         {items.map((item) => {
           const name = item.procedure ? (isTh ? item.procedure.name_th : item.procedure.name_en) : item.id;
           const levels = item.procedure?.intensity_levels;
+          // Per row rather than only in the banner over the image: on a phone the panel is above
+          // the picture, so this is where somebody scrolling their own list finds out which of
+          // these fourteen rows the render they are looking at actually contains.
+          const standing = standings?.get(item.id) || 'in';
           return (
-            <li key={item.id} className={`simulation-stack-row${item.locked ? ' is-locked' : ''}`}>
-              <span><strong>{name}</strong></span>
+            <li key={item.id} className={`simulation-stack-row${item.locked ? ' is-locked' : ''}${standing !== 'in' ? ' is-unrendered' : ''}`}>
+              <span><strong>{name}</strong>
+                {standing === 'added' && <em className="simulation-row-pending">{isTh ? 'ยังไม่อยู่ในภาพ' : 'not in the image'}</em>}
+                {standing === 'relevelled' && <em className="simulation-row-pending">{isTh ? 'ภาพยังเป็นระดับเดิม' : 'image has the old level'}</em>}
+              </span>
               {item.procedure?.technique && <em className="simulation-procedure-chip">{item.procedure.technique}</em>}
               {/* Only the rows the catalog says have a dose to vary. A fixed procedure showing a
                   slider would be offering a choice that changes nothing. */}
@@ -815,27 +1018,43 @@ function ProcedureStackPanel({ items, isTh, onIntensity, onToggleLock, onRemove,
   );
 }
 
-/** One category's procedures. A card is a toggle: unlike a region's shape, two coexist. */
-function ProcedureGrid({ procedures, stack, disabled, isTh, onChoose }) {
-  const full = procedureCount(stack) >= MAX_PROCEDURES;
+/**
+ * One category's procedures. A card is a toggle: unlike a region's shape, two coexist.
+ *
+ * Nothing here counts. The ceiling this grid used to enforce is gone — see the note at the top of
+ * `lib/procedureStack.js` for what it was and why it was not a real constraint — and with it gone
+ * the sixteen procedures in the largest category can all be taken at once, which is what the
+ * select-all control is for. Offering that under a six-item cap would have been a joke.
+ */
+function ProcedureGrid({ procedures, stack, disabled, isTh, onChoose, onSelectAll, onClearCategory }) {
   if (procedures.length === 0) {
     return <p className="simulation-note">{isTh ? 'กำลังโหลดรายการหัตถการ…' : 'Loading procedures…'}</p>;
   }
+  const chosenHere = procedures.filter((row) => procedureItem(stack, row.id)).length;
+  const allChosen = chosenHere === procedures.length;
   return (
     <div className="simulation-preset-group">
       <span className="simulation-group-title">
         {isTh ? 'หัตถการในหมวดนี้' : 'Procedures in this category'}
-        <small>{isTh ? `เลือกได้สูงสุด ${MAX_PROCEDURES} รายการต่อภาพ` : `Up to ${MAX_PROCEDURES} per image`}</small>
+        <small>{isTh ? `เลือกไว้ ${chosenHere} จาก ${procedures.length}` : `${chosenHere} of ${procedures.length} chosen`}</small>
       </span>
+      {/* One control, two directions, because a button that only fills the category leaves the
+          user to undo sixteen ticks by hand. Locked rows are left alone by the clear, the same
+          way every other bulk action in this view treats them. */}
+      <button
+        className="simulation-select-all"
+        disabled={disabled}
+        onClick={allChosen ? onClearCategory : onSelectAll}
+      ><ListChecks size={14} />{allChosen
+        ? (isTh ? 'ล้างทั้งหมดในหมวดนี้' : 'Clear all in this category')
+        : (isTh ? 'เลือกทั้งหมดในหมวดนี้' : 'Select all in this category')}</button>
       <div className="simulation-preset-grid">
         {procedures.map((row, index) => {
           const chosen = Boolean(procedureItem(stack, row.id));
           const locked = isProcedureLocked(stack, row.id);
           const blockedReason = locked
             ? (isTh ? 'ปลดล็อกก่อนจึงจะเอาออกได้' : 'Unlock it before taking it out')
-            : (!chosen && full)
-              ? (isTh ? `เลือกได้สูงสุด ${MAX_PROCEDURES} รายการต่อภาพ` : `Up to ${MAX_PROCEDURES} per image`)
-              : '';
+            : '';
           return (
             <button
               key={row.id}
@@ -889,6 +1108,40 @@ function VisibilityNote({ visibility, raisable, isTh, onRaise }) {
       {raisable && (
         <button onClick={onRaise}>{isTh ? 'ลองระดับแรงสุด' : 'Try the strongest setting'}</button>
       )}</p>
+  );
+}
+
+/**
+ * What the renderer did to the doses before it drew anything.
+ *
+ * A stack is not applied as it was typed. Doses are summed per control, and the sum can be cut
+ * back to a safety ceiling, floored at zero when two procedures oppose each other, or carried past
+ * the range any study measured. None of the three is visible in the picture: a face that moved
+ * half as far as asked looks exactly like a face that moved as far as asked.
+ *
+ * This is what the six-procedure cap was standing in for. The cap kept stacks small enough that
+ * clamping and cancellation were rare, and rare is not the same as reported. With the cap gone
+ * these are ordinary events, so they are stated — including the cancellations, which say plainly
+ * that a procedure the user chose and can see in their own list is not in the image.
+ *
+ * Renders nothing at all when there are no notes, and `dose_notes` may simply be absent from the
+ * payload — a server that predates the field says nothing rather than saying zero.
+ */
+function DoseNotes({ notes, heading, isTh }) {
+  if (notes.length === 0) return null;
+  return (
+    <div className="simulation-dose-notes" role="status">
+      <span className="simulation-group-title"><TriangleAlert size={13} aria-hidden="true" />{heading}</span>
+      {notes.map((note) => (
+        <div className={`simulation-dose-note is-${note.tone}`} key={note.key}>
+          <strong>{note.title}</strong>
+          <p>{note.text}</p>
+        </div>
+      ))}
+      <small>{isTh
+        ? 'ข้อความเหล่านี้มาจากค่าที่ระบบใช้จริงในการสร้างภาพ ไม่ใช่ค่าที่เลือกไว้'
+        : 'These describe the doses the renderer actually used, not the ones that were chosen.'}</small>
+    </div>
   );
 }
 

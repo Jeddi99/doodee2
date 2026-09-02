@@ -4,7 +4,6 @@ import type { NormalizedLandmark } from "@mediapipe/tasks-vision";
 import { useNavigate } from "react-router-dom";
 import Brand from "../Brand";
 import { uploadScan } from "../lib/api";
-import { errorMessage } from "../lib/apiError";
 import { readOnboardingAnswers } from "../lib/onboardingAnswers";
 import { useLocale } from "../useLocale";
 import { createCaptureVoice, silentVoice, type CaptureVoice } from "../lib/captureVoice";
@@ -13,9 +12,9 @@ import {
   isSideways, MAX_DETECT_EDGE, MAX_SUBMIT_EDGE,
 } from "../lib/captureImage";
 import { prepareUpload, type StillReading } from "../lib/uploadSlot";
+import { scanErrorText } from "../lib/scanError";
 import { ANALYSIS_CONSENT_VERSION } from "./OnboardingPage";
 import {
-  candidateScore,
   captureSteps,
   findMatchingCaptureStep,
   getAutoFrame,
@@ -63,8 +62,6 @@ type WorkerOutput =
 
 const emptyCaptures = () => captureSteps.map(() => null as string | null);
 const emptySources = () => captureSteps.map(() => null as CaptureSource | null);
-type Candidate = { score: number };
-const emptyCandidates = () => captureSteps.map(() => null as Candidate | null);
 const emptyCandidateCounts = () => captureSteps.map(() => 0);
 
 function referencePosition(index: number) {
@@ -95,7 +92,8 @@ export default function ScanPage() {
   const lastUiUpdateRef = useRef(0);
   const poseWindowRef = useRef<PoseSignature[]>([]);
   const capturesRef = useRef<(string | null)[]>(emptyCaptures());
-  const bestCandidatesRef = useRef<(Candidate | null)[]>(emptyCandidates());
+  // How many qualifying frames this step has seen. It drives the hold meter and nothing else:
+  // see the note in `processLandmarks` about which frame is actually kept.
   const candidateCountsRef = useRef<number[]>(emptyCandidateCounts());
   const lastCandidateAtRef = useRef<number[]>(emptyCandidateCounts());
   const lastFaceBoxRef = useRef<FaceBox | null>(null);
@@ -244,10 +242,14 @@ export default function ScanPage() {
       });
       navigate(`/analysis?scan_id=${encodeURIComponent(queued.id)}`);
     } catch (error) {
-      setUploadError(errorMessage(error) || (error as Error)?.message || "Upload failed.");
+      // `/scans/uploads/` answers a saturated queue with the bare code `heavy_queue_busy`, and
+      // `errorMessage` hands whatever the server said straight to the screen — so the failure
+      // most likely to happen on launch day read as two words of snake_case under "Upload
+      // failed". Every code this endpoint can return now has a sentence in both languages.
+      setUploadError(scanErrorText(error, locale !== "en"));
       setPhase("error");
     }
-  }, [navigate]);
+  }, [locale, navigate]);
 
   /**
    * Put a frame in a slot and move the flow on.
@@ -367,13 +369,23 @@ export default function ScanPage() {
       return;
     }
 
+    /**
+     * Count one qualifying frame. Note what this does NOT do: pick between them.
+     *
+     * It used to score each frame with `candidateScore` and keep the highest — the score only,
+     * never the pixels — and then `finishCapture` grabbed whatever the camera was showing at the
+     * moment the count completed. The winner was discarded by construction, so "selecting the
+     * sharpest frame" on screen described something no code did. The scoring is gone rather than
+     * left in place looking load-bearing, and the copy now says what this really is: a steadiness
+     * hold, after which the current frame is taken.
+     *
+     * `lib/captureCandidates.js` is the machinery that would make the original claim true — it
+     * holds the winning frame in a reused canvas and verifies it with the still detector — and it
+     * is written and tested but wired to nothing. Connecting it here, and restoring the copy with
+     * it, is a capture-quality change that wants a camera and a face in front of it to verify.
+     */
     if (now - lastCandidateAtRef.current[currentStep] >= 110) {
       lastCandidateAtRef.current[currentStep] = now;
-      const score = candidateScore(frameQuality);
-      const best = bestCandidatesRef.current[currentStep];
-      if (!best || score > best.score) {
-        bestCandidatesRef.current[currentStep] = { score };
-      }
       candidateCountsRef.current[currentStep] = Math.min(hold.candidates, candidateCountsRef.current[currentStep] + 1);
     }
 
@@ -383,8 +395,7 @@ export default function ScanPage() {
       setQuality({ ...measured, code: "selecting_frame" });
       lastUiUpdateRef.current = now;
     }
-    const best = bestCandidatesRef.current[currentStep];
-    if (candidateCountsRef.current[currentStep] >= hold.candidates && best && !captureLockedRef.current) {
+    if (candidateCountsRef.current[currentStep] >= hold.candidates && !captureLockedRef.current) {
       finishCapture();
     }
   }, [captureFrame, finishCapture, updateAutoFrame]);
@@ -537,7 +548,6 @@ export default function ScanPage() {
     activeStepRef.current = 0;
     poseWindowRef.current = [];
     captureLockedRef.current = false;
-    bestCandidatesRef.current = emptyCandidates();
     candidateCountsRef.current = emptyCandidateCounts();
     lastCandidateAtRef.current = emptyCandidateCounts();
     lastFaceBoxRef.current = null;
@@ -707,7 +717,6 @@ export default function ScanPage() {
     nextSources[index] = null;
     sourcesRef.current = nextSources;
     setSources(nextSources);
-    bestCandidatesRef.current[index] = null;
     candidateCountsRef.current[index] = 0;
     lastCandidateAtRef.current[index] = 0;
     activeStepRef.current = index;
@@ -876,11 +885,15 @@ export default function ScanPage() {
                 <div className="capture-copy">
                   <h1>{stepCopy(activeStep).short}</h1>
                   <p>{liveMessage}</p>
-                  <div className="capture-hold" aria-label={quality.valid ? copy.scan.holdLabel : liveMessage}>
-                    <span />
-                    <span className={quality.valid ? "is-tracking" : ""} />
-                    <span />
-                  </div>
+                  {/* REMOVED: the three-dot `.capture-hold` strip that sat here. It read as a
+                      state readout — it even carried an aria-label describing the capture — but
+                      only the middle dot was wired to anything: `.capture-hold span:first-child`
+                      paints the first one dark unconditionally and the third stayed grey forever,
+                      so two thirds of an indicator meant nothing at any moment. The real readouts
+                      are directly below and beside it: `.capture-timer` is the hold meter, driven
+                      by the frame count, and `.capture-steps` is the per-angle state. Bringing a
+                      dot strip back means giving each dot a value — done / active / pending per
+                      capture step is the obvious one, and both facts are already in this file. */}
                   <div className="capture-timer" aria-hidden={!quality.valid}>
                     <div><span style={{ transform: `scaleX(${holdProgress})` }} /></div>
                     <b>{Math.round(holdProgress * 100)}%</b>

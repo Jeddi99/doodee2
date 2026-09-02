@@ -45,6 +45,10 @@ const COPY = {
     startScan: "เริ่มสแกน",
     unreadableTitle: "ภาพนี้อ่านค่าผิวไม่ได้",
     unreadableBody: "สภาพการถ่ายไม่เอื้อให้วัดผิวอย่างซื่อสัตย์ เราจึงไม่แสดงตัวเลข ลองถ่ายใหม่ในแสงที่สม่ำเสมอกว่านี้",
+    // Different from unreadable, and it has to read differently: there the photograph was
+    // measured and refused, here it was never measured at all.
+    noAnalysisTitle: "สแกนนี้ไม่มีผลวิเคราะห์ผิว",
+    noAnalysisBody: "สแกนนี้ไม่ได้ผ่านการวัดผิว ถ่ายภาพผิวระยะใกล้เพื่อให้มีค่าที่วัดได้",
     advisoryTitle: "เหตุผล",
     signalsTitle: "สัญญาณที่วัดได้",
     confidence: "ความเชื่อมั่น",
@@ -62,7 +66,12 @@ const COPY = {
     visionEnable: "เปิดใช้ และส่งภาพ",
     visionDisable: "ปิด และหยุดส่งภาพ",
     visionOn: (provider: string) => `เปิดอยู่ · ส่งภาพให้ ${provider}`,
-    visionPending: "ยังไม่มีคำอธิบายสำหรับสแกนนี้ ระบบจะสร้างให้ในการสแกนครั้งถัดไป",
+    // Three different answers to "where is my description", because they are three different
+    // facts. The old copy said the middle one to everybody.
+    visionQueued: "กำลังสร้างคำอธิบายสำหรับสแกนนี้ กลับมาดูอีกครั้งในสักครู่",
+    visionNever:
+      "สแกนนี้จะไม่มีคำอธิบาย — ภาพต้นฉบับถูกลบตามกำหนดแล้ว หรือภาพนี้อ่านค่าผิวไม่ได้ สแกนใหม่จะได้คำอธิบายด้วย",
+    visionOffNow: "ตอนนี้ระบบปิดการส่งภาพให้ AI อยู่ จึงยังไม่มีคำอธิบายใหม่",
     limitsTitle: "สิ่งที่ภาพนี้บอกไม่ได้",
     noRanking: "ค่าเหล่านี้ไม่ได้เทียบกับคนอื่น และไม่ใช่การวินิจฉัยทางการแพทย์",
   },
@@ -80,6 +89,8 @@ const COPY = {
     startScan: "Start a scan",
     unreadableTitle: "This photo can't be read for skin",
     unreadableBody: "The capture conditions don't allow an honest skin measurement, so we're not showing numbers. Try again in more even light.",
+    noAnalysisTitle: "This scan has no skin analysis",
+    noAnalysisBody: "This scan was never measured for skin. Capture a close-up to get readings.",
     advisoryTitle: "Why",
     signalsTitle: "Measured signals",
     confidence: "Confidence",
@@ -95,7 +106,10 @@ const COPY = {
     visionEnable: "Turn on, and send the photo",
     visionDisable: "Turn off, and stop sending",
     visionOn: (provider: string) => `On · sending the photo to ${provider}`,
-    visionPending: "No description for this scan yet. One will be generated on your next scan.",
+    visionQueued: "A description for this scan is being written. Check back in a moment.",
+    visionNever:
+      "This scan will not get a description — its source photo has already been deleted on schedule, or the photo could not be read for skin. A new scan will get one.",
+    visionOffNow: "Sending photos to AI is switched off at the moment, so no new description is written.",
     limitsTitle: "What this photo can't show",
     noRanking: "These readings are not compared to anyone else, and are not a medical diagnosis.",
   },
@@ -174,7 +188,12 @@ function SignalRow({
       {/* Confidence is drawn, not just printed. It rides on opacity — a reading the engine
           trusts less is literally fainter — and the least trusted of the six also gets a
           dashed track. Never on colour: colour already means "the reading", and reusing it
-          would make a low-confidence row look like a bad result. */}
+          would make a low-confidence row look like a bad result.
+
+          `fill` is a fraction of `meta.range`, an axis maximum chosen in this file for drawing.
+          It is not the reading, and `skin_engine` publishes no scale that would make it one, so
+          the number a screen reader announces is `aria-valuetext` — the measured value itself.
+          Without it the meter read "Under-eye shadow, 45%" for a signal whose value is 3.2. */}
       <div
         className={`skin-signal__bar${confidence < LOW_CONFIDENCE ? " is-low-confidence" : ""}`}
         style={{ "--skin-confidence": confidence } as CSSProperties}
@@ -182,6 +201,7 @@ function SignalRow({
         aria-valuenow={Math.round(fill)}
         aria-valuemin={0}
         aria-valuemax={100}
+        aria-valuetext={value === null ? copy.notMeasured : value.toFixed(2)}
         aria-label={label}
       >
         <span style={{ width: `${fill}%` }} />
@@ -229,6 +249,10 @@ export default function SkinPanel() {
 
   const provider = session.data?.skin_vision_provider || "AI";
   const consented = Boolean(session.data?.skin_vision_consented);
+  // Whether there is anything honest to put on the AI-description card at all: either this
+  // deployment can actually send a photograph, or this user already agreed that it could and
+  // therefore owns both the results and the withdrawal.
+  const visionOffered = session.data?.skin_vision_enabled === true || consented;
 
   const consent = useMutation({
     mutationFn: (accepted: boolean) =>
@@ -297,9 +321,28 @@ export default function SkinPanel() {
 
       {error && <p className="skin-error" role="alert">{error}</p>}
 
-      {/* Advisories replace the readings rather than sitting beside them — see the note at the
-          top of this file. */}
-      {data && !data.readable ? (
+      {/* Three states, and the third one used to be missing.
+          `GET /scans/<id>/skin/` answers 409 `skin_analysis_unavailable` for a completed scan
+          that carries no `skin_analysis` block — three of the nine completed scans in this
+          deployment are exactly that. With no branch for it, `data` was undefined, `signals`
+          fell back to `{}`, and the screen drew the heading "สัญญาณที่วัดได้" over an empty grid
+          followed by "these readings are not compared to anyone else": a measured-signals
+          section with no measurement in it, which reads as six readings that failed to load
+          rather than as a scan that was never measured for skin. */}
+      {!data ? (
+        <GlassCard className="skin-empty">
+          <CircleAlert />
+          <strong>{copy.noAnalysisTitle}</strong>
+          <p>{copy.noAnalysisBody}</p>
+          <button
+            type="button"
+            className="skin-vision__toggle skin-vision__toggle--enable"
+            onClick={() => navigate("/skin-scan")}
+          >
+            {copy.skinScan}
+          </button>
+        </GlassCard>
+      ) : !data.readable ? (
         <GlassCard className="skin-unreadable">
           <CircleAlert />
           <strong>{copy.unreadableTitle}</strong>
@@ -361,11 +404,26 @@ export default function SkinPanel() {
         )}
       />
 
+      {/* Not rendered at all on a deployment that cannot do this.
+          `session.skin_vision_enabled` is `skin_vision.configured()` — SKIN_VISION_ENABLED and a
+          Gemini key, and SKIN_VISION_ENABLED is false here — so the pitch below ("this sends your
+          front photo to Google (Gemini)… Turn on, and send the photo") was advertising a
+          capability nobody can switch on, above a button that was merely `disabled` with no
+          explanation. SettingsPanel already hides its copy of this card for exactly this reason
+          and says so in a comment; this is that rule applied to the second screen that carries
+          the control, so the two cannot disagree about whether the feature exists.
+
+          `consented` keeps the card alive regardless: a user who granted consent while it was on
+          still owns descriptions already written and must always be able to withdraw. Hiding
+          their off-switch along with the advertisement would trap them. */}
+      {visionOffered && (
       <GlassCard className="skin-vision">
         {consented ? (
           <>
             <h2><Sparkles size={18} /> {copy.visionTitle}</h2>
-            <p className="skin-vision__status">{copy.visionOn(provider)}</p>
+            <p className="skin-vision__status">
+              {session.data?.skin_vision_enabled ? copy.visionOn(provider) : copy.visionOffNow}
+            </p>
             {data?.vision ? (
               <>
                 <p>{data.vision.summary}</p>
@@ -388,7 +446,18 @@ export default function SkinPanel() {
                 )}
               </>
             ) : (
-              <p>{copy.visionPending}</p>
+              /* `vision_pending` is the server's own answer to "is one coming": `queue_skin_vision`
+                 returns it, and it is false whenever the photograph has already been purged, the
+                 skin reading was unreadable, the scan is a demo, or the feature is switched off.
+                 The old copy said "One will be generated on your next scan" in every one of those
+                 cases — a promise the queue had already declined to make. */
+              <p>
+                {!session.data?.skin_vision_enabled
+                  ? copy.visionOffNow
+                  : data?.vision_pending
+                    ? copy.visionQueued
+                    : copy.visionNever}
+              </p>
             )}
             <button
               className="skin-vision__toggle"
@@ -406,10 +475,13 @@ export default function SkinPanel() {
             {/* Filled rather than outlined, unlike the disable button above it. Turning this on
                 sends a photograph of the user's face to another company; the control should
                 feel like a decision, not a toggle flick. */}
+            {/* No `skin_vision_enabled` guard left on the button: this branch is now only
+                reachable when the feature is available, because `visionOffered` gates the whole
+                card. A disabled control was standing in for an explanation. */}
             <button
               className="skin-vision__toggle skin-vision__toggle--enable"
               type="button"
-              disabled={consent.isPending || !session.data?.skin_vision_enabled}
+              disabled={consent.isPending}
               onClick={() => consent.mutate(true)}
             >
               {copy.visionEnable}
@@ -417,6 +489,7 @@ export default function SkinPanel() {
           </>
         )}
       </GlassCard>
+      )}
     </div>
   );
 }

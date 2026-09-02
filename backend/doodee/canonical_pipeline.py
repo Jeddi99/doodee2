@@ -1201,7 +1201,53 @@ def _measurement_ratio(points, key):
     return float(np.linalg.norm(points[first, :2] - points[second, :2]) / denominator)
 
 
-def _refine_views(image, points, specs, levels, view, amplify):
+#: The three things `dose_notes` can say happened to a control between the request and the render.
+#:
+#: A stack sums its members' slider values and `normalise_sliders` then clamps the sum, and until
+#: this existed nothing told anybody. At intensity 3 a full stack compiles `jawDefinition` to 499.2
+#: and the render draws 300; a one-way control whose members sum negative floors at 0 and the
+#: procedure simply is not in the picture. Both look identical to a render that worked.
+DOSE_NOTE_CLAMPED = "clamped"
+DOSE_NOTE_CANCELLED = "cancelled"
+DOSE_NOTE_OUTSIDE_EVIDENCE = "outside_evidence"
+
+
+def _dose_notes(requested, applied):
+    """What `normalise_sliders` silently changed, one entry per control, `[]` when nothing did.
+
+    `requested` is the mapping as it was compiled from the stack; `applied` is what came back out
+    of `normalise_sliders`, which is what the renderer actually drew.
+
+    One entry per control rather than one per condition that holds. `clamped` lands on
+    `SETTING_MAX` (300) and `cancelled` lands on 0, so a clamp is *always* also outside the
+    measured range and a cancellation never is — emitting both would repeat the clamp in different
+    words on every entry and leave `outside_evidence` meaning nothing on its own. The precedence
+    below therefore hides no information: `outside_evidence` is reported exactly when it is the
+    only thing that happened.
+
+    `bidirectional` is consulted the same way `normalise_sliders` consults it, so a note can never
+    disagree with the clamp it describes. A control with no evidence entry at all is one-way there
+    and one-way here, and a setting of its past `SETTING_MEASURED` is reported as outside the
+    evidence too — there being no measurement to be inside of is not a weaker case.
+    """
+    notes = []
+    for key, value in applied.items():
+        was = float(requested[key])
+        note = None
+        if abs(was) > evidence.SETTING_MAX:
+            note = DOSE_NOTE_CLAMPED
+        elif was < 0 and not evidence.bidirectional(key):
+            note = DOSE_NOTE_CANCELLED
+        elif abs(value) > evidence.SETTING_MEASURED:
+            note = DOSE_NOTE_OUTSIDE_EVIDENCE
+        if note is None:
+            continue
+        notes.append({"control": key, "requested": round(was, 3),
+                      "applied": round(float(value), 3), "reason": note})
+    return notes
+
+
+def _refine_views(image, points, specs, levels, view, amplify, *, user=None, budget_key=None):
     """Stage 2: every region OpenCV drew is handed to the hosted inpaint before the view is done.
 
     Eligibility is "did stage 1 paint here", not a hand-maintained list of procedures. Anything
@@ -1222,6 +1268,17 @@ def _refine_views(image, points, specs, levels, view, amplify):
     start failing because a paid key expired, a provider rate-limited, or a model reframed a crop.
     The call is skipped entirely when no key is configured, so a local checkout never reaches for
     the network at all.
+
+    **Being out of budget is one more of those failure modes.** The masks are built first, then the
+    exact number of calls they imply is reserved against the same monthly ceiling chat and skin
+    vision go through, and only then does anything reach the network. Over the ceiling this returns
+    the deterministic image, the way a rate limit or a missing key does — a user must never watch a
+    render break because the month's budget ran out, and refusing beats billing and regretting.
+
+    `user` and `budget_key` are what make that reservation possible, and without them **nothing is
+    sent**. There is no such thing as an unreserved paid call here: a caller that wants texture and
+    has no way to pay for it gets the complete local render, which is the same answer every other
+    failure gives.
     """
     from . import flux_refine
 
@@ -1259,26 +1316,66 @@ def _refine_views(image, points, specs, levels, view, amplify):
             existing = bucket.get(prompt_key)
             bucket[prompt_key] = mask if existing is None else np.maximum(existing, mask)
 
+    # Counted before anything is sent, because that is what the ceiling has to be asked for. One
+    # per distinct erase prompt, one per distinct fill prompt, and one shared polish over the
+    # union — so a six-procedure stack is three calls, not six, and not one either.
+    replacements = sum(len(bucket) for bucket in grouped.values())
+    # The polish runs over the union of every mask *including the ones erase and fill are about to
+    # merge into it below*, so a stack whose only member builds a hairline still ends in a polish
+    # call. Counting `polish_mask` alone here would under-reserve precisely that stack by one call
+    # — and an under-reservation is the whole failure this reservation exists to prevent. Every
+    # mask in `grouped` is non-empty by construction (the loop above skips the empty ones), so
+    # having any entry at all is enough to know the polish will fire.
+    planned = replacements + (1 if (polish_mask.any() or replacements) else 0)
+    if not planned:
+        # Every procedure in the stack was a pure warp, or none of their masks landed in this
+        # view. Nothing to refine and nothing to charge.
+        return image
+    if user is None or not budget_key:
+        # No way to reserve means no way to pay, and an unreserved call is the exact thing this
+        # module was audited for. The deterministic image is a complete answer.
+        logger.warning("flux skipped on %s: no budget holder for this render", view)
+        return image
+
+    ledger = flux_refine.reserve_budget(user, f"{budget_key}:{view}", planned)
+    if ledger is None:
+        # The month's ceiling. Degrade, never fail — see the docstring.
+        logger.info("flux skipped on %s: monthly AI budget reached", view)
+        return image
+    if ledger is False:
+        # Already reserved under this key, so this is a retry of a render that got as far as
+        # paying. Repeating the calls would bill a second time for one picture.
+        logger.info("flux already reserved on %s for %s; not paying twice", view, budget_key)
+        return image
+
     result = image
+    attempted = 0
 
     def _call(mask, kind, prompt_key):
-        nonlocal result
+        nonlocal result, attempted
+        attempted += 1
         try:
             result = flux_refine.refine(result, mask, kind, prompt_key)
         except Exception:
             # Logged rather than raised: the caller already holds a finished picture.
             logger.warning("flux %s skipped for %s on %s", kind, prompt_key, view, exc_info=True)
 
-    # Erase before fill before polish: the first two change what is in the frame, and the polish
-    # has to see their output rather than the pixels they replaced.
-    for kind in ("erase", "fill"):
-        for prompt_key, mask in grouped[kind].items():
-            _call(mask, kind, prompt_key)
-            np.maximum(polish_mask, mask, out=polish_mask)
+    try:
+        # Erase before fill before polish: the first two change what is in the frame, and the
+        # polish has to see their output rather than the pixels they replaced.
+        for kind in ("erase", "fill"):
+            for prompt_key, mask in grouped[kind].items():
+                _call(mask, kind, prompt_key)
+                np.maximum(polish_mask, mask, out=polish_mask)
 
-    if polish_mask.any():
-        prompt_key = next(iter(polish_keys)) if len(polish_keys) == 1 else "surface_polish"
-        _call(polish_mask, "polish", prompt_key)
+        if polish_mask.any():
+            prompt_key = next(iter(polish_keys)) if len(polish_keys) == 1 else "surface_polish"
+            _call(polish_mask, "polish", prompt_key)
+    finally:
+        # In a `finally` so that a failure this function did not anticipate still closes the row.
+        # An unsettled reservation keeps its whole estimate against the ceiling, which is the
+        # conservative direction, but it also never appears as spend in the cost report.
+        flux_refine.settle_budget(ledger, attempted)
     return result
 
 
@@ -1355,13 +1452,25 @@ def watermark(image):
 
 def simulate_scan_views(scan, sliders, download_fn, *, selections=None, presets=None,
                         reference_target=None, amplify=1., engine="tps", max_side=1280,
-                        output_format=".webp", step=8, refine=True):
+                        output_format=".webp", step=8, refine=False, budget_key=None):
     """Download, fuse and render every available scan view through one shared 3-D model.
 
     `reference_target` replaces `sliders`: the setting is solved for after the model is fused,
     because until the three photographs are fused there is nothing to measure a candidate on.
+
+    `refine` defaults to **off**, and the default is the whole point of it. Stage 2 posts a crop of
+    a user's face to a paid third party, several calls per view; a caller that forgets to say what
+    it wants must get the cheap local render, not the bill. It used to default to True, which meant
+    every preview would have paid for texture the moment anyone enabled polish — masked only by the
+    switch being off. `budget_key` names the work for the ledger and has to travel with it: without
+    it `_refine_views` sends nothing, because a paid call with nothing holding budget for it is the
+    failure this whole path was audited for.
     """
+    requested_sliders = dict(sliders) if isinstance(sliders, dict) else sliders
     sliders = normalise_sliders(sliders)
+    # Taken here, immediately after the clamp and before anything downstream can read the tidy
+    # number and forget the asked-for one. This is the only moment both values exist.
+    dose_notes = _dose_notes(requested_sliders, sliders)
     amplify = float(amplify)
     if not np.isfinite(amplify) or not 1. <= amplify <= evidence.AMPLIFY_MAX:
         raise ValueError("invalid_amplify")
@@ -1420,6 +1529,12 @@ def simulate_scan_views(scan, sliders, download_fn, *, selections=None, presets=
     reached = None
     if reference_target is not None:
         sliders, reached = solve_reference_sliders(fused, prepared, reference_target, amplify)
+        # The solver replaces whatever was asked for, so the notes taken above describe an input
+        # nothing rendered. It has its own ceiling (`REFERENCE_SETTING_LIMIT`) and reports being
+        # held at it through `reached_ratio`, so nothing here was clamped or cancelled — but that
+        # limit is above `SETTING_MEASURED`, so a solve genuinely can land outside the evidence,
+        # and the dose card is entitled to know.
+        dose_notes = _dose_notes(sliders, sliders)
     _displacement, projected = morph_fused(fused, sliders, prepared, amplify)
     selections, presets = selections or [], presets or []
     atomic_specs = [preset for preset in presets if isinstance(preset, ProcedureSpec)]
@@ -1451,12 +1566,26 @@ def simulate_scan_views(scan, sliders, download_fn, *, selections=None, presets=
         steps = surface_steps(surface_specs, view["name"], surface_levels) if surface_specs else ()
         if surface_specs:
             after = apply_surface_pipeline(after, moved, steps, amplify=amplify)
-            # Only on the way to storage. Dragging a slider re-renders on every change and a
-            # hosted round trip is seconds, not the sub-150ms the deterministic pass costs, so the
-            # preview stays local and the saved copy is the one that pays for texture.
+            # Only on the way to storage, and now actually so. Dragging a slider re-renders on
+            # every change and a hosted round trip is seconds, not the sub-150ms the deterministic
+            # pass costs, so the preview stays local and the saved copy is the one that pays for
+            # texture. The caller decides, off `Simulation.kind` (`tasks.process_simulation`).
+            #
+            # This comment used to be a description of an intention. `refine` defaulted to True,
+            # `simulate_canonical` had no such parameter to pass, and the worker passed nothing —
+            # so a preview paid for texture exactly like a save, and the only thing standing
+            # between a slider drag and a paid round trip per view was `flux_refine.available()`
+            # being False by default. A comment that is right about intent and wrong about fact is
+            # worse than no comment: it is what stopped anyone looking.
             if refine:
                 after = _refine_views(after, moved, surface_specs, surface_levels,
-                                      view["name"], amplify)
+                                      view["name"], amplify,
+                                      # A render always has a scan, but `simulate_scan_views` is
+                                      # also driven from fixtures that hand it a stand-in object
+                                      # with only `image_objects` on it. Those never ask to
+                                      # refine; if one ever does, it gets the local render rather
+                                      # than an AttributeError halfway through a paid path.
+                                      user=getattr(scan, "user", None), budget_key=budget_key)
         # How much of the frame moved, not merely whether any byte did. A procedure can be
         # applied exactly as the catalog describes it and still be invisible -- flattening a fold
         # on a face whose fold is already shallow is close to a no-op -- and from the user's side
@@ -1564,6 +1693,9 @@ def simulate_scan_views(scan, sliders, download_fn, *, selections=None, presets=
         # no target was given.
         "reached_ratio": reached,
         "sliders": sliders,
+        # What the stack asked for and did not get. `sliders` above is the tidy number; this is
+        # the only record that it was ever anything else. Empty when nothing was changed.
+        "dose_notes": dose_notes,
         "amplify": amplify,
         "engine": engine,
     }

@@ -302,9 +302,10 @@ class PromoCodeTest(TestCase):
         session = self.plan()
         self.assertEqual(session["plan"], "free")
         self.assertIsNone(session["vip_expires_at"])
-        # Zero rather than three: the free tier grants no simulations at all now
-        # (requirement.md — "ไม่มีการจำลองใบหน้า"), so there is no allowance to count down.
-        self.assertEqual(session["preview_remaining"], 0)
+        # Back to the free tier's own three, not to zero. Migration 0041 gave free a preview
+        # allowance because the three saves it already advertised were unreachable without one:
+        # `_simulation_locked` refuses the save route as well whenever a plan grants no previews.
+        self.assertEqual(session["preview_remaining"], 3)
 
     def test_an_unknown_code_and_a_disabled_code_are_indistinguishable(self):
         self.code.is_active = False
@@ -328,8 +329,12 @@ class PromoCodeTest(TestCase):
         self.assertEqual(self.redeem().status_code, 429, "a correct guess on attempt 11 must not win")
 
     def test_a_paying_member_is_never_demoted_by_redeeming(self):
+        # "pro" rather than "member". Both plans grant `pro_member` and this assertion used to
+        # read the retired ฿149 one, because `_granted_by_group` took the cheapest of the two.
+        # It now prefers the plan still on sale. What the test is actually holding up is
+        # unchanged: redeeming a code must not replace what somebody already holds.
         self.user.groups.add(Group.objects.get(name="pro_member"))
-        self.assertEqual(self.redeem().data["plan"], "member")
+        self.assertEqual(self.redeem().data["plan"], "pro")
 
     @override_settings(REDEEM_CODES_ENABLED=False)
     def test_the_whole_endpoint_can_be_switched_off(self):
@@ -760,6 +765,33 @@ class ScanAssessmentEndpointTest(TestCase):
         for item in hidden:
             self.assertNotIn("verdict_th", item)
             self.assertNotIn(item["key"] + '", "verdict', body)
+
+    def test_a_locked_category_cannot_be_rebuilt_from_the_metrics_in_the_same_answer(self):
+        """The test above passed for as long as this endpoint was leaking, which is why this exists.
+
+        It asserted that the locked category rows carry a null score, and they always did. What
+        nobody asserted was whether the number was still derivable from the rest of the body. It
+        was: a category score is the mean of its metrics, and every metric shipped with its
+        `category` and its own `score` attached. On a real scan the API answered lips, chin and
+        nose as null and the same response rebuilt them as 79, 70 and 53 — the withheld half of
+        the paid analysis, one line of arithmetic away for anyone who opened a network tab.
+
+        Removing only the metric's `score` would not have been enough either. The observed value
+        and the published reference both travel in this payload, and the score is derived from
+        those two, so a thinned row still answers the question. The whole row has to go.
+        """
+        response = self.client.get(self.url())
+        locked = {item["key"] for item in response.data["categories"] if item.get("locked")}
+        self.assertTrue(locked, "some categories must be withheld for this to mean anything")
+        for metric in response.data["metrics"]:
+            self.assertNotIn(
+                metric.get("category"), locked,
+                f"{metric.get('key')} still carries the ingredients of a locked category",
+            )
+        # And the visible half is untouched: withholding must not cost the reader what they can see.
+        visible = {item["key"] for item in response.data["categories"] if not item.get("locked")}
+        self.assertTrue({m.get("category") for m in response.data["metrics"]} <= visible)
+        self.assertTrue(any(m.get("category") in visible for m in response.data["metrics"]))
 
     def test_the_teaser_still_says_how_much_was_found(self):
         """Hiding the rows entirely would misrepresent how much the analysis actually covers."""
@@ -2313,9 +2345,16 @@ class SimulationApiTest(TestCase):
 
     @patch("doodee.views.process_simulation.delay")
     def test_saving_is_capped_by_the_plans_monthly_allowance(self, delay):
-        """Three is `member`'s figure, read off the plan row rather than written in the view."""
+        """The cap is whatever the row says, which is why the row is what this writes to.
+
+        It used to lean on two coincidences at once: that a hand-granted `pro_member` resolved to
+        `member`, and that `member` happened to sell three saves. The first stopped being true
+        when the retired tier stopped capturing the group it shares with Pro, and the second was
+        always one admin edit away. Setting the number on the plan the account is actually on
+        tests the claim that matters — the view counts against the row, not against a literal.
+        """
         scan = self.scan()
-        self.assertEqual(Plan.objects.get(code="member").simulation_saves_per_month, 3)
+        Plan.objects.filter(code="pro").update(simulation_saves_per_month=3)
         for _ in range(3):
             Simulation.objects.create(scan=scan, region="nose", preset_id="nose-narrow", status="completed", model_version="local", expires_at=timezone.now() + timedelta(days=1))
         self.assertEqual(self.post(scan).status_code, 429)
@@ -2325,13 +2364,16 @@ class SimulationApiTest(TestCase):
         """Previews and saves are two products, and they were being charged to one counter.
 
         A preview writes a `Simulation` row like a save does, and `used(SAVES)` used to count
-        every row of either kind. `member` sells three saves a month, so three previews — images
+        every row of either kind. On a plan selling three saves a month, three previews — images
         the user only looked at, and which the plan meters separately — left an account that had
         never pressed Save with nothing left to press it with. This is the test that costs money
         when it is missing.
+
+        Three is written onto the row here rather than borrowed from whichever seeded plan
+        happened to say three, so the case survives a price edit.
         """
         scan = self.scan()
-        self.assertEqual(Plan.objects.get(code="member").simulation_saves_per_month, 3)
+        Plan.objects.filter(code="pro").update(simulation_saves_per_month=3)
         for _ in range(3):
             self.assertEqual(self.preview(scan).status_code, 202)
             # Settled between requests: a queued preview is cancelled by the next one, and
@@ -2349,8 +2391,14 @@ class SimulationApiTest(TestCase):
         Nothing hands a save back by hand — `process_simulation` credits the preview counter and
         only that — so the sentence is true solely because `used(SAVES)` refuses to count a FAILED
         row. That makes this the test holding the claim up.
+
+        The cap is written onto the row the account is on for the same reason as the two cases
+        above: three used to be `member`'s figure, reached by a group lookup that no longer
+        resolves there, and a number that arrives by coincidence is a number that leaves the same
+        way.
         """
         scan = self.scan()
+        Plan.objects.filter(code="pro").update(simulation_saves_per_month=3)
         for _ in range(3):
             self.assertEqual(self.post(scan).status_code, 202)
             Simulation.objects.filter(status=Simulation.Status.QUEUED).update(status=Simulation.Status.COMPLETED)
@@ -2364,14 +2412,14 @@ class SimulationApiTest(TestCase):
         """Every plan is metered now, and one of them has no ceiling.
 
         Previews used to be counted only for free accounts, which the lock made unreachable — so
-        nothing was ever written. Plus sells twenty a month, so the counter has to run for
+        nothing was ever written. Every tier is metered now, so the counter has to run for
         everybody. On a plan with no ceiling it still runs: `SimulationPreviewUsage` is the only
         record that a preview happened, and a row that stops being written stops being evidence
         when an account is stolen. What must not happen is a refusal.
         """
         scan = self.scan()
         payload = {"scan_id": str(scan.id), "region": "nose", "preset_id": "nose-narrow", "simulation_consent_version": "2026.3-local"}
-        Plan.objects.filter(code="member").update(simulation_previews_per_month=-1)
+        Plan.objects.filter(code="pro").update(simulation_previews_per_month=-1)
         for _ in range(6):
             self.assertEqual(self.client.post("/api/v1/simulations/preview/", payload, format="json", HTTP_IDEMPOTENCY_KEY=os.urandom(8).hex()).status_code, 202)
             Simulation.objects.filter(status=Simulation.Status.QUEUED).update(status=Simulation.Status.PROCESSING)
@@ -2383,7 +2431,10 @@ class SimulationApiTest(TestCase):
     def test_a_metered_plan_is_refused_once_its_monthly_previews_are_gone(self, delay):
         scan = self.scan()
         payload = {"scan_id": str(scan.id), "region": "nose", "preset_id": "nose-narrow", "simulation_consent_version": "2026.3-local"}
-        Plan.objects.filter(code="member").update(simulation_previews_per_month=2)
+        # Written onto the plan the `pro_member` group now resolves to. It named `member` while
+        # the retired tier still captured that group, which made this case meter a row the
+        # account was not on.
+        Plan.objects.filter(code="pro").update(simulation_previews_per_month=2)
         for _ in range(2):
             self.assertEqual(self.client.post("/api/v1/simulations/preview/", payload, format="json", HTTP_IDEMPOTENCY_KEY=os.urandom(8).hex()).status_code, 202)
             Simulation.objects.filter(status=Simulation.Status.QUEUED).update(status=Simulation.Status.PROCESSING)
@@ -2500,13 +2551,20 @@ class StackedSimulationTest(TestCase):
 
 @override_settings(SIMULATION_ENABLED=True, REDEEM_CODES_ENABLED=True)
 class SimulationLockTest(TestCase):
-    """Simulation is entitlement-only, and the lock lives on the server.
+    """What a plan-level zero does, and that the lock lives on the server.
 
     Hiding the button is not a lock: anything the UI hides is still one curl away.
+
+    The condition is set here rather than inherited from the free row. It used to be the same
+    thing — free granted no previews — but migration 0041 gave free three so the three saves it
+    advertises can be reached, and no seeded plan sells zero any more. Zero is now something an
+    operator chooses, so this class chooses it explicitly. `FreeTierSimulationTest` below covers
+    the other half: that free is metered rather than locked.
     """
 
     def setUp(self):
         self.user = User.objects.create_user("locked-out")
+        Plan.objects.filter(code="free").update(simulation_previews_per_month=0)
         self.client = APIClient()
         self.client.force_authenticate(self.user)
         self.scan = Scan.objects.create(
@@ -2976,9 +3034,12 @@ class UserAdminTest(TestCase):
         self.free = self.firebase_user("free", "free-uid")
         self.vip = self.firebase_user("vip", "vip-uid")
         self.member = self.firebase_user("member", "member-uid")
+        self.plus = self.firebase_user("plus", "plus-uid")
         self.clinic = self.firebase_user("clinic", "clinic-uid")
         # Migration 0008 seeds both membership groups, so these always exist by now.
+        # `plus_member` postdates it and is created here — the same `get_or_create` the admin does.
         self.member.groups.add(Group.objects.get(name="pro_member"))
+        self.plus.groups.add(Group.objects.get_or_create(name="plus_member")[0])
         self.clinic.groups.add(self.member.groups.get(), Group.objects.get(name="clinic_partner"))
         promo = PromoCode.objects.create(code="ADMINVIP", days=7)
         PromoRedemption.objects.create(user=self.vip, promo_code=promo, expires_at=timezone.now() + timedelta(days=1))
@@ -3002,8 +3063,11 @@ class UserAdminTest(TestCase):
     def test_summary_counts_real_users_once_and_cards_filter(self):
         self.client.force_login(self.superuser)
         response = self.client.get("/admin/auth/user/")
+        # พลัส and โปร count separately. They used to share one "member" card, which meant a
+        # พลัส subscriber was counted as free — the tier was missing from every list the admin
+        # kept by hand while `Plan.grants_group` knew about it all along.
         self.assertEqual(response.context["plan_counts"], {
-            "total": 4, "free": 1, "vip": 1, "member": 1, "clinic": 1,
+            "total": 5, "free": 1, "vip": 1, "plus": 1, "pro": 1, "clinic": 1,
         })
         response = self.client.get("/admin/auth/user/?account=users&plan=clinic")
         self.assertEqual(list(response.context["cl"].result_list), [self.clinic])
@@ -3020,10 +3084,23 @@ class UserAdminTest(TestCase):
         redemption = self.vip.promo_redemptions.get()
         url = f"/admin/auth/user/{self.vip.pk}/change/"
 
-        for membership, expected in (("member", {"pro_member"}), ("clinic", {"clinic_partner"}), ("free", set())):
+        # The submitted value is the group name itself. It used to be a short word mapped to a
+        # group by a second dict, and the two drifted: "member" granted `pro_member` — the ฿799
+        # tier — and no word at all reached `plus_member`.
+        #
+        # `clinic_partner` used to be a third row here. It is gone because the choices come from
+        # the Plan table and migration 0041 deleted the plan that named that group — so the form
+        # can no longer offer it, which is the correct behaviour for a tier that is no longer
+        # sold, and submitting it now fails validation rather than granting anything.
+        tiers = ("plus_member", "pro_member")
+        for membership, expected in (
+            ("plus_member", {"plus_member"}),
+            ("pro_member", {"pro_member"}),
+            ("", set()),
+        ):
             response = self.client.post(url, {"membership": membership, "is_active": "on", "_save": "Save"})
             self.assertEqual(response.status_code, 302, response.context)
-            permanent = set(self.vip.groups.filter(name__in=("pro_member", "clinic_partner")).values_list("name", flat=True))
+            permanent = set(self.vip.groups.filter(name__in=tiers).values_list("name", flat=True))
             self.assertEqual(permanent, expected)
 
         self.assertTrue(self.vip.groups.filter(pk=other.pk).exists())
@@ -3031,6 +3108,26 @@ class UserAdminTest(TestCase):
         from .views import _user_plan
         self.assertEqual(_user_plan(self.vip), "vip")
         self.assertTrue(LogEntry.objects.filter(object_id=str(self.vip.pk)).exists())
+
+    def test_a_plus_subscriber_is_not_shown_as_free_and_survives_a_save(self):
+        """The whole reason the tier list stopped being hand-written.
+
+        พลัส was absent from the dropdown, so the form opened on ฟรี for anyone holding
+        `plus_member` — and because saving removes every permanent group before adding back
+        whatever is selected, pressing Save for any unrelated reason took a paying customer's
+        tier away without saying so.
+        """
+        self.client.force_login(self.superuser)
+        url = f"/admin/auth/user/{self.plus.pk}/change/"
+
+        form = self.client.get(url).context["adminform"].form
+        self.assertEqual(form["membership"].value(), "plus_member")
+        self.assertIn(("plus_member", "พลัส"), list(form.fields["membership"].choices))
+
+        response = self.client.post(url, dict(form.initial, membership=form["membership"].value(),
+                                              is_active="on", _save="Save"))
+        self.assertEqual(response.status_code, 302, response.context)
+        self.assertTrue(self.plus.groups.filter(name="plus_member").exists())
 
     def test_password_change_is_staff_only_and_uses_validators(self):
         self.client.force_login(self.superuser)
@@ -3954,10 +4051,12 @@ class ChatApiTest(TestCase):
         cache.clear()
         # Small allowances so a quota test is three requests rather than fifty. These used to be
         # CHAT_FREE_TURNS / CHAT_PAID_TURNS overrides; the ceiling is a per-plan column now, so
-        # the test sets the same thing an operator would edit in the admin. `member` is the plan
-        # a hand-granted `pro_member` group resolves to (see entitlement._granted_by_group).
+        # the test sets the same thing an operator would edit in the admin. `plus` is the plan a
+        # hand-granted `plus_member` group resolves to (see entitlement._granted_by_group); it
+        # used to be `member` via `pro_member`, which resolves to Pro now that the retired tier
+        # no longer captures the group it shares.
         Plan.objects.filter(code="free").update(chat_turns_per_month=2)
-        Plan.objects.filter(code="member").update(chat_turns_per_month=5)
+        Plan.objects.filter(code="plus").update(chat_turns_per_month=5)
         self.scan = Scan.objects.create(
             user=self.user, age_band="adult", status=Scan.Status.COMPLETED,
             analysis_data={"reference_scores": ChatContextTest.SCORES},
@@ -4052,7 +4151,10 @@ class ChatApiTest(TestCase):
         self.assertEqual(blocked.data["detail"], "chat_quota_exhausted")
 
     def test_paid_plans_get_the_larger_soft_cap_not_an_unbounded_one(self):
-        self.user.groups.add(Group.objects.get(name="pro_member"))
+        # Plus, not Pro. Pro genuinely is unbounded and reports null, so it cannot be the plan
+        # that demonstrates "a bigger number, still a number" — that is Plus's 100 turns, stood
+        # in for by the 5 setUp writes onto the row.
+        self.user.groups.add(Group.objects.get_or_create(name="plus_member")[0])
         self.assertEqual(self.client.get("/api/v1/session/").data["chat_remaining"], 5)
 
     def test_an_upstream_failure_refunds_the_turn_and_writes_no_conversation(self):
@@ -4207,7 +4309,9 @@ class CouponValidationTest(TestCase):
 
     def test_a_coupon_restricted_to_another_plan_is_refused(self):
         coupon = self.make()
-        coupon.applies_to_plans.add(Plan.objects.get(code="clinic"))
+        # Any plan that is not `self.plan` will do. It named `clinic` until migration 0041
+        # removed that row; the restriction is what is under test, not which plan carries it.
+        coupon.applies_to_plans.add(Plan.objects.get(code="pro"))
         self.assertRejected("TWENTY", "coupon_not_valid_for_plan")
 
     def test_an_empty_plan_restriction_means_every_plan(self):
@@ -4315,12 +4419,32 @@ class EntitlementTest(TestCase):
         activate(create_order(self.user, self.plan("plus_year")))
         self.assertEqual(entitlement.plan_code(self.user), "plus_year")
 
-    def test_a_hand_granted_group_resolves_to_the_cheapest_plan_that_grants_it(self):
-        """"ให้สิทธิ์ Member" has to keep meaning what that button has always meant.
+    def test_a_hand_granted_group_resolves_to_the_cheapest_plan_still_on_sale(self):
+        """A bare group cannot name a plan, so the guess has to be the defensible one.
 
-        `member` and `pro` both grant `pro_member`. Reading the group as Pro would quietly
-        promote every hand-granted account to the top tier.
+        `plus` and `plus_year` both grant `plus_member`, and the cheaper is the answer: an admin
+        adding a group by hand meant the base tier, not the yearly upsell.
+
+        `member` and `pro` both grant `pro_member`, and there the cheaper is *not* the answer.
+        `member` is ฿149 and retired; taking it meant every account an admin put on โปร was
+        served three saves and 300 chat turns while the badge in the app read "Member". Nobody
+        can buy the retired tier any more, so it cannot be what granting that group now means.
         """
+        self.user.groups.add(Group.objects.get_or_create(name="plus_member")[0])
+        self.assertEqual(entitlement.plan_code(self.user), "plus")
+
+        self.user.groups.clear()
+        self.user.groups.add(Group.objects.get_or_create(name="pro_member")[0])
+        self.assertEqual(entitlement.plan_code(self.user), "pro")
+
+    def test_a_group_whose_only_plan_is_retired_still_grants_what_it_used_to_sell(self):
+        """The other half of the rule, and the one that protects somebody who paid.
+
+        Preferring a live plan must not become "ignore retired plans", or withdrawing a tier
+        would revoke access as a side effect of editing the price list. With nothing live naming
+        the group, the retired row is still the answer.
+        """
+        Plan.objects.filter(code__in=("pro", "pro_year")).update(is_active=False)
         self.user.groups.add(Group.objects.get_or_create(name="pro_member")[0])
         self.assertEqual(entitlement.plan_code(self.user), "member")
 
@@ -4367,7 +4491,12 @@ class EntitlementTest(TestCase):
 
     def test_the_free_tier_matches_what_requirement_md_asks_for(self):
         free = self.plan("free")
-        self.assertEqual(free.simulation_previews_per_month, 0, "ไม่มีการจำลองใบหน้า")
+        # Three, matching the three saves on the same row. The document used to say the free tier
+        # got no simulation at all, and the row said the same — which made the three saves beside
+        # it unspendable, because `_simulation_locked` refuses the save route too. The owner
+        # changed the decision and `.md/requirement.md` was changed with it.
+        self.assertEqual(free.simulation_previews_per_month, 3, "จำลองใบหน้าได้ 3 ครั้งต่อเดือน")
+        self.assertEqual(free.simulation_saves_per_month, 3)
         self.assertFalse(free.has_development_plan, "ไม่มีแผนการพัฒนา")
         self.assertEqual(free.analysis_depth, Plan.AnalysisDepth.PARTIAL, "บอกแค่ส่วนน้อย")
         self.assertEqual(free.price_satang, 0)
@@ -5473,7 +5602,9 @@ class ProfileApiTest(TestCase):
         """An admin adding a group writes no Subscription. That is an ordinary state."""
         self.user.groups.add(Group.objects.get_or_create(name="pro_member")[0])
         data = self.get()
-        self.assertEqual(data["plan"]["code"], "member")
+        # "pro", not "member": `pro_member` is shared with the retired ฿149 tier, and the group
+        # now resolves to the plan still on sale rather than to the cheapest of the two.
+        self.assertEqual(data["plan"]["code"], "pro")
         self.assertIsNone(data["plan"]["expires_at"])
         self.assertIsNone(data["plan"]["days_left"])
         self.assertIs(data["plan"]["expiring_soon"], False)
@@ -5905,9 +6036,10 @@ class BillingApiTest(TestCase):
 
     def test_the_price_list_comes_from_the_api_not_a_hardcoded_client_table(self):
         codes = [item["code"] for item in self.client.get("/api/v1/plans/").data]
-        # The three packages requirement.md names, each with a yearly row beside it, and the
-        # clinic tier last. `member` is absent because it is closed to new sales, not deleted.
-        self.assertEqual(codes, ["free", "plus", "plus_year", "pro", "pro_year", "clinic"])
+        # The three packages requirement.md names, each with a yearly row beside it. `member` is
+        # absent because it is closed to new sales, not deleted; `clinic` is absent because
+        # migration 0041 deleted a row nobody had ever bought.
+        self.assertEqual(codes, ["free", "plus", "plus_year", "pro", "pro_year"])
 
     def test_a_retired_plan_disappears_from_sale_without_stranding_the_people_on_it(self):
         """฿149 `member` is closed, not removed: Order.plan is PROTECT and a paid row is a record.
@@ -5924,9 +6056,14 @@ class BillingApiTest(TestCase):
         self.assertEqual(renewed.plan.price_satang, 14900)
 
     def test_an_inactive_plan_disappears_from_sale_everywhere_at_once(self):
-        Plan.objects.filter(code="clinic").update(is_active=False)
+        # `pro_year` stands in for whatever an operator switches off next. It named `clinic`
+        # until that row was removed, and the point was never that particular plan.
+        Plan.objects.filter(code="pro_year").update(is_active=False)
         codes = [item["code"] for item in self.client.get("/api/v1/plans/").data]
-        self.assertNotIn("clinic", codes)
+        self.assertNotIn("pro_year", codes)
+        refused = self.client.post("/api/v1/orders/", {"plan": "pro_year"}, format="json")
+        self.assertEqual(refused.status_code, 400, "a plan off the price list must not still be orderable")
+        self.assertEqual(refused.data["plan"], "unknown_plan")
 
     def test_validating_a_coupon_returns_the_total_without_consuming_it(self):
         coupon = Coupon.objects.create(code="TWENTY", discount_value=20)
@@ -6023,7 +6160,14 @@ class BillingApiTest(TestCase):
         self.assertEqual(response.data["detail"], "plan_is_free")
 
     def test_a_plan_that_needs_an_agreement_cannot_be_bought_from_a_form(self):
-        response = self.client.post("/api/v1/orders/", {"plan": "clinic"}, format="json")
+        """`self_serve=False` is for a tier that needs a conversation before it starts.
+
+        No seeded row has it off since migration 0041 removed the clinic partnership — the one
+        that did, and that nobody had ever bought. The gate is what is under test, so the
+        condition is set here instead of borrowed from whichever plan happens to want it.
+        """
+        Plan.objects.filter(code="pro").update(self_serve=False)
+        response = self.client.post("/api/v1/orders/", {"plan": "pro"}, format="json")
         self.assertEqual(response.status_code, 400)
         self.assertEqual(response.data["detail"], "plan_not_self_serve")
 
@@ -8832,7 +8976,9 @@ class FirebaseAccountLinkTest(TestCase):
         """The point of the whole change, stated as the thing the customer experiences."""
         self.owner.groups.add(Group.objects.get(name="pro_member"))
         user, _ = self.sign_in()
-        self.assertEqual(entitlement.plan_code(user), "member")
+        # The label the shared `pro_member` group resolves to; it read "member" while the retired
+        # ฿149 tier still captured that group. What matters here is that it is not "free".
+        self.assertEqual(entitlement.plan_code(user), "pro")
 
     def test_the_joined_uid_resolves_on_every_later_request_without_re_deciding(self):
         self.sign_in()
@@ -8947,7 +9093,12 @@ class MergeDuplicateAccountsCommandTest(TestCase):
         FirebaseIdentity.objects.create(user=self.free, firebase_uid="free-uid")
         self.paid = User.objects.create_user("firebase:paid-uid", email="owner@example.com")
         FirebaseIdentity.objects.create(user=self.paid, firebase_uid="paid-uid")
-        self.paid.groups.add(Group.objects.get(name="pro_member"))
+        # The group that goes with the plan this account bought. It said `pro_member` while a
+        # bare `pro_member` resolved to the ฿149 tier, which `plus` outranked on price — so the
+        # incoherence was invisible. It is not any more: `pro_member` means Pro, and an account
+        # holding Pro by hand on top of a ฿499 subscription would report Pro, quietly turning
+        # "the paid account survives" into a test of something else.
+        self.paid.groups.add(Group.objects.get_or_create(name="plus_member")[0])
         create_order(self.paid, self.plan)
         Subscription.objects.create(
             user=self.paid, plan=self.plan, current_period_end=timezone.now() + timedelta(days=30),
@@ -9075,3 +9226,731 @@ class MergeDuplicateAccountsCommandTest(TestCase):
         self.assertTrue(User.objects.filter(pk=self.free.pk).exists())
         self.assertFalse(User.objects.filter(pk=self.paid.pk).exists())
         self.assertEqual(Order.objects.get().user_id, self.free.pk)
+
+
+# ---------------------------------------------------------------------------------------------
+# Stage 2: who pays for texture, and what happens when the money runs out
+# ---------------------------------------------------------------------------------------------
+
+
+def _fake_fused_render(image=None, points=None):
+    """Every patch needed to drive a real `simulate_scan_views` without a photograph.
+
+    The fused engine needs three things this suite cannot give it: images with faces in them, a
+    landmark detector, and a depth fusion. `test_fixtures.py` supplies all three and skips when
+    the megabytes are absent, which is the right trade for the geometry — but it means nothing in
+    the fast suite has ever run the part of `simulate_scan_views` that decides whether to spend
+    money, and that part is not about geometry at all.
+
+    So the geometry is stubbed and everything downstream of it is real: `surface_steps`,
+    `apply_surface_pipeline`, `steps_mask`, the visible-change guard, the watermark, the encode,
+    and — the point of the exercise — the `if refine:` branch. Returns a context manager stack
+    and the pieces the caller needs to assert on.
+    """
+    from contextlib import ExitStack
+
+    from . import canonical_pipeline
+
+    height = width = 256
+    image = np.full((height, width, 3), 140, np.uint8) if image is None else image
+    if points is None:
+        spread = np.random.default_rng(7)
+        points = np.zeros((478, 3), np.float64)
+        points[:, 0] = spread.uniform(width * .15, width * .85, 478)
+        points[:, 1] = spread.uniform(height * .15, height * .85, 478)
+    ok, buffer = cv2.imencode(".png", image)
+    assert ok
+    raw = buffer.tobytes()
+
+    stack = ExitStack()
+    for target, replacement in (
+        ("_download_views", MagicMock(return_value=[raw])),
+        ("scan_face_pose", MagicMock(return_value=(points, np.eye(3)))),
+        ("fuse_views", MagicMock(return_value=object())),
+        ("morph_fused", MagicMock(return_value=(None, [points]))),
+        # A render that visibly changed something, so the no-visible-change guard is satisfied
+        # without the warp having to actually run.
+        ("simulate", MagicMock(return_value=(image // 2 + 30, points, None, 1.))),
+    ):
+        stack.enter_context(patch.object(canonical_pipeline, target, replacement))
+    return stack, raw, points
+
+
+def _polish_on():
+    """The switch and a key, i.e. the state in which a render would really pay."""
+    from contextlib import ExitStack
+
+    stack = ExitStack()
+    stack.enter_context(override_settings(SIMULATION_POLISH_ENABLED=True))
+    stack.enter_context(patch.dict(os.environ, {"BFL_API_KEY": "test-key", "FLUX_BACKEND": "bfl"}))
+    return stack
+
+
+class PreviewsRenderLocallyTest(TestCase):
+    """A preview must not reach a paid endpoint. It used to, and the comment said it did not.
+
+    `canonical_pipeline` has said since it was written that "the preview stays local and the saved
+    copy is the one that pays for texture". The code did the opposite: `simulate_scan_views` had
+    `refine=True` as its default, `simulate_canonical` had no `refine` parameter at all, and the
+    worker passed nothing — so a slider drag would have bought texture per view, at up to two
+    hosted round trips each, exactly like a save. Nothing showed because
+    `flux_refine.available()` was False by default; the switch that pins it False was repaired,
+    which is what made this urgent rather than theoretical.
+
+    A comment that is right about the intent and wrong about the fact is the worst combination,
+    because it is what stops anybody looking. These assert the fact.
+    """
+
+    def setUp(self):
+        self.user = User.objects.create_user("preview-local")
+        self.scan = Scan.objects.create(
+            user=self.user, age_band="adult", scan_mode="standard", status="completed",
+            image_objects={"front": "private/front"},
+            expires_at=timezone.now() + timedelta(days=1),
+        )
+
+    def _simulation(self, kind):
+        return Simulation.objects.create(
+            scan=self.scan, kind=kind, region="jaw", preset_id="1.1",
+            selections=[{"procedure_id": "1.1"}], model_version="",
+            expires_at=timezone.now() + timedelta(days=30),
+        )
+
+    def test_the_cheap_path_is_what_happens_when_nobody_says(self):
+        """The default has to be the free one. A caller added later that forgets the argument
+        should get a local render, not a bill — which is the direction the old default had
+        backwards on both functions."""
+        import inspect
+
+        from . import canonical_pipeline
+        from .simulation_engine import simulate_canonical
+
+        for function in (canonical_pipeline.simulate_scan_views, simulate_canonical):
+            self.assertIs(
+                inspect.signature(function).parameters["refine"].default, False,
+                f"{function.__name__} must default to the path that costs nothing",
+            )
+
+    @patch("doodee.tasks.upload_image")
+    @patch("doodee.tasks.download_image", return_value=b"source")
+    @patch("doodee.tasks.simulate_canonical")
+    def test_the_worker_buys_texture_for_a_save_and_never_for_a_preview(self, canonical, *_):
+        from .tasks import process_simulation
+
+        asked = {}
+        for kind in (Simulation.Kind.PREVIEW, Simulation.Kind.SAVED):
+            canonical.return_value = canonical_render()
+            simulation = self._simulation(kind)
+            process_simulation(str(simulation.id))
+            simulation.refresh_from_db()
+            self.assertEqual(simulation.status, Simulation.Status.COMPLETED,
+                             simulation.error_message)
+            asked[kind] = canonical.call_args.kwargs
+
+        self.assertIs(asked[Simulation.Kind.PREVIEW]["refine"], False)
+        self.assertIs(asked[Simulation.Kind.SAVED]["refine"], True)
+        # And it names the work, not the clock, so a retry finds its own reservation.
+        self.assertTrue(asked[Simulation.Kind.SAVED]["budget_key"].startswith("simulation:"))
+
+    @patch("doodee.canonical_pipeline.simulate_scan_views")
+    def test_the_decision_reaches_the_renderer_unchanged(self, render):
+        """The seam that did not exist. `simulate_canonical` took no `refine`, so whatever the
+        worker decided could not have arrived."""
+        from .simulation_engine import simulate_canonical
+
+        render.return_value = {
+            "views": {"front": {"encoded": b"png", "before_encoded": b"png", "focus_boxes": {},
+                                "yaw": 0., "max_shift_px": 1., "held_back": 0., "changed": True,
+                                "visible_percent": 2.5, "source_object": "private/front"}},
+            "legacy_view": "front", "measurements": [], "related_procedures": [],
+            "model_version": "canonical-3d-fusion-lab-v1",
+        }
+        selections = [{"procedure_id": "1.1"}]
+        for wanted in (True, False):
+            simulate_canonical(self.scan, selections, lambda name: b"",
+                               refine=wanted, budget_key="simulation:abc")
+            self.assertIs(render.call_args.kwargs["refine"], wanted)
+            self.assertEqual(render.call_args.kwargs["budget_key"], "simulation:abc")
+
+        simulate_canonical(self.scan, selections, lambda name: b"")
+        self.assertIs(render.call_args.kwargs["refine"], False,
+                      "an omitted argument must not turn the paid path on")
+
+    def test_a_preview_render_puts_nothing_on_the_wire_with_polish_switched_on(self):
+        """The whole claim, asserted rather than reasoned about.
+
+        Polish is on, a key is present, `flux_refine.available()` is True, and a real render of a
+        surface procedure runs to completion. Zero calls to the refiner and zero to `urlopen`.
+        """
+        from . import canonical_pipeline, flux_refine
+        from .procedure_catalog import compile_warp_sliders, resolve_procedure
+
+        spec = resolve_procedure("1.1")
+        geometry, _raw, _points = _fake_fused_render()
+        with geometry, _polish_on(), \
+                patch.object(flux_refine, "refine") as refine, \
+                patch("urllib.request.urlopen") as urlopen:
+            self.assertTrue(flux_refine.available(), "the test would be vacuous with polish off")
+            canonical_pipeline.simulate_scan_views(
+                self.scan, compile_warp_sliders([spec], [3]), lambda name: b"",
+                selections=[{"procedure_id": "1.1", "intensity_level": 3}], presets=[spec],
+                refine=False, budget_key="simulation:preview",
+            )
+        refine.assert_not_called()
+        urlopen.assert_not_called()
+
+    def test_the_identical_render_as_a_save_does_reach_the_refiner(self):
+        """The control for the test above, and the reason it is not vacuous. Same procedure, same
+        photograph, same switch — only `refine` differs, and this one spends."""
+        from . import canonical_pipeline, flux_refine
+        from .procedure_catalog import compile_warp_sliders, resolve_procedure
+
+        spec = resolve_procedure("1.1")
+        geometry, _raw, _points = _fake_fused_render()
+        with geometry, _polish_on(), \
+                patch.object(flux_refine, "refine", side_effect=lambda image, *a, **k: image) as refine, \
+                patch("urllib.request.urlopen") as urlopen:
+            canonical_pipeline.simulate_scan_views(
+                self.scan, compile_warp_sliders([spec], [3]), lambda name: b"",
+                selections=[{"procedure_id": "1.1", "intensity_level": 3}], presets=[spec],
+                refine=True, budget_key="simulation:save",
+            )
+        self.assertEqual(refine.call_count, 1)
+        # Still nothing raw on the wire: `flux_refine.refine` is the only thing that opens a
+        # socket, and it is the seam that was patched.
+        urlopen.assert_not_called()
+
+
+class SimulationPolishBudgetTest(TestCase):
+    """FLUX under the same monthly ceiling as chat and skin vision.
+
+    It was under no ceiling at all. Chat reserves before it calls and settles after; skin vision
+    does the same; `flux_refine` contained neither the word `ai_budget` nor the word `reserve`,
+    and one grouped render can issue two hosted calls per view across as many as five views. The
+    ledger exists so that going over refuses work instead of billing for it and regretting it
+    later, and a spender outside the ledger makes `LLM_BUDGET_THB_PER_MONTH` a ceiling on chat
+    rather than a ceiling on spend.
+    """
+
+    def setUp(self):
+        self.user = User.objects.create_user("polish-budget")
+        self.image = np.full((256, 256, 3), 140, np.uint8)
+        spread = np.random.default_rng(7)
+        self.points = np.zeros((478, 3), np.float64)
+        self.points[:, 0] = spread.uniform(38, 217, 478)
+        self.points[:, 1] = spread.uniform(38, 217, 478)
+
+    def _refine(self, refs, **kwargs):
+        """One view's worth of stage 2, with the network replaced by a recorder."""
+        from . import canonical_pipeline, flux_refine
+        from .procedure_catalog import resolve_procedure
+
+        specs = [resolve_procedure(ref) for ref in refs]
+        calls = []
+
+        def recorder(image, mask, kind, prompt_key, blend=None):
+            calls.append((kind, prompt_key))
+            return image
+
+        with _polish_on(), patch.object(flux_refine, "refine", side_effect=recorder), \
+                patch("urllib.request.urlopen") as urlopen:
+            returned = canonical_pipeline._refine_views(
+                self.image, self.points, specs, [3] * len(specs), "front", 1.,
+                **{"user": self.user, "budget_key": "simulation:budget-test", **kwargs},
+            )
+        urlopen.assert_not_called()
+        return returned, calls
+
+    def test_the_reservation_happens_before_the_call_and_the_settle_after(self):
+        """The order is the whole property. A call made first and counted afterwards is a call
+        that has already been billed by the time anyone checks whether it was affordable."""
+        from . import canonical_pipeline, flux_refine
+        from .procedure_catalog import resolve_procedure
+
+        order = []
+        with _polish_on(), \
+                patch.object(flux_refine, "reserve_budget",
+                             side_effect=lambda *a: order.append("reserve") or "ledger"), \
+                patch.object(flux_refine, "refine",
+                             side_effect=lambda image, *a, **k: order.append("call") or image), \
+                patch.object(flux_refine, "settle_budget",
+                             side_effect=lambda *a: order.append("settle")):
+            canonical_pipeline._refine_views(
+                self.image, self.points, [resolve_procedure("1.1")], [3], "front", 1.,
+                user=self.user, budget_key="simulation:order",
+            )
+        self.assertEqual(order, ["reserve", "call", "settle"])
+
+    def test_it_reserves_for_every_call_the_view_will_make_rather_than_for_one(self):
+        """A grouped render is an erase and a fill per distinct prompt plus one shared polish.
+        Reserving for a single call would admit the whole group against one call's budget and
+        spend the rest outside the ceiling."""
+        from . import canonical_pipeline, flux_refine
+        from .procedure_catalog import resolve_procedure
+
+        # 10.2 builds a hairline (`fill`); 2.4 clears a lesion (`polish`). Two calls, one view.
+        specs = [resolve_procedure("10.2"), resolve_procedure("2.4")]
+        with _polish_on(), \
+                patch.object(flux_refine, "reserve_budget", return_value="ledger") as reserve, \
+                patch.object(flux_refine, "refine", side_effect=lambda image, *a, **k: image), \
+                patch.object(flux_refine, "settle_budget") as settle:
+            canonical_pipeline._refine_views(self.image, self.points, specs, [3, 3], "front", 1.,
+                                             user=self.user, budget_key="simulation:grouped")
+        self.assertEqual(reserve.call_args.args[2], 2, "one fill and one shared polish")
+        self.assertEqual(settle.call_args.args[1], 2)
+
+    def test_a_stack_with_no_polish_plan_of_its_own_still_reserves_for_the_polish(self):
+        """The polish runs over the union of every mask, erase and fill output included, so a
+        stack whose only member builds a hairline still ends in a second call. Counting only the
+        masks that arrived tagged `polish` under-reserved exactly this stack by one — which is an
+        unreserved paid call, the failure the reservation exists to prevent."""
+        from . import canonical_pipeline, flux_refine
+        from .procedure_catalog import resolve_procedure
+
+        specs = [resolve_procedure("10.2")]
+        made = []
+        with _polish_on(), \
+                patch.object(flux_refine, "reserve_budget", return_value="ledger") as reserve, \
+                patch.object(flux_refine, "refine",
+                             side_effect=lambda image, mask, kind, key, blend=None:
+                             made.append(kind) or image), \
+                patch.object(flux_refine, "settle_budget"):
+            canonical_pipeline._refine_views(self.image, self.points, specs, [3], "front", 1.,
+                                             user=self.user, budget_key="simulation:fill-only")
+        self.assertEqual(made, ["fill", "polish"])
+        self.assertEqual(reserve.call_args.args[2], len(made),
+                         "every call that was made had to have been reserved for")
+
+    @override_settings(LLM_BUDGET_THB_PER_MONTH=0)
+    def test_over_the_ceiling_the_deterministic_image_comes_back_rather_than_an_exception(self):
+        """Being out of budget is one more failure mode, and `_refine_views` promises that every
+        one of them ends with the local render returned unchanged. A person must never watch a
+        simulation break because the month's budget ran out."""
+        returned, calls = self._refine(["1.1"])
+        self.assertEqual(calls, [], "nothing may be bought over the ceiling")
+        self.assertIs(returned, self.image, "the deterministic render is the complete answer")
+
+    def test_a_retry_does_not_buy_the_same_pictures_a_second_time(self):
+        """Celery retries `process_simulation`, and a retry re-renders from scratch. The
+        idempotency key is derived from the simulation row, so the second attempt is told the
+        work is already paid for and degrades instead of billing again."""
+        from .models import AIUsageLedger
+
+        _first, bought = self._refine(["1.1"])
+        self.assertEqual(len(bought), 1)
+        _second, again = self._refine(["1.1"])
+        self.assertEqual(again, [], "the retry must not repeat a paid call")
+        self.assertEqual(AIUsageLedger.objects.count(), 1)
+
+    def test_a_call_nothing_holds_budget_for_is_never_made(self):
+        """No user, or no key naming the work, means no reservation is possible — and an
+        unreserved paid call is the exact thing this path was audited for. The local render is
+        the same answer every other failure gives."""
+        for missing in ({"user": None}, {"budget_key": ""}):
+            returned, calls = self._refine(["1.1"], **missing)
+            self.assertEqual(calls, [], f"{missing} must not reach the provider")
+            self.assertIs(returned, self.image)
+
+    def test_the_row_it_writes_is_the_one_the_ceiling_is_read_from(self):
+        """Same table, same month, same aggregate as chat and skin vision — otherwise this is a
+        second ledger and the ceiling means nothing."""
+        import math
+
+        from . import flux_refine
+        from .models import AIUsageLedger
+
+        self._refine(["1.1"])
+        row = AIUsageLedger.objects.get()
+        self.assertEqual(row.status, AIUsageLedger.Status.SETTLED)
+        self.assertEqual(row.provider, "bfl")
+        self.assertEqual(row.actual_satang,
+                         math.ceil(flux_refine.PRICE_USD_PER_CALL * settings.USD_THB_RATE * 100))
+        self.assertEqual(row.reserved_satang, 0)
+        # An image call has no tokens, and inventing some to fill these in would corrupt the
+        # cache-efficiency numbers `analytics` reads out of the same columns.
+        self.assertEqual((row.input_tokens, row.output_tokens), (0, 0))
+
+    def test_the_per_call_price_is_the_generous_side_of_the_published_one(self):
+        """`bfl/flux-pro-1.0-fill` — the default GATEWAY_MODEL and the model the `bfl` transport
+        calls — is published at $0.05 an image on the Vercel AI Gateway's public model list, and
+        the dearest model this module can be pointed at, `bfl/flux-kontext-max`, at $0.08. The
+        estimate has to sit above both, for the same reason
+        `tasks.SKIN_VISION_RESERVE_INPUT_TOKENS` is deliberately high: an under-estimate is
+        admitted against the ceiling and then spends more than it held, which is the direction
+        that overruns a budget rather than protecting it."""
+        from . import flux_refine
+
+        self.assertGreaterEqual(flux_refine.PRICE_USD_PER_CALL, 0.08)
+
+    def test_the_module_that_spends_the_money_is_the_module_that_reserves_it(self):
+        """The audit that started this found no `ai_budget` and no `reserve` anywhere in
+        `flux_refine`, which is how a whole spender came to sit outside the ceiling."""
+        from pathlib import Path
+
+        from . import flux_refine
+
+        source = Path(flux_refine.__file__).read_text()
+        self.assertIn("ai_budget", source)
+        self.assertIn("reserve_usd", source)
+
+
+class DoseNotesTest(TestCase):
+    """What the stack asked for, next to what the renderer would draw.
+
+    A stack sums its members' slider values and `normalise_sliders` clamps the sum, and until now
+    nothing anywhere said so. At intensity 3 the full jaw stack compiles `jawDefinition` to 499.25
+    and 300 is drawn; a one-way control whose members sum negative floors at zero and the
+    procedure is simply not in the picture. Both are indistinguishable, from the outside, from a
+    render that did everything it was asked.
+    """
+
+    def test_a_full_jaw_stack_reports_the_number_it_asked_for_and_the_number_it_drew(self):
+        from . import canonical_pipeline
+        from .procedure_catalog import PROCEDURES, OpType, compile_warp_sliders
+
+        stack = [procedure for procedure in PROCEDURES
+                 if any(step.type == OpType.WARP_OP
+                        and step.params.get("control") == "jawDefinition"
+                        for step in procedure.pipeline)]
+        requested = compile_warp_sliders(stack, [3] * len(stack))
+        applied = canonical_pipeline.normalise_sliders(requested)
+        notes = canonical_pipeline._dose_notes(requested, applied)
+
+        self.assertEqual(notes, [{"control": "jawDefinition", "requested": 499.25,
+                                  "applied": 300.0, "reason": "clamped"}])
+        # And the controls that fitted are not mentioned. A note per control every time would be
+        # noise the screen learns to ignore.
+        self.assertNotIn("hifuLifting", [note["control"] for note in notes])
+
+    def test_a_one_way_control_summed_negative_is_reported_as_cancelled(self):
+        """The procedure vanishes rather than reversing: there is no treatment that does the
+        opposite of a jaw filler, so the setting floors at zero and nothing is drawn."""
+        from . import canonical_pipeline, evidence
+
+        self.assertFalse(evidence.bidirectional("jawDefinition"))
+        requested = {"jawDefinition": -80.0}
+        applied = canonical_pipeline.normalise_sliders(requested)
+        self.assertEqual(applied["jawDefinition"], 0.0)
+        self.assertEqual(canonical_pipeline._dose_notes(requested, applied),
+                         [{"control": "jawDefinition", "requested": -80.0, "applied": 0.0,
+                           "reason": "cancelled"}])
+
+    def test_a_setting_past_the_measured_range_is_reported_even_when_nothing_was_clamped(self):
+        """`SETTING_MEASURED` is where the published studies stop. Past it the millimetres are a
+        straight-line extrapolation and tissue is not straight-line, which the record already says
+        through `evidence.record`'s `extrapolated` — the dose card is entitled to the same fact."""
+        from . import canonical_pipeline, evidence
+
+        requested = {"jawDefinition": float(evidence.SETTING_MEASURED + 1)}
+        applied = canonical_pipeline.normalise_sliders(requested)
+        self.assertEqual(canonical_pipeline._dose_notes(requested, applied),
+                         [{"control": "jawDefinition", "requested": 101.0, "applied": 101.0,
+                           "reason": "outside_evidence"}])
+
+    def test_a_clamp_is_reported_once_and_not_also_as_outside_the_evidence(self):
+        """A clamp lands on `SETTING_MAX`, which is always past `SETTING_MEASURED`, so emitting
+        both would repeat the clamp in different words on every entry and leave
+        `outside_evidence` meaning nothing on its own."""
+        from . import canonical_pipeline, evidence
+
+        self.assertGreater(evidence.SETTING_MAX, evidence.SETTING_MEASURED)
+        notes = canonical_pipeline._dose_notes({"jawDefinition": 900.0},
+                                               {"jawDefinition": 300.0})
+        self.assertEqual([note["reason"] for note in notes], ["clamped"])
+
+    def test_a_stack_that_fits_says_nothing(self):
+        from . import canonical_pipeline
+
+        requested = {"jawDefinition": 60.0, "chinProjection": -40.0}
+        applied = canonical_pipeline.normalise_sliders(requested)
+        self.assertEqual(canonical_pipeline._dose_notes(requested, applied), [])
+
+    def test_the_render_carries_the_notes_out_with_it(self):
+        """Taken at the one moment both numbers exist. After `normalise_sliders` there is only the
+        tidy one, and nothing downstream can recover the request from the picture."""
+        from . import canonical_pipeline
+        from .procedure_catalog import resolve_procedure
+
+        user = User.objects.create_user("dose-notes-render")
+        scan = Scan.objects.create(
+            user=user, age_band="adult", scan_mode="standard", status="completed",
+            image_objects={"front": "private/front"},
+            expires_at=timezone.now() + timedelta(days=1),
+        )
+        spec = resolve_procedure("1.1")
+        geometry, _raw, _points = _fake_fused_render()
+        with geometry:
+            result = canonical_pipeline.simulate_scan_views(
+                scan, {"jawDefinition": 900.0}, lambda name: b"",
+                selections=[{"procedure_id": "1.1", "intensity_level": 3}], presets=[spec],
+            )
+        self.assertEqual(result["dose_notes"],
+                         [{"control": "jawDefinition", "requested": 900.0, "applied": 300.0,
+                           "reason": "clamped"}])
+        self.assertEqual(result["sliders"]["jawDefinition"], 300.0)
+
+    @patch("doodee.tasks.upload_image")
+    @patch("doodee.tasks.download_image", return_value=b"source")
+    @patch("doodee.tasks.simulate_canonical")
+    def test_the_notes_reach_the_row_and_then_the_wire(self, canonical, *_):
+        from .serializers import SimulationSerializer
+        from .tasks import process_simulation
+
+        note = {"control": "jawDefinition", "requested": 499.25, "applied": 300.0,
+                "reason": "clamped"}
+        output, measurements, focus, extra = canonical_render()
+        canonical.return_value = (output, measurements, focus, {**extra, "dose_notes": [note]})
+
+        user = User.objects.create_user("dose-notes-wire")
+        scan = Scan.objects.create(
+            user=user, age_band="adult", scan_mode="standard", status="completed",
+            image_objects={"front": "private/front"},
+            expires_at=timezone.now() + timedelta(days=1),
+        )
+        simulation = Simulation.objects.create(
+            scan=scan, region="jaw", preset_id="1.1", selections=[{"procedure_id": "1.1"}],
+            model_version="", expires_at=timezone.now() + timedelta(days=30),
+        )
+        process_simulation(str(simulation.id))
+        simulation.refresh_from_db()
+        self.assertEqual(simulation.status, Simulation.Status.COMPLETED,
+                         simulation.error_message)
+        self.assertEqual(simulation.parameters["dose_notes"], [note])
+        self.assertEqual(SimulationSerializer(simulation).data["dose_notes"], [note])
+
+    def test_a_row_rendered_before_any_of_this_makes_no_claim(self):
+        """`[]` rather than null, and the same value as "nothing was clamped" — because that is
+        the same claim: this render is not telling you anything was changed."""
+        from .serializers import SimulationSerializer
+
+        user = User.objects.create_user("dose-notes-old")
+        scan = Scan.objects.create(
+            user=user, age_band="adult", scan_mode="standard", status="completed",
+            image_objects={"front": "private/front"},
+            expires_at=timezone.now() + timedelta(days=1),
+        )
+        simulation = Simulation.objects.create(
+            scan=scan, region="jaw", preset_id="1.1", model_version="",
+            status=Simulation.Status.COMPLETED,
+            expires_at=timezone.now() + timedelta(days=30),
+        )
+        self.assertEqual(SimulationSerializer(simulation).data["dose_notes"], [])
+
+
+class PriceLadderTest(TestCase):
+    """More money must buy more. Checked against the rows themselves, not a list written here.
+
+    Measured off the seeded plans before migration 0041 it did not hold, in three separate ways
+    that had all been sitting in the database in plain sight: ฿499 พลัส granted ten previews and
+    100 chat turns where ฿149 สมาชิก granted unlimited previews and 300 turns; ฿299
+    คลินิกพาร์ทเนอร์ carried `tier_rank` 30, above ฿799 โปร, so an account holding both resolved
+    to the cheaper one; and the free tier advertised three saves it could never spend.
+
+    Every one of those arrived as an ordinary data edit, and nothing anywhere compared two plans
+    to each other, so nothing said a word. This is the check that makes the next one fail loudly.
+    A test that reads the rows is the only kind that can: a fixed table written into a test file
+    is just a fourth place for the numbers to disagree.
+    """
+
+    # The axes a customer can feel. `features` is compared as a set because it is the marketing
+    # tick-list and a dearer plan may not tick fewer boxes; the rest are ordered scalars.
+    QUOTAS = ("simulation_previews_per_month", "simulation_saves_per_month", "chat_turns_per_month")
+    DEPTH_RANK = {Plan.AnalysisDepth.PARTIAL: 0, Plan.AnalysisDepth.FULL: 1}
+
+    @staticmethod
+    def monthly_satang(plan):
+        """What a plan costs per month of access.
+
+        A yearly row's `price_satang` is twelve months of money at once, so comparing it raw says
+        ฿4,990 พลัส รายปี ought to beat ฿799 โปร — true only if a year and a month are the same
+        length. `analytics.mrr_satang` already divides a YEAR interval by twelve, and this follows
+        it so the ladder is read the way the revenue reports read it.
+        """
+        if plan.interval == Plan.Interval.YEAR:
+            return plan.price_satang // 12
+        return plan.price_satang
+
+    @staticmethod
+    def allowance(value):
+        """A quota as a number that sorts correctly. `-1` is "no ceiling", not "worse than one"."""
+        return float("inf") if value == Plan.UNLIMITED else value
+
+    def ladder(self):
+        """The plans somebody can actually buy, cheapest first.
+
+        `is_active` is in the filter and it is the only exclusion, because a retired row is a
+        record of what somebody bought rather than a rung anyone can still climb onto. `member` is
+        ฿149 with 300 chat turns and unlimited previews; no ฿499 tier will ever beat that, and
+        repricing it so this test goes green would raise the next renewal for people who never
+        agreed to it. `test_nothing_is_left_off_the_ladder_except_a_retired_plan` holds the other
+        end of that argument shut.
+        """
+        return sorted(Plan.objects.filter(self_serve=True, is_active=True), key=self.monthly_satang)
+
+    def test_every_dearer_plan_is_at_least_as_good_on_every_axis(self):
+        rungs = self.ladder()
+        self.assertGreater(len(rungs), 1, "a ladder needs two rungs before it is one")
+        for index, cheaper in enumerate(rungs):
+            for dearer in rungs[index + 1:]:
+                if self.monthly_satang(cheaper) == self.monthly_satang(dearer):
+                    # Same money, so neither is the dearer one and there is nothing to order.
+                    continue
+                with self.subTest(cheaper=cheaper.code, dearer=dearer.code):
+                    for field in self.QUOTAS:
+                        self.assertGreaterEqual(
+                            self.allowance(getattr(dearer, field)),
+                            self.allowance(getattr(cheaper, field)),
+                            f"{dearer.code} costs more than {cheaper.code} and grants less {field}",
+                        )
+                    self.assertGreaterEqual(
+                        self.DEPTH_RANK[dearer.analysis_depth],
+                        self.DEPTH_RANK[cheaper.analysis_depth],
+                        f"{dearer.code} costs more than {cheaper.code} and shows less of the analysis",
+                    )
+                    self.assertGreaterEqual(
+                        int(dearer.has_development_plan), int(cheaper.has_development_plan),
+                        f"{dearer.code} costs more than {cheaper.code} and drops the development plan",
+                    )
+                    self.assertGreaterEqual(
+                        dearer.tier_rank, cheaper.tier_rank,
+                        # tier_rank decides which plan wins when somebody holds two at once, so a
+                        # dearer plan ranked lower is not a cosmetic problem: it is the cheaper
+                        # plan's allowances being served to somebody paying for the dearer one.
+                        f"{dearer.code} costs more than {cheaper.code} and would lose to it",
+                    )
+                    self.assertLessEqual(
+                        set(cheaper.features), set(dearer.features),
+                        f"{dearer.code} costs more than {cheaper.code} and ticks fewer boxes",
+                    )
+
+    def test_nothing_is_left_off_the_ladder_except_a_retired_plan(self):
+        """The escape hatch above, bolted down.
+
+        `ladder()` skips inactive rows so a withdrawn tier does not have to be repriced to keep
+        this file green. That is only safe while "inactive" also means "cannot be bought", which
+        is a property of `_plan_or_400` rather than of this test — so it is asserted here, once,
+        against every row that gets the exemption.
+        """
+        self.client = APIClient()
+        self.client.force_authenticate(User.objects.create_user("ladder-shopper"))
+        skipped = Plan.objects.filter(self_serve=True, is_active=False)
+        self.assertTrue(skipped.exists(), "no retired self-serve plan left to check the exemption on")
+        for plan in skipped:
+            with self.subTest(plan=plan.code):
+                response = self.client.post("/api/v1/orders/", {"plan": plan.code}, format="json")
+                self.assertEqual(response.status_code, 400)
+                self.assertEqual(response.data["plan"], "unknown_plan")
+
+    def test_no_plan_outranks_one_that_costs_more_than_it(self):
+        """Stated separately from the sweep above because this is the one that already bit.
+
+        `clinic` was ฿299 with `tier_rank` 30 while `pro` was ฿799 with 20, and `current_plan()`
+        picks on rank before price — so a partner account holding both was served the ฿299 row.
+        It was invisible because clinic is not self-serve and the sweep above only walks the
+        plans on sale. This walks every row there is.
+        """
+        plans = sorted(Plan.objects.all(), key=self.monthly_satang)
+        for index, cheaper in enumerate(plans):
+            for dearer in plans[index + 1:]:
+                if self.monthly_satang(cheaper) == self.monthly_satang(dearer):
+                    continue
+                with self.subTest(cheaper=cheaper.code, dearer=dearer.code):
+                    self.assertGreaterEqual(dearer.tier_rank, cheaper.tier_rank)
+
+
+@override_settings(SIMULATION_ENABLED=True)
+class FreeTierSimulationTest(TestCase):
+    """The free tier can reach the three saves it advertises.
+
+    It could not before migration 0041. The row said three saves and zero previews, and
+    `_simulation_locked` — a plan-level zero — refuses the save route as well as the preview one,
+    so the number on the pricing page was unreachable by construction. The pricing card went as
+    far as hiding the saves row when previews were zero (`PricingPanel.quotaLines`) rather than
+    print a figure nobody could spend, which is the shape of a product defect being papered over
+    in the client.
+
+    Three previews against three saves is one look before each save. Fewer would mean the last
+    save is committed without the user ever seeing what they were committing to.
+    """
+
+    def setUp(self):
+        self.user = User.objects.create_user("free-simulator")
+        self.client = APIClient()
+        self.client.force_authenticate(self.user)
+        self.scan = Scan.objects.create(
+            user=self.user, age_band="adult", scan_mode="standard", status="completed",
+            image_objects={"front": "private/front", "left_profile": "private/left", "right_profile": "private/right"},
+            analysis_data={"reference_scores": reference_scores_fixture()},
+            expires_at=timezone.now() + timedelta(days=1),
+        )
+        self.payload = {
+            "scan_id": str(self.scan.id), "region": "nose", "preset_id": "nose-narrow",
+            "simulation_consent_version": "2026.3-local",
+        }
+        cache.clear()
+
+    def preview(self):
+        return self.client.post(
+            "/api/v1/simulations/preview/", self.payload, format="json",
+            HTTP_IDEMPOTENCY_KEY=os.urandom(8).hex(),
+        )
+
+    def save(self):
+        return self.client.post(
+            "/api/v1/simulations/", self.payload, format="json",
+            HTTP_IDEMPOTENCY_KEY=os.urandom(8).hex(),
+        )
+
+    def settle(self):
+        """Only one simulation may be in flight per user, so each one is finished before the next.
+
+        Not a workaround: `create` answers 409 while anything of this user's is still running,
+        and a queued preview is cancelled by the one after it.
+        """
+        Simulation.objects.filter(
+            status__in=(Simulation.Status.QUEUED, Simulation.Status.PROCESSING),
+        ).update(status=Simulation.Status.COMPLETED)
+
+    def test_the_session_no_longer_reports_a_locked_free_account(self):
+        session = self.client.get("/api/v1/session/").data
+        self.assertEqual(session["plan"], "free")
+        self.assertIs(session["simulation_locked"], False)
+        self.assertEqual(session["preview_remaining"], 3)
+        self.assertEqual(session["saved_remaining"], 3)
+
+    @patch("doodee.views.process_simulation.delay")
+    def test_a_free_account_can_look_before_it_spends_each_of_its_saves(self, delay):
+        for attempt in range(3):
+            with self.subTest(attempt=attempt):
+                self.assertEqual(self.preview().status_code, 202)
+                self.settle()
+                self.assertEqual(self.save().status_code, 202)
+                self.settle()
+        self.assertEqual(
+            Simulation.objects.filter(scan=self.scan, kind=Simulation.Kind.SAVED).count(), 3,
+            "the three saves the free row advertises were not all reachable",
+        )
+        session = self.client.get("/api/v1/session/").data
+        self.assertEqual(session["preview_remaining"], 0)
+        self.assertEqual(session["saved_remaining"], 0)
+
+    @patch("doodee.views.process_simulation.delay")
+    def test_a_spent_free_allowance_is_rate_limited_and_not_locked(self, delay):
+        """429 and not 403, and the distinction is the whole reason free was given an allowance.
+
+        403 says "this plan does not include simulation" and the client offers an upgrade. 429
+        says "come back next month". Answering the first when the second is true is how the free
+        tier ended up advertising three saves behind a wall.
+        """
+        for _ in range(3):
+            self.assertEqual(self.preview().status_code, 202)
+            self.settle()
+            self.assertEqual(self.save().status_code, 202)
+            self.settle()
+
+        spent_preview = self.preview()
+        self.assertEqual(spent_preview.status_code, 429)
+        self.assertEqual(spent_preview.data["detail"], "monthly_preview_quota_reached")
+        spent_save = self.save()
+        self.assertEqual(spent_save.status_code, 429)
+        self.assertEqual(spent_save.data["detail"], "monthly_save_quota_reached")

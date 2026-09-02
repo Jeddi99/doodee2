@@ -1,11 +1,20 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
-import {
-  FaceLandmarker,
-  FilesetResolver,
-  type NormalizedLandmark,
-} from "@mediapipe/tasks-vision";
+import { FaceLandmarker, type NormalizedLandmark } from "@mediapipe/tasks-vision";
+import wasmLoaderPath from "@mediapipe/tasks-vision/vision_wasm_internal.js?url";
+import wasmBinaryPath from "@mediapipe/tasks-vision/vision_wasm_internal.wasm?url";
 import { Link } from "react-router-dom";
-import { siteCopy, type Locale, type Market } from "../localization";
+import { siteCopy, type Locale } from "../localization";
+import {
+  DISTRIBUTION_RELIABLE_AT,
+  MEASURED_METRICS,
+  PLAN_PRICE_BAHT,
+  PROCEDURES_RENDERABLE,
+  PROCEDURES_TOTAL,
+  REFERENCE_AGE_RANGE,
+  REFERENCE_OBSERVATIONS,
+  REFERENCE_SAMPLE,
+  baht,
+} from "../lib/productFacts";
 import { useLocale } from "../useLocale";
 import Brand from "../Brand";
 import {
@@ -40,6 +49,28 @@ import {
   X,
 } from "lucide-react";
 
+/**
+ * The ten measurements the sample panel demonstrates.
+ *
+ * `value` is real: it is computed by `calculateFaceMetrics` from MediaPipe landmarks detected on
+ * the shipped sample photograph, so the numbers beside each row are genuine measurements of that
+ * one face. `range` and `target` are not. They are display bounds chosen here so the marker has
+ * somewhere to sit, and they exist in no other file in this repository.
+ *
+ * That distinction was previously invisible on screen and misrepresented in the markup. The bar's
+ * `title` read "Reference alignment 84%" and its `aria-label` said "84 percent reference
+ * alignment", which named a thing the product genuinely has — the published Thai cohort in
+ * `reference_scoring.py` — and attached it to a number derived from a target invented in this
+ * file. The real reference covers twelve observations with a published mean and SD; not one of
+ * them is any of these ten. `.metric-range`'s red-amber-teal-blue-teal-amber-red gradient then
+ * rendered distance from that invented target as a verdict, on a page that says two sections
+ * lower that it uses "no Golden Ratio beauty score" and "a reference population, not a beauty
+ * standard".
+ *
+ * So `target` stays — the marker needs a midpoint — the word "reference" is gone from every label
+ * that describes it, the gradient is a neutral track, and the panel says on screen what these
+ * bounds are. `metricDefinitions` is presentational. It must never be cited as a norm.
+ */
 const metricDefinitions = [
   {
     id: "midface",
@@ -968,18 +999,38 @@ window.runTreatmentLoopTest = (rounds = 99) =>
     image.onerror = reject;
   });
 
+/**
+ * The strip under the hero. Four facts, and every one of them is checkable in this repository.
+ *
+ * It used to open with "2,000+ users" in both locales. Nothing in this codebase counts users, and
+ * the only population figure that exists — `score_distribution.sample_size`, the scored people this
+ * deployment actually holds — is a single-digit number well under the thirty
+ * `RELIABLE_SAMPLE_SIZE` demands before a percentile may be shown as a fact. A headline that
+ * inflates that by three orders of magnitude is the first thing a visitor reads, so it is the first
+ * thing that had to go. The Thai strip's "85+ จุด" went with it: 85 is the size of the whole
+ * catalogue, of which 72 are measured, and the "+" claimed more than the catalogue contains.
+ *
+ * The two locales now say the same four things. They previously did not, which is its own small
+ * dishonesty — a Thai reader and an English reader were being sold different products.
+ */
 const proofItems = [
-  ["2,000+", "users"],
-  ["Treatment", "preview"],
-  ["Personalized", "improvement plan"],
-  ["Secure", "processing · your data stays private"],
+  [String(MEASURED_METRICS), "measured ratios and angles"],
+  [
+    `${PROCEDURES_RENDERABLE} of ${PROCEDURES_TOTAL}`,
+    "procedures we can draw a preview for",
+  ],
+  ["Illustrative previews", "possibilities, not outcome predictions"],
+  ["Not a medical device", "no diagnosis, no guaranteed result"],
 ] as const;
 
 const proofItemsTh = [
-  ["2,000+ คน", "ผู้ใช้งาน"],
-  ["85+ จุด", "วิเคราะห์เชิงลึก"],
-  ["ดูภาพจำลอง", "ก่อนตัดสินใจ"],
-  ["คำแนะนำเฉพาะบุคคล", "เพื่อการวางแผนที่เหมาะกับคุณ"],
+  [`${MEASURED_METRICS} ค่า`, "อัตราส่วนและมุมที่วัดได้จริง"],
+  [
+    `${PROCEDURES_RENDERABLE} จาก ${PROCEDURES_TOTAL}`,
+    "หัตถการที่ระบบจำลองภาพให้ได้",
+  ],
+  ["ภาพจำลองประกอบการตัดสินใจ", "ไม่ใช่การทำนายผลลัพธ์"],
+  ["ไม่ใช่เครื่องมือแพทย์", "ไม่วินิจฉัย และไม่รับประกันผล"],
 ] as const;
 
 const faqs = [
@@ -996,8 +1047,11 @@ const faqs = [
     "No. Guided capture checks lighting, angle and face visibility before the analysis begins.",
   ],
   [
+    // Was: "This prototype demonstrates the intended privacy model" — which described the
+    // retention rules as an aspiration when they are enforced code. `views.py` sets
+    // `expires_at` on every scan, and the guarantees below are the same ones the Terms make.
     "How is my privacy protected?",
-    "The experience is designed around user control, clear consent and deletion. This prototype demonstrates the intended privacy model.",
+    "Images live in a private bucket behind expiring signed links. Adult scans are deleted after 30 days and a minor's after 24 hours. Your photographs are never sold and never used for advertising or model training, and you can delete your scan history or your whole account at any time.",
   ],
   [
     "Can I share my plan with a professional?",
@@ -1005,7 +1059,14 @@ const faqs = [
   ],
   [
     "Why is the reference population Thai?",
-    "Appearance decisions should sit in the user's own context rather than borrow one standard for every market. Comparisons use mean and SD from 240 Thai adults aged 18–35.",
+    `Appearance decisions should sit in the user's own context rather than borrow one standard for every market. Comparisons use mean and SD from ${REFERENCE_SAMPLE} Thai adults aged ${REFERENCE_AGE_RANGE}.`,
+  ],
+  [
+    // The question the page had no answer for, and the one a careful reader asks first. Both
+    // numbers are real: the published cohort, and this deployment's own scored users, which is
+    // currently a single-digit figure well under `RELIABLE_SAMPLE_SIZE`.
+    "How many people am I actually compared with?",
+    `Two different things, and it is worth keeping them apart. ${REFERENCE_OBSERVATIONS} of the ${MEASURED_METRICS} measurements are scored against a published study of ${REFERENCE_SAMPLE} Thai adults; the rest have no published figure and describe your face against itself. Separately, your overall score is placed on a curve of other DooDee users — and while fewer than ${DISTRIBUTION_RELIABLE_AT} people have been scored on this deployment, the app says the comparison is too thin to read as a percentile instead of showing you one anyway.`,
   ],
 ] as const;
 
@@ -1032,7 +1093,11 @@ const faqsTh = [
   ],
   [
     "ทำไมใช้ค่าอ้างอิงจากคนไทย?",
-    "เพราะการตัดสินใจเรื่องรูปลักษณ์ควรสัมพันธ์กับบริบทของผู้ใช้เอง ไม่ใช่ยืมกรอบเดียวมาใช้กับทุกตลาด การเปรียบเทียบใช้ค่าเฉลี่ยและส่วนเบี่ยงเบนจากคนไทย 240 คน อายุ 18–35 ปี",
+    `เพราะการตัดสินใจเรื่องรูปลักษณ์ควรสัมพันธ์กับบริบทของผู้ใช้เอง ไม่ใช่ยืมกรอบเดียวมาใช้กับทุกตลาด การเปรียบเทียบใช้ค่าเฉลี่ยและส่วนเบี่ยงเบนจากคนไทย ${REFERENCE_SAMPLE} คน อายุ ${REFERENCE_AGE_RANGE} ปี`,
+  ],
+  [
+    "จริง ๆ แล้วเทียบกับคนกี่คน?",
+    `เป็นสองเรื่องที่ควรแยกกัน มี ${REFERENCE_OBSERVATIONS} ค่าจาก ${MEASURED_METRICS} ค่าที่เทียบกับงานวิจัยคนไทย ${REFERENCE_SAMPLE} คนได้ ส่วนที่เหลือไม่มีตัวเลขตีพิมพ์ให้เทียบ จึงเป็นการเทียบใบหน้าคุณกับตัวเอง อีกเรื่องคือคะแนนรวมของคุณจะถูกวางบนกราฟของผู้ใช้ DOODEE คนอื่น ตราบใดที่ยังมีคนถูกให้คะแนนไม่ถึง ${DISTRIBUTION_RELIABLE_AT} คนบนระบบนี้ แอปจะบอกว่ายังเทียบเป็นเปอร์เซ็นไทล์ไม่ได้ แทนที่จะแสดงตัวเลขให้ดูเฉย ๆ`,
   ],
 ] as const;
 
@@ -1361,20 +1426,35 @@ const SAMPLE_FACE_SRC = "/assets/sample-face-front.webp";
 const HAIRLINE_EXTENSION = 0.75;
 let faceLandmarkerPromise: Promise<FaceLandmarker> | null = null;
 
+/**
+ * The same landmarker the rest of the app uses, from the same files.
+ *
+ * This used to pull the wasm from `cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@1.0.1/wasm` while
+ * `package.json` pins the JS at 0.10.35, and the model from `storage.googleapis.com` at `latest`.
+ * Three separate problems in four lines:
+ *
+ *   - 1.0.1 wasm against 0.10.35 JS is a version mismatch across an ABI boundary. It happens to
+ *     load today; nothing says it will after the next release, and the failure mode is a public
+ *     marketing page whose one interactive element silently shows nothing.
+ *   - `latest` means the numbers beside the sample face can change without a deploy, in a page
+ *     whose whole argument is that its numbers are stable and checkable.
+ *   - Both are third-party requests on the first screen of a page that already ships this exact
+ *     model at `/mediapipe/face_landmarker.task` (3.7 MB, byte-identical to the backend's copy)
+ *     for the scan flow, and already bundles the matching wasm through `lib/liveFace.js`.
+ *
+ * Now it is the npm package's own wasm — so the version can never disagree with the bundle — and
+ * the model this deployment serves.
+ */
 function getFaceLandmarker() {
-  faceLandmarkerPromise ??= FilesetResolver.forVisionTasks(
-    "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@1.0.1/wasm",
-  ).then((vision) =>
-    FaceLandmarker.createFromOptions(vision, {
-      baseOptions: {
-        modelAssetPath:
-          "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/latest/face_landmarker.task",
-      },
+  faceLandmarkerPromise ??= FaceLandmarker.createFromOptions(
+    { wasmLoaderPath, wasmBinaryPath },
+    {
+      baseOptions: { modelAssetPath: "/mediapipe/face_landmarker.task" },
       numFaces: 1,
       minFaceDetectionConfidence: 0.7,
       minFacePresenceConfidence: 0.7,
       minTrackingConfidence: 0.7,
-    }),
+    },
   );
   return faceLandmarkerPromise;
 }
@@ -1858,17 +1938,42 @@ function ProductPreview({ locale }: { locale: Locale }) {
                 <b>{displayMetric(metric).label}</b>
                 <small>{displayMetric(metric).detail}</small>
               </span>
+              {/* What the marker means, stated as what it is: a position inside the bounds
+                  printed either side of it. It used to be announced as "N percent reference
+                  alignment", which borrowed the credibility of the published Thai cohort for a
+                  target invented forty lines up. */}
               <span
                 className="metric-range"
                 role="img"
-                aria-label={`${metric.label}: ${Math.round(metric.match)} percent reference alignment`}
-                title={`Reference alignment ${Math.round(metric.match)}%`}
+                aria-label={
+                  locale === "th"
+                    ? `${displayMetric(metric).label}: ${metric.value} ในช่วงแสดงผล ${metric.range[0]} ถึง ${metric.range[1]}`
+                    : `${metric.label}: ${metric.value}, shown within a display range of ${metric.range[0]} to ${metric.range[1]}`
+                }
+                title={
+                  locale === "th"
+                    ? `ช่วงแสดงผล ${metric.range[0]}–${metric.range[1]}`
+                    : `Display range ${metric.range[0]}–${metric.range[1]}`
+                }
               >
                 <i style={{ left: `${metric.score}%` }} />
               </span>
               <strong>{metric.value}</strong>
             </button>
           ))}
+          {/* Three things a visitor cannot tell by looking, and would reasonably assume wrongly:
+              whose face this is, whether the numbers are real, and what the bar means. The
+              landmarks and every value above are computed live in this browser, so the numbers are
+              genuine — of one photograph that ships with the page and is identical for everyone.
+              The bar is not. */}
+          <p className="metric-panel-note">
+            <Info size={15} aria-hidden="true" />
+            <span>
+              {locale === "th"
+                ? "ค่าทั้งหมดคำนวณสดจากภาพตัวอย่างภาพเดียวที่มากับหน้าเว็บนี้ ผู้เข้าชมทุกคนเห็นภาพและตัวเลขชุดเดียวกัน ไม่ใช่ใบหน้าของคุณ · แถบเลื่อนบอกตำแหน่งของค่าในช่วงที่เราเลือกมาแสดงเท่านั้น ไม่ใช่คะแนนเทียบกับกลุ่มอ้างอิงคนไทย และไม่ใช่การตัดสินว่าดีหรือไม่ดี"
+                : "Every value above is computed live in your browser from one sample photograph shipped with this page. It is the same face and the same numbers for every visitor, and it is not your face. The bar shows where a value falls inside the display range we chose for it — it is not a score against the Thai reference cohort, and not a verdict."}
+            </span>
+          </p>
         </div>
       </div>
     </div>
@@ -2026,14 +2131,22 @@ function TreatmentPreview({ locale }: { locale: Locale }) {
             aria-label="Adjust before and preview comparison"
           />
         </div>
+        {/* A before/after pair of a real face is the single most misreadable thing on a page like
+            this one. "Results may vary" is what an advertiser writes under a real patient's
+            photograph, and it left every honest reading of this widget open: that a person had a
+            procedure and this is what happened. Nobody did. The right-hand side is drawn in this
+            browser by warping the left-hand side, on a stock portrait, and the Terms
+            (`legalCopy.ts`) already say simulations are "not predictions, not promises, and not a
+            guarantee that a real procedure will produce what you see". The caption now says the
+            same thing where it is actually read. */}
         <p className="treatment-preview__caption">
           <strong>
             {locale === "th" ? treatmentCopyTh[active.id] : active.label}
           </strong>{" "}
           ·{" "}
           {locale === "th"
-            ? "ภาพจำลองใช้เพื่อประกอบการตัดสินใจเท่านั้น ผลลัพธ์จริงอาจแตกต่างกันในแต่ละบุคคล"
-            : "Illustrative simulation only. Results may vary."}
+            ? "ภาพขวาเป็นภาพที่คอมพิวเตอร์ดัดแปลงจากภาพซ้ายในเบราว์เซอร์ของคุณเอง ไม่ใช่ภาพก่อน-หลังของคนไข้จริง และไม่ใช่การรับประกันผลลัพธ์ ทั้งสองภาพเป็นภาพตัวอย่างที่มากับหน้าเว็บนี้"
+            : "The right-hand side is computed in your browser by warping the left-hand side. It is not a patient before-and-after, not a prediction and not a guarantee — both halves are the same sample portrait shipped with this page."}
         </p>
       </div>
     </section>
@@ -2439,6 +2552,18 @@ function ProgressTimeline({ locale }: { locale: Locale }) {
   );
 }
 
+/**
+ * Where "join the pilot" goes.
+ *
+ * Every pilot CTA on this page used to be `href="#clinic-pilot"` — including the two buttons
+ * *inside* `id="clinic-pilot"`, which scrolled the section to itself. A clinic that read the whole
+ * section and decided to say yes had nowhere to click. This is the same address `ContactSection`
+ * already publishes under "Clinic partnership", so there is one way in rather than a dead anchor
+ * and a working address on the same page.
+ */
+const PARTNER_MAILTO =
+  "mailto:hello@doodee.app?subject=Clinic%20pilot%20enquiry";
+
 function ClinicBridge({ locale }: { locale: Locale }) {
   return (
     <section className="clinic-bridge clinic-bridge--pilot" id="clinics">
@@ -2456,7 +2581,7 @@ function ClinicBridge({ locale }: { locale: Locale }) {
             <span className="clinic-brand">
               {locale === "th"
                 ? "DOODEE สำหรับคลินิก"
-                : "DOODEE Clinic Pilot Program"}
+                : "DOODEE for clinics"}
             </span>
             <h2>
               {locale === "th" ? (
@@ -2475,17 +2600,24 @@ function ClinicBridge({ locale }: { locale: Locale }) {
             </h2>
           </div>
           <div>
+            {/* No 3D. There is no 3D model, no depth capture and no 3D library in this product —
+                `package.json` has none, and the closest thing the server builds is `scan_mesh`,
+                a Delaunay triangulation of 2D landmarks shaded by MediaPipe's z estimate and
+                served as a flat PNG. It is a mesh drawn on a photograph, and it cannot be
+                rotated, exported or measured in millimetres. Saying "3D face model" to a clinic
+                that is deciding whether to put this in front of patients is the version of this
+                sentence that ends a pilot in the first meeting. */}
             <p>
               {locale === "th"
-                ? "สร้างโมเดลใบหน้า 3D และเปิดภาพจำลองระหว่างการปรึกษา ด้วย iPhone หรือ iPad ที่คลินิกมีอยู่แล้ว"
-                : "A new 3D consultation workflow built around the devices clinics already use."}
+                ? "ถ่ายด้วย iPhone หรือ iPad ที่คลินิกมีอยู่แล้ว แล้วเปิดค่าที่วัดได้ ตาข่ายจุดบนภาพถ่ายของคนไข้เอง และภาพจำลองเปรียบเทียบ ระหว่างการปรึกษา"
+                : "Capture on the iPhone or iPad the clinic already owns, then open the measurements, the landmark mesh drawn on the patient's own photograph, and a side-by-side preview during the consultation."}
             </p>
             <div className="clinic-pilot-actions">
-              <Button href="#clinic-pilot">
-                {locale === "th" ? "ขอเดโมสำหรับคลินิก" : "Join the pilot"}
+              <Button href="#clinic-value">
+                {locale === "th" ? "ดูว่าคลินิกได้อะไรบ้าง" : "See what a clinic gets"}
               </Button>
-              <a href="#clinic-pilot">
-                {locale === "th" ? "ดูขั้นตอนการทำงาน" : "Request a demo"}{" "}
+              <a href={PARTNER_MAILTO}>
+                {locale === "th" ? "ติดต่อทีมงาน" : "Talk to us"}{" "}
                 <ArrowRight size={16} />
               </a>
             </div>
@@ -2615,27 +2747,27 @@ function ClinicBusinessFlow({ locale }: { locale: Locale }) {
         </div>
       </section>
 
-      <section className="clinic-hardware section-shell">
-        <div className="clinic-hardware__visual">
-          <img
-            src="/assets/clinic-no-hardware.webp"
-            alt="An iPhone capturing a face beside an iPad showing a consultation-ready facial model"
-            loading="lazy"
-          />
-        </div>
+      {/* The rendered mockup that used to sit here — `/assets/clinic-no-hardware.webp`, an iPad
+          showing a wireframe head beside dermatological cross-sections — is a picture of a product
+          that does not exist. Nothing in this codebase produces a skin-layer cross-section or a
+          rotatable head, and the alt text asserted it did: "an iPad showing a consultation-ready
+          facial model". A screenshot of a capability is a claim about that capability, and it is
+          the claim a clinic evaluates the pilot on. The file stays on disk; it is not rendered
+          until there is something real for it to show. */}
+      <section className="clinic-hardware clinic-hardware--copy-only section-shell">
         <div className="clinic-hardware__copy">
           <span>
             {locale === "th" ? "ใช้อุปกรณ์เดิมของคลินิก" : "No new hardware"}
           </span>
           <h2>
             {locale === "th"
-              ? "เพิ่มประสบการณ์ 3D โดยไม่เพิ่มเครื่องสแกน"
+              ? "ใช้อุปกรณ์ที่คลินิกมีอยู่แล้ว ไม่ต้องซื้อเครื่องสแกน"
               : "Start with the devices you already have."}
           </h2>
           <p>
             {locale === "th"
-              ? "ถ่ายใบหน้าด้วย iPhone หรือ iPad จากนั้นเปิดโมเดลและภาพจำลองบนอุปกรณ์ที่ทีมใช้อยู่แล้ว"
-              : "Capture on iPhone or iPad, prepare the case, then open the consultation view on any clinic device."}
+              ? "ถ่ายใบหน้าด้วย iPhone หรือ iPad จากนั้นเปิดค่าที่วัดได้และภาพจำลองบนอุปกรณ์ที่ทีมใช้อยู่แล้ว"
+              : "Capture on iPhone or iPad, then open the measurements and previews on any device the team already uses."}
           </p>
           <ul>
             <li>
@@ -2670,16 +2802,19 @@ function ClinicBusinessFlow({ locale }: { locale: Locale }) {
           </h2>
           <p>
             {locale === "th"
-              ? "เราจะสาธิตตั้งแต่การถ่ายใบหน้า การสร้างโมเดล 3D ไปจนถึงการเปรียบเทียบทิศทางระหว่างปรึกษา"
-              : "Join a focused group of clinics testing a simpler 3D workflow with their existing devices."}
+              ? `เราจะสาธิตตั้งแต่การถ่ายใบหน้า ค่าที่วัดได้ ${MEASURED_METRICS} ค่า ไปจนถึงการเปรียบเทียบภาพจำลองระหว่างปรึกษา และจะบอกตรง ๆ ด้วยว่าอะไรที่ระบบยังทำไม่ได้`
+              : `We will walk through the capture, the ${MEASURED_METRICS} measurements it produces and the side-by-side preview — and be equally specific about what it does not do yet.`}
           </p>
         </div>
         <div>
-          <Button href="#clinic-pilot">
-            {locale === "th" ? "ขอเดโมสำหรับคลินิก" : "Join the pilot"}
+          {/* Both of these pointed at anchors: the button at `#clinic-pilot`, which is the section
+              it sits inside, and the link at `#clinics`, which is the section above. A clinic that
+              wanted to say yes was scrolled in a circle. */}
+          <Button href={PARTNER_MAILTO}>
+            {locale === "th" ? "ติดต่อเรื่องการทดลองใช้" : "Email us about a pilot"}
           </Button>
-          <a href="#clinics">
-            {locale === "th" ? "ดูประสบการณ์ 3D" : "Request a demo"}{" "}
+          <a href="#clinic-value">
+            {locale === "th" ? "ดูว่าคลินิกได้อะไรบ้าง" : "See what a clinic gets"}{" "}
             <ArrowRight size={16} />
           </a>
         </div>
@@ -2808,36 +2943,25 @@ function LandingPage() {
   const [openFaq, setOpenFaq] = useState<number | null>(0);
   const [headerCompact, setHeaderCompact] = useState(false);
   const { locale, chooseLocale, copy } = useLocale();
-  const [market, setMarket] = useState<Market>(() =>
-    document.cookie.includes("doodee_market=TH") ? "TH" : "GLOBAL",
-  );
-  const [marketReady, setMarketReady] = useState(false);
   const cursorAuraRef = useRef<HTMLSpanElement>(null);
   const cursorFrameRef = useRef(0);
   const year = useMemo(() => new Date().getFullYear(), []);
-  const paidPrice = market === "TH" ? "฿299" : "$19.99";
 
-  useEffect(() => {
-    let cancelled = false;
-    fetch("/api/geo", { cache: "no-store" })
-      .then((response) => (response.ok ? response.json() : Promise.reject()))
-      .then((geo: { market?: Market }) => {
-        if (cancelled) return;
-        const nextMarket = geo.market === "TH" ? "TH" : "GLOBAL";
-        setMarket(nextMarket);
-        // Match the attributes api/geo.js sets server-side; dropping Secure
-        // here would downgrade the cookie the serverless function just wrote.
-        const secure = window.location.protocol === "https:" ? "; Secure" : "";
-        document.cookie = `doodee_market=${nextMarket}; Path=/; Max-Age=2592000; SameSite=Lax${secure}`;
-      })
-      .catch(() => undefined)
-      .finally(() => {
-        if (!cancelled) setMarketReady(true);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+  /**
+   * The prices, from `lib/productFacts`, which `productFacts.test.ts` holds to the plan table.
+   *
+   * What was here instead: `market === "TH" ? "฿299" : "$19.99"`, behind a `/api/geo` lookup and a
+   * `doodee_market` cookie whose only job in this file was choosing between those two strings.
+   * Both were fiction. No plan costs ฿299 — the number is the retired `clinic` tier, which is
+   * `self_serve=False` and cannot be bought from a web page at all — and there is no dollar price
+   * anywhere in this product, because `Order.currency` defaults to THB and nothing sets another.
+   * The cheapest thing a visitor can actually buy is Plus at ฿499 a month.
+   *
+   * The geolocation call went with them. A network request on first paint whose sole purpose was
+   * to pick which invented figure to show is not worth keeping once neither figure survives.
+   */
+  const freePrice = baht(PLAN_PRICE_BAHT.free);
+  const paidPrice = baht(PLAN_PRICE_BAHT.plus);
 
   useEffect(() => {
     const reducedMotion = window.matchMedia(
@@ -3170,6 +3294,10 @@ function LandingPage() {
         <div className="analysis-transition">
           <h2>{copy.analysisTitle}</h2>
           <p>{copy.analysisBody}</p>
+          {/* `analysis_engine._metric` stamps every value it emits `status: "experimental"`. That
+              is the product's own assessment of its own numbers, and the page that sells those
+              numbers is the wrong place for it to go unsaid. */}
+          <p className="analysis-transition__caveat">{copy.experimental}</p>
           <span>
             <MousePointer2 size={15} /> {copy.interactive}
           </span>
@@ -3260,7 +3388,7 @@ function LandingPage() {
           >
             <div className="price-copy">
               <h3>{copy.freeTitle}</h3>
-              <strong>{market === "TH" ? "฿0" : "$0"}</strong>
+              <strong>{freePrice}</strong>
               <p>{copy.freeBody}</p>
             </div>
             <ul>
@@ -3271,6 +3399,11 @@ function LandingPage() {
                 </li>
               ))}
             </ul>
+            {/* The two things the free tier does not do, on the card rather than behind the
+                signup. `simulation_previews_per_month` is 0 on this plan, so the bullet that used
+                to sit in the list above — "One preview direction" — promised a render the server
+                refuses. */}
+            <p className="price-note">{copy.freeNote}</p>
             <Button ghost href="/login">{copy.startFree}</Button>
           </article>
           <article
@@ -3281,7 +3414,7 @@ function LandingPage() {
             <span className="price-badge">{copy.membership}</span>
             <div className="price-copy">
               <h3>{copy.completeTitle}</h3>
-              <strong className={marketReady ? "" : "price-loading"}>
+              <strong>
                 {paidPrice}
                 <small>{locale === "th" ? "/เดือน" : "/month"}</small>
               </strong>
@@ -3295,9 +3428,20 @@ function LandingPage() {
                 </li>
               ))}
             </ul>
+            {/* Pro exists and is the unlimited tier. Naming it here rather than letting "Plus"
+                read as the top of the range, which is what "Complete plan" used to imply while
+                quoting a price no plan charges. */}
+            <p className="price-note">{copy.proNote}</p>
             <Button href="/login">{copy.startMonthly}</Button>
           </article>
         </div>
+        {/* How the money actually moves. There is no card form in this product — `PricingPanel`
+            opens a pending order settled by bank transfer and activated by hand — so a price with
+            a button beside it has to say so before the click. */}
+        <p className="pricing-payment-note">
+          <Banknote size={16} aria-hidden="true" />
+          <span>{copy.paymentNote}</span>
+        </p>
       </section>
 
       <ConsultationBridge locale={locale} />
@@ -3361,7 +3505,7 @@ function LandingPage() {
           <span>{copy.forClinics}</span>
           <h2>{copy.clinicCtaTitle}</h2>
           <p>{copy.clinicCtaBody}</p>
-          <Button href="#clinic-pilot">{copy.joinPilot}</Button>
+          <Button href={PARTNER_MAILTO}>{copy.joinPilot}</Button>
         </article>
       </section>
 

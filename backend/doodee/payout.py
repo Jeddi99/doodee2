@@ -77,6 +77,22 @@ def _fernet():
         raise PayoutError("payout_not_configured") from exc
 
 
+def configured():
+    """Whether an account can be stored at all on this deployment.
+
+    For the session/account payload, so the withdrawal form can say the feature is not set up
+    instead of collecting a bank account and answering 503 on submit. Deliberately built on
+    `_fernet()` rather than on a truthiness check of the setting: a malformed key is just as
+    unusable as a missing one, and two readers of the same secret that disagree about whether it
+    works is exactly the drift `_fernet` was written to prevent.
+    """
+    try:
+        _fernet()
+    except PayoutError:
+        return False
+    return True
+
+
 def encrypt_number(number):
     return _fernet().encrypt(str(number).encode())
 

@@ -499,6 +499,15 @@ body:has(.doodee-app),
   user-select: none;
 }
 
+/* Nothing is hidden behind this one. `unmeasurable` means no published reference measures the
+   pillar at all, so a blurred number would be promising a score that does not exist and no plan
+   can reveal — the card shows a plain em dash and says why underneath instead. */
+.pillar-card.is-locked strong.pillar-score--none {
+  filter: none;
+  opacity: .42;
+  user-select: none;
+}
+
 .pillar-card > span.pillar-unlock {
   width: max-content;
   max-width: 100%;
@@ -2315,20 +2324,20 @@ a {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* A neutral track, not a verdict.
+ *
+ * This was a red-amber-teal-blue-teal-amber-red gradient centred on 50%: the universal grammar of
+ * "the middle is good and the edges are bad". The value it graded is the distance from a `target`
+ * invented in LandingPage.tsx's `metricDefinitions` and present in no other file, so the colour was
+ * rendering an aesthetic judgement the product does not make and explicitly disclaims two sections
+ * further down the same page ("no Golden Ratio beauty score", "a reference population, not a beauty
+ * standard"). The marker still shows where a measurement falls inside its display range, which is
+ * a fact; the colour said it was a good or bad place to be, which is not. */
 .metric-range {
   position: relative;
   height: 5px;
   border-radius: var(--radius-pill);
-  background: linear-gradient(
-    90deg,
-    #e2b8b8,
-    #e7cb78 24%,
-    #5fc8c3 42%,
-    #087bff 50%,
-    #5fc8c3 58%,
-    #e7cb78 76%,
-    #e2b8b8
-  );
+  background: rgba(11, 14, 20, 0.09);
 }
 .metric-range i {
   position: absolute;
@@ -2340,6 +2349,25 @@ a {
   background: var(--color-accent-strong);
   box-shadow: 0 1px 5px rgba(30, 25, 67, 0.25);
   transform: translate(-50%, -50%);
+}
+/* What the sample panel is and what the bar is not. Sits under the rows because that is where a
+ * reader arrives having just formed the two wrong assumptions it corrects. */
+.metric-panel-note {
+  margin: 18px 0 0;
+  padding-top: 16px;
+  display: flex;
+  gap: 9px;
+  align-items: flex-start;
+  border-top: 1px solid rgba(11, 14, 20, 0.08);
+  color: #6b7787;
+  font-size: 0.6875rem;
+  line-height: 1.6;
+  text-wrap: pretty;
+}
+.metric-panel-note svg {
+  flex: none;
+  margin-top: 2px;
+  color: #8a95a4;
 }
 .metric-row strong {
   color: #38383f;
@@ -2849,6 +2877,18 @@ a {
   gap: clamp(60px, 9vw, 130px);
   align-items: center;
 }
+/* One column, because the mockup that filled the other one showed a product this codebase does not
+ * have. The two-column rule above stays for whenever a screenshot of the real thing exists. */
+.clinic-hardware--copy-only {
+  grid-template-columns: minmax(0, 720px);
+  justify-content: center;
+  text-align: center;
+}
+.clinic-hardware--copy-only .clinic-hardware__copy ul {
+  max-width: 460px;
+  margin-inline: auto;
+  text-align: left;
+}
 .clinic-hardware__visual {
   overflow: hidden;
   border-radius: 16px;
@@ -3048,6 +3088,34 @@ a {
 .price-plans li svg {
   width: 16px;
   color: var(--color-accent);
+}
+/* The limit on the free card and the Pro price on the paid one. Inside the card, not in a footnote
+ * under the section, because a plan's ceiling belongs beside its price. `grid-column` spans both
+ * columns of the card grid the same way `.price-plans .button` does. */
+.price-note {
+  grid-column: 1 / -1;
+  margin: 4px 0 0;
+  color: #6b7787;
+  font-size: 12px;
+  line-height: 1.55;
+}
+/* How the money actually moves, under the whole pricing block. */
+.pricing-payment-note {
+  margin: 22px 0 0;
+  display: flex;
+  gap: 9px;
+  align-items: flex-start;
+  justify-content: center;
+  color: #667588;
+  font-size: 0.8125rem;
+  line-height: 1.6;
+  text-align: left;
+  text-wrap: pretty;
+}
+.pricing-payment-note svg {
+  flex: none;
+  margin-top: 2px;
+  color: #8a95a4;
 }
 .price-plans .button {
   grid-column: 1 / -1;
@@ -3949,14 +4017,11 @@ footer {
   background: rgba(72, 91, 116, 0.26);
   animation-delay: 180ms !important;
 }
-.survey-result-chart__candidate-majority {
-  width: 82%;
-  background: linear-gradient(90deg, #087bff, #42a4ff);
-}
-.survey-result-chart__candidate-minority {
-  width: 18%;
-  background: #343a45;
-}
+/* REMOVED with the markup that used them: `.survey-result-chart__candidate-majority` (width: 82%)
+   and `__candidate-minority` (width: 18%). They drew a bar for a survey of how visitors answer
+   onboarding step 2, which nobody has ever run — see the note in OnboardingPage. The two rules
+   above and below this stay: they belong to step 1, whose 87/13 split is a published YouGov
+   figure the screen cites. */
 .survey-result-chart--minority .survey-result-chart__other {
   background: #343a45;
 }
@@ -4960,17 +5025,13 @@ footer {
 .metric-row.is-active {
   background: rgba(8, 123, 255, 0.075);
 }
+/* The later of the two `.metric-range` rules, and the one that actually won. Same gradient as the
+ * one above it in a cooler palette, and the same problem: a colour ramp peaking at the midpoint
+ * grades a measurement against a target invented in LandingPage.tsx, which is a beauty verdict this
+ * product does not make. Removing only the first rule changed nothing on screen — this is where the
+ * page was getting its colour from. */
 .metric-range {
-  background: linear-gradient(
-    90deg,
-    #dce7f6,
-    #8ec8ff 24%,
-    #45c8c0 42%,
-    #087bff 50%,
-    #45c8c0 58%,
-    #8ec8ff 76%,
-    #dce7f6
-  );
+  background: rgba(11, 14, 20, 0.09);
 }
 .metric-range i {
   background: var(--color-accent-strong);
@@ -6037,6 +6098,15 @@ body {
   font-size: 1.125rem;
   line-height: 1.68;
   text-wrap: pretty;
+}
+/* The "every measurement is experimental" line. Deliberately not styled as fine print: it is
+ * smaller than the lede and above the fold of the demo, where it is read before the numbers are. */
+.analysis-transition__caveat {
+  max-width: 620px;
+  margin: 0 auto 24px;
+  font-size: 0.875rem;
+  line-height: 1.6;
+  color: #667588;
 }
 .analysis-transition span {
   min-height: 38px;
@@ -8843,6 +8913,7 @@ footer {
 .capture-review__submit:disabled { opacity: 0.4; cursor: not-allowed; }
 .capture-review__submit:focus-visible { outline: 2px solid #4c6ef5; outline-offset: 3px; }
 .capture-review small { color: var(--capture-muted); font-size: 0.78rem; }
+.capture-review__note { max-width: 420px; line-height: 1.55; }
 
 /* ---- Thai ---------------------------------------------------------------------------- */
 
@@ -14193,6 +14264,27 @@ body[data-locale="th"] .eyebrow {
   color: #059669;
 }
 
+/* Sign-in worked, the referral code did not. Amber rather than red: nothing the reader has to
+   fix before continuing, and the button beside it is the way on. */
+.login-alert.is-warning {
+  background: rgba(217, 119, 6, 0.08);
+  border: 1px solid rgba(217, 119, 6, 0.22);
+  color: #b45309;
+  display: grid;
+  gap: 8px;
+  justify-items: start;
+}
+.login-alert__action {
+  padding: 6px 12px;
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
 /* SUBMIT BUTTON */
 
 /* PASSWORD MATCH BADGE */
@@ -15146,6 +15238,29 @@ body[data-locale="th"] .eyebrow {
 }
 .legal-dl dt { font-weight: 650; }
 .legal-dl dd { margin: 2px 0 0; color: var(--dd-muted, #5b6778); }
+/* The unfilled-placeholder notice. Loud on purpose: it is the only thing standing between a
+   customer and a bracketed token read as a filled-in legal identity, and it removes itself the
+   moment `legalCopy.ts` has no brackets left. */
+.legal-incomplete {
+  margin: 0 0 28px;
+  padding: 16px 18px;
+  border: 1px solid #c8442e;
+  border-left-width: 4px;
+  border-radius: 12px;
+  background: rgba(200, 68, 46, 0.06);
+  color: #7d2a1b;
+  max-width: 68ch;
+}
+.legal-incomplete strong { display: block; font-weight: 650; }
+.legal-incomplete p { margin: 6px 0 0; color: inherit; max-width: none; }
+.legal-incomplete__fields { display: flex; flex-wrap: wrap; gap: 6px; align-items: baseline; }
+.legal-incomplete code {
+  padding: 1px 6px;
+  border-radius: 6px;
+  background: rgba(200, 68, 46, 0.12);
+  font-size: 0.85em;
+}
+
 .legal-crosslink {
   margin: 48px 0 0;
   padding-top: 20px;

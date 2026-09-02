@@ -398,6 +398,23 @@ class EnvFileTests(SimpleTestCase):
             load_env("/nonexistent/.env")
 
 
+def _budgeted():
+    """The AI-budget reservation stubbed out, for the tests that are about masks, not money.
+
+    `_refine_views` will not put a call on the wire without a ledger row holding budget for it —
+    an unreserved paid call is the failure that rule exists to prevent, and it is proved in
+    `tests.SimulationPolishBudgetTest`, which has a database to hold a row in. These are
+    `SimpleTestCase`s about mask geometry and call grouping, so the ledger is stubbed here and
+    the geometry is what gets asserted.
+    """
+    from contextlib import ExitStack
+
+    stack = ExitStack()
+    stack.enter_context(patch("doodee.flux_refine.reserve_budget", return_value="ledger"))
+    stack.enter_context(patch("doodee.flux_refine.settle_budget"))
+    return stack
+
+
 class RefinePlanTests(SimpleTestCase):
     def test_every_plan_names_a_known_kind_and_a_catalogued_prompt(self):
         from .flux_refine import PROMPTS
@@ -432,12 +449,14 @@ class RefinePlanTests(SimpleTestCase):
         specs = [BY_SOURCE_REF["6.1"]]
 
         with patch("doodee.flux_refine.available", return_value=False):
-            untouched = _refine_views(image, points, specs, [3], "front", 1.)
+            untouched = _refine_views(image, points, specs, [3], "front", 1.,
+                                      user=object(), budget_key="pipeline-test")
         self.assertTrue(np.array_equal(untouched, image), "no key must mean no change")
 
-        with patch("doodee.flux_refine.available", return_value=True), \
+        with _budgeted(), patch("doodee.flux_refine.available", return_value=True), \
                 patch("doodee.flux_refine.refine", side_effect=RuntimeError("provider is down")):
-            survived = _refine_views(image, points, specs, [3], "front", 1.)
+            survived = _refine_views(image, points, specs, [3], "front", 1.,
+                                     user=object(), budget_key="pipeline-test")
         self.assertTrue(np.array_equal(survived, image), "a raising provider must not propagate")
 
     def test_a_working_provider_is_handed_the_drawn_region_and_nothing_else(self):
@@ -452,9 +471,10 @@ class RefinePlanTests(SimpleTestCase):
             seen.update(mask=mask, kind=kind, prompt_key=prompt_key)
             return np.full_like(img, 200)
 
-        with patch("doodee.flux_refine.available", return_value=True), \
+        with _budgeted(), patch("doodee.flux_refine.available", return_value=True), \
                 patch("doodee.flux_refine.refine", side_effect=record):
-            out = _refine_views(image, points, [BY_SOURCE_REF["6.1"]], [3], "front", 1.)
+            out = _refine_views(image, points, [BY_SOURCE_REF["6.1"]], [3], "front", 1.,
+                                user=object(), budget_key="pipeline-test")
         self.assertFalse(np.array_equal(out, image))
         self.assertEqual((seen["kind"], seen["prompt_key"]), REFINE_PLANS["6.1"])
         # Read off the procedure rather than named here: what must hold is that the paid edit is
@@ -519,9 +539,10 @@ class RefinePlanTests(SimpleTestCase):
             calls.append((kind, prompt_key, mask.copy()))
             return img
 
-        with patch("doodee.flux_refine.available", return_value=True), \
+        with _budgeted(), patch("doodee.flux_refine.available", return_value=True), \
                 patch("doodee.flux_refine.refine", side_effect=record):
-            _refine_views(image, points, specs, [3, 3, 3], "front", 1.)
+            _refine_views(image, points, specs, [3, 3, 3], "front", 1.,
+                          user=object(), budget_key="pipeline-test")
 
         self.assertEqual(len(calls), 1, "three drawn rows must collapse to one polish call")
         kind, prompt_key, mask = calls[0]
@@ -547,18 +568,20 @@ class RefinePlanTests(SimpleTestCase):
             return img
 
         # One row, one subject: the eyelid wording beats the generic one.
-        with patch("doodee.flux_refine.available", return_value=True), \
+        with _budgeted(), patch("doodee.flux_refine.available", return_value=True), \
                 patch("doodee.flux_refine.refine", side_effect=record):
-            _refine_views(image, points, [BY_SOURCE_REF["6.1"]], [3], "front", 1.)
+            _refine_views(image, points, [BY_SOURCE_REF["6.1"]], [3], "front", 1.,
+                          user=object(), budget_key="pipeline-test")
         self.assertEqual([(kind, key) for kind, key, _ in calls], [("polish", "eyelid_fold")])
 
         # 10.2 builds a hairline the deterministic pass drew nothing to keep, so it fills first --
         # and the polish that follows has to cover what the fill wrote, or the built hairline is
         # the one region in the frame that never got matched to the photograph.
         calls.clear()
-        with patch("doodee.flux_refine.available", return_value=True), \
+        with _budgeted(), patch("doodee.flux_refine.available", return_value=True), \
                 patch("doodee.flux_refine.refine", side_effect=record):
-            _refine_views(image, points, [BY_SOURCE_REF["10.2"]], [3], "front", 1.)
+            _refine_views(image, points, [BY_SOURCE_REF["10.2"]], [3], "front", 1.,
+                          user=object(), budget_key="pipeline-test")
         self.assertEqual([(kind, key) for kind, key, _ in calls],
                          [("fill", "hairline"), ("polish", "hairline")])
         filled, polished = (mask > 0 for *_, mask in calls)

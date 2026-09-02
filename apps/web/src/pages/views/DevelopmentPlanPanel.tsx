@@ -209,17 +209,34 @@ export default function DevelopmentPlanPanel() {
                 </dl>
               </header>
 
-              <h3>{copy.tryThis}</h3>
-              <ul className="plan-item-actions">
-                {item.actions.map((action) => (
-                  <li key={action.action}>
-                    <strong>{action.action}</strong>
-                    <span>{action.why}</span>
-                  </li>
-                ))}
-              </ul>
+              {/* Heading and list together, or neither. `development_plan.build` reads
+                  `CATEGORY_ACTIONS.get(category, [])`, so a measurement whose category is not one
+                  of the five with a written action list arrives with `actions: []` — and the
+                  heading "ลองทำ" over an empty list reads as advice that failed to load. */}
+              {item.actions?.length > 0 && (
+                <>
+                  <h3>{copy.tryThis}</h3>
+                  <ul className="plan-item-actions">
+                    {item.actions.map((action) => (
+                      <li key={action.action}>
+                        <strong>{action.action}</strong>
+                        <span>{action.why}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </>
+              )}
 
-              {item.related_procedures.length > 0 && (
+              {/* Empty for every measurement at the moment, and correctly so:
+                  `procedure_catalog.MEASUREMENT_PROCEDURES_REVIEWED_BY_CLINICIAN` is False, so
+                  `procedures_for_measurement` answers with nothing and the gate is on the server
+                  where a client cannot route around it. The guard was already here, which is why
+                  the section vanishes cleanly rather than leaving a bare "หัตถการที่เกี่ยวข้อง"
+                  heading — but `?.` is added because an absent key and an empty list must not
+                  differ in outcome. Nothing else on the card implies a procedure list is coming:
+                  the plan is complete without one, since every action above is something the
+                  reader does themselves. */}
+              {item.related_procedures?.length > 0 && (
                 <div className="plan-item-procedures">
                   <h3>{copy.related}</h3>
                   <ul>

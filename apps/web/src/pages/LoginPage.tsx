@@ -53,6 +53,9 @@ export default function LoginPage() {
   const [referralError, setReferralError] = useState("");
   const [googleBusy, setGoogleBusy] = useState(false);
   const [signInError, setSignInError] = useState("");
+  // Set when sign-in worked but the code did not. Sign-in is not rolled back for it — the account
+  // exists and the user is in — so this is a notice with a way onward, not an error state.
+  const [referralFailed, setReferralFailed] = useState("");
 
   const busy = googleBusy;
 
@@ -89,7 +92,15 @@ export default function LoginPage() {
       try {
         await redeemCode(code);
       } catch (error) {
+        // Said out loud rather than logged to a console nobody has open. The form above accepts
+        // any eight characters — it cannot check a code before there is an account to attach it
+        // to — so a typo used to produce "Referral code applied.", a silent 400, and a user who
+        // believed their friend had been credited. The reader is signed in either way, so this
+        // reports the one thing that did not happen and offers the way on.
         console.warn("referral redeem failed", errorMessage(error));
+        setReferralFailed(normalizeCode(code));
+        setGoogleBusy(false);
+        return;
       }
     }
     navigate("/onboarding");
@@ -227,6 +238,15 @@ export default function LoginPage() {
           {signInError && (
             <div className="login-alert is-error" role="alert">
               <p>{signInError}</p>
+            </div>
+          )}
+
+          {referralFailed && (
+            <div className="login-alert is-warning" role="alert">
+              <p>{t.referralRejected.replace("%s", referralFailed)}</p>
+              <button type="button" className="login-alert__action" onClick={() => navigate("/onboarding")}>
+                {t.referralContinue}
+              </button>
             </div>
           )}
 
