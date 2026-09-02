@@ -1015,7 +1015,7 @@ function UnlockModal({
         {stage === "unlocking" ? (
           <div className="unlock-loading" aria-live="polite">
             <div className="unlock-loading__visual" aria-hidden="true">
-              <img src="/assets/doodee-analysis-glass-v1.png" alt="" />
+              <img src="/assets/doodee-analysis-glass-v1.webp" alt="" />
               <span className="unlock-loading__scan" />
               <span className="unlock-loading__landmarks" />
               <div className="unlock-loading__pill">
@@ -1487,7 +1487,7 @@ function ProfileMenu({
               type="button"
               onClick={() => {
                 setOpen(false);
-                window.open("mailto:support@doodee.ai", "_blank");
+                window.open("mailto:hello@doodee.app", "_blank");
               }}
             >
               <CircleHelp size={15} />

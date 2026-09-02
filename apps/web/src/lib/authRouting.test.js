@@ -23,6 +23,15 @@ test('the login route is reachable signed out and does not trap signed-in users'
   assert.equal(authRedirect(true, true, 'login'), null);
 });
 
+test('terms and privacy render signed out and do not move a signed-in user', () => {
+  // LoginPage's consent line links to both. If either bounced a signed-out visitor to landing,
+  // the notice would name documents nobody could read before agreeing to them.
+  assert.equal(authRedirect(true, false, 'terms'), null);
+  assert.equal(authRedirect(true, false, 'privacy'), null);
+  assert.equal(authRedirect(true, true, 'terms'), null);
+  assert.equal(authRedirect(true, true, 'privacy'), null);
+});
+
 test('a signed-in user with no scan is left on landing, not bounced into the dashboard', () => {
   // The dashboard sends them back here when they have nothing to show. If this still answered
   // 'home' the two redirects would loop against each other.

@@ -1,6 +1,10 @@
 // `login` is public by definition; `onboarding` stays public so a user who
 // signs in can finish answering before their first scan is created.
-const PUBLIC_ROUTES = new Set(['landing', 'login', 'onboarding']);
+//
+// `terms` and `privacy` are public because the login screen tells every visitor that continuing
+// means accepting them, and links to both from there. A consent notice that points at a document
+// you must first consent in order to read is not notice — so these two must render signed out.
+const PUBLIC_ROUTES = new Set(['landing', 'login', 'onboarding', 'terms', 'privacy']);
 
 // `hasScan` is a tri-state on purpose: true, false, or null while the scan list has not
 // answered yet. It has to be, because the dashboard sends a signed-in user with no scan back

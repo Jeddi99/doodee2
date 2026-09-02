@@ -289,16 +289,22 @@ export default function LoginPage() {
 
           {/* The sign-up tab carried a terms checkbox. Without it the consent
               still has to be stated, so it becomes the standard notice — copy
-              that already existed in both locales and was never rendered. */}
+              that already existed in both locales and was never rendered.
+
+              These used to be `href="#terms"` and `href="#privacy"`, anchors
+              that existed on no page in the app: the notice named two documents
+              and then linked at nothing. They now point at /terms and /privacy,
+              which are public routes for exactly this reason. Opened in a new
+              tab so reading them does not discard a referral code typed above. */}
           <p className="login-legal">
             {t.legalLead}{" "}
-            <a href="#terms" target="_blank" rel="noreferrer">
+            <Link to="/terms" target="_blank" rel="noreferrer">
               {t.terms}
-            </a>{" "}
+            </Link>{" "}
             {t.legalMid}{" "}
-            <a href="#privacy" target="_blank" rel="noreferrer">
+            <Link to="/privacy" target="_blank" rel="noreferrer">
               {t.privacy}
-            </a>
+            </Link>
           </p>
         </div>
       </div>

@@ -23,12 +23,19 @@ const OnboardingPage = lazy(() => import('./pages/OnboardingPage'));
 // Own chunk: it pulls in the MediaPipe worker and the wasm loader.
 const ScanPage = lazy(() => import('./pages/ScanPage'));
 const SkinScanPage = lazy(() => import('./pages/SkinScanPage'));
+// Terms and Privacy. One component, the route picks the document — the same shape DashboardPage
+// uses for its views. Public, because LoginPage links to both from the consent line above the
+// sign-in button, and a consent notice pointing at a page you must sign in to read is not notice.
+const LegalPage = lazy(() => import('./pages/LegalPage'));
 
 function WorkspaceFallback({ locale }) {
   return <div className="workspace-loading" role="status">{locale === 'th' ? 'กำลังเปิดหน้า…' : 'Opening…'}</div>;
 }
 
-const ROUTE_PATHS = { landing: '/', login: '/login', onboarding: '/onboarding', home: '/home', analysis: '/analysis', plan: '/plan', 'doodee-gpt': '/doodee-gpt', 'face-scan': '/scan', 'skin-scan': '/skin-scan', simulation: '/simulation', skin: '/skin', tryon: '/try-on', history: '/history', pricing: '/pricing', settings: '/settings', scorecard: '/score-card', assessment: '/assessment', referral: '/referral', profile: '/profile' };
+const ROUTE_PATHS = { landing: '/', login: '/login', onboarding: '/onboarding', terms: '/terms', privacy: '/privacy', home: '/home', analysis: '/analysis', plan: '/plan', 'doodee-gpt': '/doodee-gpt', 'face-scan': '/scan', 'skin-scan': '/skin-scan', simulation: '/simulation', skin: '/skin', tryon: '/try-on', history: '/history', pricing: '/pricing', settings: '/settings', scorecard: '/score-card', assessment: '/assessment', referral: '/referral', profile: '/profile' };
+
+// Which document `/terms` and `/privacy` render, the same way DASHBOARD_VIEWS maps a path to a view.
+const LEGAL_DOCUMENTS = { terms: 'terms', privacy: 'privacy' };
 
 // Every signed-in route lives inside DashboardPage's shell; the path picks the view.
 const DASHBOARD_VIEWS = {
@@ -174,6 +181,12 @@ export default function App() {
       {currentRoute === 'login' && (
         <Suspense fallback={<WorkspaceFallback locale={locale} />}>
           <LoginPage />
+        </Suspense>
+      )}
+
+      {LEGAL_DOCUMENTS[currentRoute] && (
+        <Suspense fallback={<WorkspaceFallback locale={locale} />}>
+          <LegalPage kind={LEGAL_DOCUMENTS[currentRoute]} />
         </Suspense>
       )}
 

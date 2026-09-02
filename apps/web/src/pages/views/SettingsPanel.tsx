@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Droplets, Globe2, LogOut, MailCheck, Shield, Ticket, Trash2 } from "lucide-react";
-import { useNavigate } from "react-router-dom";
+import { Droplets, FileText, Globe2, LogOut, MailCheck, Shield, Ticket, Trash2 } from "lucide-react";
+import { Link, useNavigate } from "react-router-dom";
 import { GlassCard } from "../DashboardPage";
 import { deleteAccount, getSession, redeemCode, setSkinVisionConsent } from "../../lib/api";
 import { errorMessage } from "../../lib/apiError";
@@ -18,6 +18,11 @@ const COPY = {
     retention: "การเก็บรักษาข้อมูล",
     retentionBody:
       "รูปต้นฉบับของผู้ใหญ่จะถูกลบภายใน 30 วัน ของผู้เยาว์ภายใน 24 ชั่วโมง คุณลบเองก่อนกำหนดได้ตลอดเวลาจากหน้าประวัติการสแกน",
+    legal: "เอกสารข้อกำหนดและความเป็นส่วนตัว",
+    legalBody:
+      "นโยบายความเป็นส่วนตัวบอกครบว่าเราเก็บอะไร นานแค่ไหน ใครได้รับบ้าง และคุณใช้สิทธิตาม PDPA ได้อย่างไร",
+    legalTerms: "ข้อกำหนดการใช้งาน",
+    legalPrivacy: "นโยบายความเป็นส่วนตัว",
     skinVision: "คำอธิบายผิวจาก AI",
     // The one control in the product that governs a photograph of the user's face leaving this
     // system. It names what is sent, who receives it, what they do not do with it, and what
@@ -65,6 +70,11 @@ const COPY = {
     retention: "Data retention",
     retentionBody:
       "Adult source images are deleted within 30 days and minors’ within 24 hours. You can delete sooner from History at any time.",
+    legal: "Terms and privacy",
+    legalBody:
+      "The Privacy Policy sets out in full what we collect, for how long, who else receives it, and how to exercise your rights under the PDPA.",
+    legalTerms: "Terms of Service",
+    legalPrivacy: "Privacy Policy",
     skinVision: "AI skin description",
     skinVisionBody: (provider: string) =>
       `When this is on, the front photo from your scan is sent to ${provider}, which reads it and ` +
@@ -188,6 +198,19 @@ export default function SettingsPanel() {
             <Shield size={18} /> {c.retention}
           </h2>
           <p>{c.retentionBody}</p>
+        </GlassCard>
+
+        {/* Next to retention, because the card above states two numbers and the policy is where
+            the rest of the answer lives. Both routes are public, so these work from anywhere. */}
+        <GlassCard className="settings-card">
+          <h2>
+            <FileText size={18} /> {c.legal}
+          </h2>
+          <p>{c.legalBody}</p>
+          <nav className="settings-legal">
+            <Link to="/privacy">{c.legalPrivacy}</Link>
+            <Link to="/terms">{c.legalTerms}</Link>
+          </nav>
         </GlassCard>
 
         {/* Beside retention on purpose — both cards answer "what happens to my face". Hidden

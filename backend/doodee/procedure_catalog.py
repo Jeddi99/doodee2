@@ -608,13 +608,39 @@ if any(direction not in {"raise", "lower", "either"}
        for refs in MEASUREMENT_PROCEDURES.values() for _, direction in refs):
     raise RuntimeError("unknown direction in MEASUREMENT_PROCEDURES")
 
+#: Whether the table above is allowed off the server. False, and false on purpose.
+#
+# The table is the one place in this codebase that says a named surgical or injectable procedure
+# relates to a number a specific person was scored on, and no clinician has ever read it. That was
+# survivable while nothing was sold. It is not survivable now: on a product a customer has paid
+# for, a procedure printed beside their own measurement reads as advice no matter which caption
+# sits under it, and the caption is the only thing currently standing between the two. So the rows
+# stay on the server until a doctor has reviewed them and signed off.
+#
+# This is a product decision, not a bug and not a broken import. The table itself is intact, both
+# consistency checks above still run against it every time this module loads, and the tests that
+# describe its behaviour are skipped rather than deleted so they come straight back.
+#
+# To turn it back on after review: set this to True. Nothing else. `procedures_for_measurement`
+# is the only reader, so the assessment findings and the development plan go dark together and
+# come back together, and cannot end up disagreeing about whether the mapping is reviewed.
+MEASUREMENT_PROCEDURES_REVIEWED_BY_CLINICIAN = False
+
 
 def procedures_for_measurement(key: str, direction: str | None = None) -> tuple[ProcedureSpec, ...]:
     """The procedures that move one measured proportion, optionally only one way.
 
     `direction` is the way the measurement needs to go — "lower" for a value above the reference
     that should come down. A procedure marked "either" is offered whichever way is asked for.
+
+    Answers with nothing at all while `MEASUREMENT_PROCEDURES_REVIEWED_BY_CLINICIAN` is False. The
+    gate lives here rather than in the two callers, and here rather than in either client, because
+    a client-side hide still ships the mapping in the JSON where anyone can read it — and because
+    one gate cannot disagree with itself the way two would. Callers already handle an empty answer:
+    it is the same answer the seven unmapped measurements have always produced.
     """
+    if not MEASUREMENT_PROCEDURES_REVIEWED_BY_CLINICIAN:
+        return ()
     rows = MEASUREMENT_PROCEDURES.get(key, ())
     return tuple(BY_SOURCE_REF[ref] for ref, moves in rows
                  if direction is None or moves in ("either", direction))

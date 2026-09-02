@@ -5,6 +5,7 @@ import hmac
 import json
 import os
 from pathlib import Path
+from unittest import skipUnless
 from unittest.mock import MagicMock, patch
 
 import cv2
@@ -42,6 +43,7 @@ from .billing import (
 )
 from . import consent, entitlement, payout, referral
 from .development_plan import build as build_development_plan
+from .procedure_catalog import MEASUREMENT_PROCEDURES_REVIEWED_BY_CLINICIAN
 from .notifications import notify
 from .tasks import send_renewal_reminders
 from .views import COUPON_FAILURE_LIMIT, REFERRAL_CLAIM_FAILURE_LIMIT
@@ -559,6 +561,11 @@ class FindingsTest(TestCase):
         self.assertEqual(result["unnamed"], ["not_a_real_key"])
         self.assertEqual(result["improvements"], [])
 
+    # Kept, not deleted. Nothing is actionable while the clinical mapping is withheld, so this
+    # ordering has nothing to order by; it becomes true again the moment a clinician signs the
+    # table off and `MEASUREMENT_PROCEDURES_REVIEWED_BY_CLINICIAN` goes back to True.
+    @skipUnless(MEASUREMENT_PROCEDURES_REVIEWED_BY_CLINICIAN,
+                "the measurement-to-procedure mapping is withheld pending clinical review")
     def test_improvements_lead_with_what_can_be_acted_on_not_with_the_worst_number(self):
         """Sorting on distance alone opened the list on a dead end — the worst news and nothing
         to do about it — which reads as a verdict rather than as information. A finding with no
@@ -580,6 +587,8 @@ class FindingsTest(TestCase):
         self.assertEqual([item["key"] for item in result["improvements"]],
                          ["nasofrontal_angle", "nasolabial_angle"])
 
+    @skipUnless(MEASUREMENT_PROCEDURES_REVIEWED_BY_CLINICIAN,
+                "the measurement-to-procedure mapping is withheld pending clinical review")
     def test_a_finding_offers_only_procedures_that_move_it_the_way_it_needs_to_go(self):
         """Upstream's `_procedures_by_id` returns `{}`, which silently told every finding that
         nothing could be done about it. Wired to the clinical mapping here — and direction-aware,
@@ -803,6 +812,50 @@ class ScanAssessmentEndpointTest(TestCase):
         self.assertIsNone(distribution["percentile"])
         self.assertEqual(distribution["drawn_sample_size"], 1)
         self.assertTrue(distribution["includes_you"])
+
+    def test_the_unreviewed_clinical_mapping_never_reaches_a_paying_customer(self):
+        """No clinician has read `MEASUREMENT_PROCEDURES`, and this is a product people pay for.
+
+        The withholding has to happen here, on the server, not on the screen: a client that
+        receives every procedure name and chooses not to paint it has withheld nothing, and the
+        payload is one devtools panel away from being read. So the assertion is against the
+        serialized body — the names must not be in the JSON at all, in either language.
+
+        The other half matters just as much. Removing the rows must leave a page, not a hole: the
+        findings still arrive, still carry their verdict prose, and `procedures` is an empty list
+        rather than a missing key, which is the shape both clients already close over cleanly.
+        """
+        from .procedure_catalog import BY_SOURCE_REF, MEASUREMENT_PROCEDURES
+
+        self.entitle()
+        response = self.client.get(self.url())
+        self.assertEqual(response.status_code, 200)
+        body = json.dumps(response.data, ensure_ascii=False, default=str)
+
+        withheld = [BY_SOURCE_REF[ref] for refs in MEASUREMENT_PROCEDURES.values() for ref, _ in refs]
+        self.assertTrue(withheld, "the table itself stays in the module, reviewable")
+        for spec in withheld:
+            self.assertNotIn(spec.name_th, body, f"{spec.source_ref} reached the client in Thai")
+            self.assertNotIn(spec.public()["name_en"], body,
+                             f"{spec.source_ref} reached the client in English")
+
+        findings = response.data["strengths"] + response.data["improvements"]
+        self.assertEqual(len(findings), len(self.SCORES["metrics"]), "every metric still reported")
+        for finding in findings:
+            self.assertEqual(finding["procedures"], [], f"{finding['key']} still names a procedure")
+            self.assertFalse(finding["actionable"])
+            # Everything the screen actually renders is untouched. A finding whose verdict or name
+            # came back empty would be the failure this change is meant to avoid.
+            for field in ("key", "name_th", "name_en", "verdict_th", "verdict_en",
+                          "severity", "direction", "category"):
+                self.assertTrue(finding[field], f"{finding['key']} lost {field}")
+
+        self.assertEqual(response.data["overall_score"], 74)
+        self.assertEqual(len(response.data["categories"]), 4)
+        self.assertEqual(len(response.data["views"]), 2)
+        self.assertEqual(response.data["coverage"]["scored_metrics"], 5)
+        self.assertIn("percentile", response.data["distribution"])
+        self.assertEqual(response.data["unnamed"], [])
 
 
 class StoredViewUrlsTest(TestCase):
@@ -4381,6 +4434,8 @@ class DevelopmentPlanTest(TestCase):
         ]
         self.assertEqual(len(self.build(metrics)["items"]), 5)
 
+    @skipUnless(MEASUREMENT_PROCEDURES_REVIEWED_BY_CLINICIAN,
+                "the measurement-to-procedure mapping is withheld pending clinical review")
     def test_procedures_named_are_the_ones_pointing_back_toward_the_reference(self):
         """Getting the direction backwards would be worse than naming nothing at all."""
         from .procedure_catalog import resolve_procedure
@@ -4431,6 +4486,21 @@ class DevelopmentPlanTest(TestCase):
     def test_an_unscored_scan_has_no_plan_at_all(self):
         self.assertIsNone(build_development_plan({"reference_scores": {"status": "minor_not_scored"}}))
         self.assertIsNone(build_development_plan(None))
+
+    def test_the_plan_names_no_procedure_while_the_clinical_mapping_is_unreviewed(self):
+        """The plan is the second door onto the same unreviewed table, so it closes with the first.
+
+        `alar_width` is the case that would leak: it has three procedures behind it in the
+        mapping, and this is a paid screen. What is left has to still be a plan — the row keeps
+        its measurement, its numbers and its reversible self-care actions, which is the part of
+        this page that was never a clinical claim.
+        """
+        item = self.build([self.metric("alar_width", "nose", 2.0)])["items"][0]
+        self.assertEqual(item["related_procedures"], [], "and empty, not missing")
+        self.assertEqual(item["key"], "alar_width")
+        self.assertTrue(item["label"])
+        self.assertTrue(item["direction"])
+        self.assertTrue(item["actions"], "the plan still has something in it")
 
 
 class DevelopmentPlanApiTest(TestCase):
@@ -8452,3 +8522,35 @@ class UploadCapturePathTest(TestCase):
         methods = {row["method"] for row in capture_method_rows()}
         self.assertIn("อัปโหลดรูป", methods)
         self.assertNotIn("ไม่ระบุ", methods, "an upload must not fall through to the unknown bucket")
+
+
+class HealthEndpointTest(SimpleTestCase):
+    """`/healthz` is the one route that has to answer without a credential.
+
+    docs/DEPLOY.md used to verify a deployment by expecting 403 from `/api/v1/session/`, which
+    made the good answer indistinguishable from several bad ones — an expired Firebase service
+    account, a broken authentication class, and a DRF permission misconfiguration all produce a
+    403 from that URL too, and it touches the database on the way. This exists so the runbook can
+    assert 200 and mean it.
+
+    `SimpleTestCase`, not `TestCase`, is doing work here: it refuses database access outright, so
+    the "no query" part of the contract is enforced by the test rather than described by a
+    comment. If someone adds a `SELECT 1` to the view, this fails with "Database queries to
+    'default' are not allowed" instead of passing quietly and turning a database blip into a
+    restart loop in production.
+    """
+
+    def test_the_liveness_endpoint_answers_200_without_authentication(self):
+        response = self.client.get("/healthz")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), {"status": "ok"})
+
+    def test_it_answers_the_same_when_a_credential_is_offered_and_is_rubbish(self):
+        """Nothing about the route may depend on a token, including rejecting a bad one.
+
+        The probe in compose.prod.yaml sends no Authorization header at all, but a client that
+        keeps a stale one on every request — which is what a browser with an expired session does
+        — must not be able to turn this endpoint into a 401 or 403.
+        """
+        response = self.client.get("/healthz", HTTP_AUTHORIZATION="Bearer not-a-real-token")
+        self.assertEqual(response.status_code, 200)
