@@ -468,7 +468,7 @@ export default function OnboardingPage() {
                     onClick={() => setCandidate("a")}
                   >
                     <span className="candidate-option__image">
-                      <img src="/assets/candidate-right-glasses.png" alt={c.candidateAlt("A")} />
+                      <img src="/assets/candidate-right-glasses.webp" alt={c.candidateAlt("A")} />
                       <span className="candidate-option__check"><Check size={16} /></span>
                     </span>
                     <span className="candidate-option__copy">
@@ -485,7 +485,7 @@ export default function OnboardingPage() {
                     onClick={() => setCandidate("b")}
                   >
                     <span className="candidate-option__image">
-                      <img src="/assets/candidate-left.png" alt={c.candidateAlt("B")} />
+                      <img src="/assets/candidate-left.webp" alt={c.candidateAlt("B")} />
                       <span className="candidate-option__check"><Check size={16} /></span>
                     </span>
                     <span className="candidate-option__copy">

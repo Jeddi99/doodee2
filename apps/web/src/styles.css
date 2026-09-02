@@ -6898,7 +6898,7 @@ body {
 }
 .treatment-anatomy__photo--before {
   left: 0;
-  background-image: url("/assets/treatment-preview-face.png");
+  background-image: url("/assets/treatment-preview-face.webp");
 }
 .treatment-anatomy__photo--after {
   right: 0;
@@ -8604,7 +8604,7 @@ footer {
   aspect-ratio: 0.86;
   border: 1px solid rgba(9, 11, 16, 0.1);
   border-radius: 14px;
-  background-image: url("/assets/scan/capture-angles-reference.png");
+  background-image: url("/assets/scan/capture-angles-reference.webp");
   background-size: 300% 200%;
   background-repeat: no-repeat;
   background-color: #eef0f3;
@@ -15063,3 +15063,124 @@ body[data-locale="th"] .eyebrow {
 .pricing-transfer dt { font-size: 0.68rem; font-weight: 700; opacity: 0.7; }
 .pricing-transfer dd { margin: 0; font-size: 0.8rem; }
 .pricing-transfer dd strong { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: 0.02em; }
+
+/* --------------------------------------------------------------------- /terms and /privacy
+   Two long prose documents on their own public routes. Deliberately plain: the whole job of
+   this page is to be read, and the glass cards and gradients the rest of the product uses
+   fight a 4,000-word document rather than help it. Measure is capped near 68 characters, which
+   is what the line length wants to be for continuous Thai and English text alike. */
+.legal-page {
+  min-height: 100vh;
+  background: var(--dd-canvas, #fff);
+  color: var(--dd-text, #111116);
+  font-family: var(--dd-font, inherit);
+}
+.legal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+  max-width: 860px;
+  margin: 0 auto;
+  padding: 24px 24px 8px;
+}
+.legal-header__actions {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+.legal-back {
+  color: var(--dd-muted, #5b6778);
+  font-size: 0.86rem;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.legal-body {
+  max-width: 860px;
+  margin: 0 auto;
+  padding: 16px 24px 96px;
+  line-height: 1.75;
+}
+.legal-body h1 {
+  margin: 16px 0 8px;
+  font-size: clamp(1.7rem, 4vw, 2.3rem);
+  letter-spacing: -0.01em;
+}
+.legal-effective {
+  margin: 0 0 20px;
+  color: var(--dd-muted, #5b6778);
+  font-size: 0.82rem;
+}
+.legal-subtitle {
+  margin: 0 0 40px;
+  padding: 16px 18px;
+  border-left: 3px solid var(--dd-blue, #087bff);
+  background: var(--dd-blue-soft, #e7f2ff);
+  border-radius: 0 var(--dd-radius-control, 8px) var(--dd-radius-control, 8px) 0;
+  font-size: 0.98rem;
+}
+.legal-body section { margin: 0 0 36px; }
+.legal-body h2 {
+  margin: 0 0 12px;
+  font-size: 1.12rem;
+  line-height: 1.45;
+  letter-spacing: -0.005em;
+}
+.legal-body p { margin: 0 0 14px; max-width: 68ch; }
+.legal-body ul {
+  margin: 0 0 16px;
+  padding-left: 22px;
+  max-width: 68ch;
+}
+.legal-body li { margin: 0 0 8px; }
+/* Term above description rather than beside it: several of these terms are a full clause long
+   in Thai, and a two-column definition list would set them one word per line on a phone. */
+.legal-dl { margin: 0 0 18px; max-width: 68ch; }
+.legal-dl > div {
+  padding: 12px 0;
+  border-top: 1px solid var(--dd-line, rgba(11, 14, 20, 0.1));
+}
+.legal-dl > div:last-child {
+  border-bottom: 1px solid var(--dd-line, rgba(11, 14, 20, 0.1));
+}
+.legal-dl dt { font-weight: 650; }
+.legal-dl dd { margin: 2px 0 0; color: var(--dd-muted, #5b6778); }
+.legal-crosslink {
+  margin: 48px 0 0;
+  padding-top: 20px;
+  border-top: 1px solid var(--dd-line, rgba(11, 14, 20, 0.1));
+}
+.legal-crosslink a {
+  color: var(--dd-blue-strong, #0064e8);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.legal-page a:focus-visible,
+.legal-page button:focus-visible {
+  outline: 3px solid var(--dd-blue, #087bff);
+  outline-offset: 3px;
+}
+@media (max-width: 640px) {
+  .legal-header { padding: 16px 18px 4px; }
+  .legal-body { padding: 8px 18px 72px; }
+}
+
+/* Terms and Privacy in the landing footer and in Settings. */
+.footer-legal {
+  display: flex;
+  gap: 18px;
+  flex-wrap: wrap;
+}
+.settings-legal {
+  display: flex;
+  gap: 18px;
+  flex-wrap: wrap;
+  margin-top: 4px;
+}
+.settings-legal a {
+  color: var(--dd-blue-strong, #0064e8);
+  font-size: 0.86rem;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}

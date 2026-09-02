@@ -240,7 +240,7 @@ function TreatmentAnatomy({ id }: { id: TreatmentId }) {
         <span
           className="treatment-anatomy__photo treatment-anatomy__photo--after"
           style={{
-            backgroundImage: `url(/assets/treatments/${id}${treatmentAssetVersion[id] ?? ""}.png)`,
+            backgroundImage: `url(/assets/treatments/${id}${treatmentAssetVersion[id] ?? ""}.webp)`,
           }}
         />
       </span>
@@ -854,9 +854,9 @@ function TreatmentCanvas({ treatmentId }: { treatmentId: TreatmentId }) {
       });
 
     Promise.all([
-      loadImage("/assets/treatment-preview-face.png"),
+      loadImage("/assets/treatment-preview-face.webp"),
       loadImage(
-        `/assets/treatments/${treatmentId}${treatmentAssetVersion[treatmentId] ?? ""}.png`,
+        `/assets/treatments/${treatmentId}${treatmentAssetVersion[treatmentId] ?? ""}.webp`,
       ),
     ])
       .then(([sourceImage, treatmentImage]) => {
@@ -962,7 +962,7 @@ function TreatmentCanvas({ treatmentId }: { treatmentId: TreatmentId }) {
 window.runTreatmentLoopTest = (rounds = 99) =>
   new Promise((resolve, reject) => {
     const image = new Image();
-    image.src = "/assets/treatment-preview-face.png";
+    image.src = "/assets/treatment-preview-face.webp";
     image.onload = () =>
       runTreatmentLoopTest(image, rounds).then(resolve, reject);
     image.onerror = reject;
@@ -1353,8 +1353,10 @@ function Button({
 
 const LANDMARK_WIDTH = 1086;
 const LANDMARK_HEIGHT = 1448;
-// webp, matching project-qijek: 152 KB against the png's size, same image. The png stays
-// in public/assets because other screens still reference it.
+// webp, matching project-qijek: 152 KB against the png's size, same image. The png is gone —
+// nothing referenced it any more, and every image on this page is now webp for one reason:
+// a full scroll of the landing page used to pull 53 MB, which is ~1,900 visitors per 100 GB
+// of hosting bandwidth. At 5.7 MB it is ~17,600.
 const SAMPLE_FACE_SRC = "/assets/sample-face-front.webp";
 const HAIRLINE_EXTENSION = 0.75;
 let faceLandmarkerPromise: Promise<FaceLandmarker> | null = null;
@@ -1890,7 +1892,7 @@ function TreatmentPreview({ locale }: { locale: Locale }) {
     <section className="treatment-preview section-shell" id="treatment-preview">
       <img
         className="treatment-preview__caustic"
-        src="/assets/science/caustic-light-v1.png"
+        src="/assets/science/caustic-light-v1.webp"
         alt=""
         aria-hidden="true"
         loading="lazy"
@@ -1898,7 +1900,7 @@ function TreatmentPreview({ locale }: { locale: Locale }) {
       />
       <img
         className="static-luxury-art static-luxury-art--membrane"
-        src="/assets/science/glass-membrane-v1.png"
+        src="/assets/science/glass-membrane-v1.webp"
         alt=""
         aria-hidden="true"
         loading="lazy"
@@ -1995,7 +1997,7 @@ function TreatmentPreview({ locale }: { locale: Locale }) {
         <div className="treatment-comparison">
           <img
             className="treatment-comparison__before"
-            src="/assets/treatment-preview-face.png"
+            src="/assets/treatment-preview-face.webp"
             alt="Original treatment preview portrait"
           />
           <div
@@ -2052,7 +2054,7 @@ function AppearanceEvidence({ locale }: { locale: Locale }) {
     <section className="appearance-evidence" id="research">
       <img
         className="static-luxury-art static-luxury-art--prisms"
-        src="/assets/science/crystal-prisms-v1.png"
+        src="/assets/science/crystal-prisms-v1.webp"
         alt=""
         aria-hidden="true"
         loading="lazy"
@@ -2138,7 +2140,7 @@ function AppearanceEvidence({ locale }: { locale: Locale }) {
           </a>
           <img
             className="evidence-detail__art"
-            src="/assets/science/cell-cluster-v1.png"
+            src="/assets/science/cell-cluster-v1.webp"
             alt=""
             aria-hidden="true"
             loading="lazy"
@@ -2201,7 +2203,7 @@ function NextSteps({ locale }: { locale: Locale }) {
     <section className="next-steps section-shell" id="next-steps">
       <img
         className="static-luxury-art static-luxury-art--orbit"
-        src="/assets/science/glass-orbit-cluster-v1.png"
+        src="/assets/science/glass-orbit-cluster-v1.webp"
         alt=""
         aria-hidden="true"
         loading="lazy"
@@ -2364,7 +2366,7 @@ function ProgressTimeline({ locale }: { locale: Locale }) {
     <section className="progress-plan section-shell" id="how">
       <img
         className="static-luxury-art static-luxury-art--topography"
-        src="/assets/science/topographic-wave-v1.png"
+        src="/assets/science/topographic-wave-v1.webp"
         alt=""
         aria-hidden="true"
         loading="lazy"
@@ -2442,7 +2444,7 @@ function ClinicBridge({ locale }: { locale: Locale }) {
     <section className="clinic-bridge clinic-bridge--pilot" id="clinics">
       <img
         className="static-luxury-art static-luxury-art--microfluidic"
-        src="/assets/science/microfluidic-ribbon-v1.png"
+        src="/assets/science/microfluidic-ribbon-v1.webp"
         alt=""
         aria-hidden="true"
         loading="lazy"
@@ -2539,44 +2541,44 @@ function ClinicBusinessFlow({ locale }: { locale: Locale }) {
           [
               "อธิบายได้เห็นภาพชัดเจน",
             "เปรียบเทียบทิศทางบนใบหน้าคนไข้ แทนการอธิบายด้วยคำพูดเพียงอย่างเดียว",
-            "/assets/clinic-benefits/clearer-explanations.png",
+            "/assets/clinic-benefits/clearer-explanations.webp",
           ],
           [
               "เตรียมตัวก่อนปรึกษาได้ดีขึ้น",
             "รวบรวมสิ่งที่กังวล ผลลัพธ์ที่ต้องการ และลำดับความสำคัญไว้ก่อนเริ่มปรึกษา",
-            "/assets/clinic-benefits/prepared-patient.png",
+            "/assets/clinic-benefits/prepared-patient.webp",
           ],
           [
               "การปรึกษามีประสิทธิภาพมากขึ้น",
               "ช่วยให้พูดคุยเรื่องความเหมาะสม ข้อจำกัด และทางเลือกในขั้นต่อไปได้ตรงประเด็นมากขึ้น",
-            "/assets/clinic-benefits/focused-consultation.png",
+            "/assets/clinic-benefits/focused-consultation.webp",
           ],
           [
             "ประสบการณ์ที่สะท้อนมาตรฐานคลินิก",
             "ทำให้การปรึกษาดูทันสมัย เข้าใจง่าย และจดจำได้ตั้งแต่ครั้งแรก",
-            "/assets/clinic-benefits/premium-clinic.png",
+            "/assets/clinic-benefits/premium-clinic.webp",
           ],
         ]
       : [
           [
             "Clearer explanations",
             "Show treatment directions visually instead of relying on words alone.",
-            "/assets/clinic-benefits/clearer-explanations.png",
+            "/assets/clinic-benefits/clearer-explanations.webp",
           ],
           [
             "Better-prepared patients",
             "Align goals and priorities before the consultation becomes complex.",
-            "/assets/clinic-benefits/prepared-patient.png",
+            "/assets/clinic-benefits/prepared-patient.webp",
           ],
           [
             "More focused consultations",
             "Spend more time discussing fit, limitations and next steps.",
-            "/assets/clinic-benefits/focused-consultation.png",
+            "/assets/clinic-benefits/focused-consultation.webp",
           ],
           [
             "A premium clinic image",
             "Deliver a modern experience patients can understand and remember.",
-            "/assets/clinic-benefits/premium-clinic.png",
+            "/assets/clinic-benefits/premium-clinic.webp",
           ],
         ];
   return (
@@ -2616,7 +2618,7 @@ function ClinicBusinessFlow({ locale }: { locale: Locale }) {
       <section className="clinic-hardware section-shell">
         <div className="clinic-hardware__visual">
           <img
-            src="/assets/clinic-no-hardware.png"
+            src="/assets/clinic-no-hardware.webp"
             alt="An iPhone capturing a face beside an iPad showing a consultation-ready facial model"
             loading="lazy"
           />
@@ -2766,8 +2768,8 @@ function ContactSection({ locale }: { locale: Locale }) {
   const copy = siteCopy[locale].contact;
   const channels = [
     [copy.lineLabel, "@doodee.ai", "https://line.me/R/ti/p/@doodee.ai"],
-    [copy.emailLabel, "support@doodee.ai", "mailto:support@doodee.ai"],
-    [copy.partnerLabel, "partner@doodee.ai", "mailto:partner@doodee.ai"],
+    [copy.emailLabel, "hello@doodee.app", "mailto:hello@doodee.app"],
+    [copy.partnerLabel, "hello@doodee.app", "mailto:hello@doodee.app"],
   ] as const;
   return (
     <section className="contact section-shell" id="contact">
@@ -2793,7 +2795,7 @@ function ContactSection({ locale }: { locale: Locale }) {
         <article>
           <h3>{copy.hoursTitle}</h3>
           <p>{copy.hours}</p>
-          <Button href="mailto:support@doodee.ai">{copy.write}</Button>
+          <Button href="mailto:hello@doodee.app">{copy.write}</Button>
         </article>
       </div>
     </section>
@@ -3159,7 +3161,7 @@ function LandingPage() {
       <section className="analysis-showcase section-shell" id="product">
         <img
           className="static-luxury-art static-luxury-art--molecule"
-          src="/assets/science/molecular-lattice-v1.png"
+          src="/assets/science/molecular-lattice-v1.webp"
           alt=""
           aria-hidden="true"
           loading="lazy"
@@ -3177,7 +3179,7 @@ function LandingPage() {
 
       <div className="science-ribbon-divider" aria-hidden="true">
         <img
-          src="/assets/science/chrome-ribbon-v1.png"
+          src="/assets/science/chrome-ribbon-v1.webp"
           alt=""
           loading="lazy"
           decoding="async"
@@ -3194,7 +3196,7 @@ function LandingPage() {
         <div className="section-shell">
           <img
             className="landing-science-art landing-science-art--collagen"
-            src="/assets/science/collagen-ribbon-v1.png"
+            src="/assets/science/collagen-ribbon-v1.webp"
             alt=""
             aria-hidden="true"
             loading="lazy"
@@ -3202,7 +3204,7 @@ function LandingPage() {
           />
           <img
             className="static-luxury-art static-luxury-art--pearls"
-            src="/assets/science/micro-pearls-v1.png"
+            src="/assets/science/micro-pearls-v1.webp"
             alt=""
             aria-hidden="true"
             loading="lazy"
@@ -3234,7 +3236,7 @@ function LandingPage() {
       <section className="pricing section-shell" id="pricing">
         <img
           className="static-luxury-art static-luxury-art--arcs"
-          src="/assets/science/calibration-arcs-v1.png"
+          src="/assets/science/calibration-arcs-v1.webp"
           alt=""
           aria-hidden="true"
           loading="lazy"
@@ -3307,7 +3309,7 @@ function LandingPage() {
       <section className="faq section-shell">
         <img
           className="static-luxury-art static-luxury-art--specimen"
-          src="/assets/science/crystal-specimen-v1.png"
+          src="/assets/science/crystal-specimen-v1.webp"
           alt=""
           aria-hidden="true"
           loading="lazy"
@@ -3395,6 +3397,13 @@ function LandingPage() {
               EN
             </button>
           </div>
+          {/* The two legal documents, reusing the labels the login screen already
+              shows in both locales. A footer is where a visitor looks for these,
+              and until now the only link to either was a dead `#terms` anchor. */}
+          <nav className="footer-legal">
+            <Link to="/terms">{copy.login.terms}</Link>
+            <Link to="/privacy">{copy.login.privacy}</Link>
+          </nav>
           <p>
             © {year} DOODEE. {copy.footer}
           </p>
