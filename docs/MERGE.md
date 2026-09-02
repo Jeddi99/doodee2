@@ -241,6 +241,32 @@ commit `4b772b8` — ยก `test_simulation_pipeline.py` มา **36 tests ผ�
 เหลือ `canonical_pipeline.mesh_map` ฟังก์ชันเดียวที่ไม่มีคนเรียก — wireframe overlay ที่ไม่มีหน้าจอไหนขอ
 ไม่ลบและไม่ต่อไปยังการใช้งานที่กุขึ้น
 
+## capture helper 6 ไฟล์ — ไม่ใช่ฟีเจอร์ที่ยังไม่ได้ต่อ
+
+`lib/{captureCandidates,captureConfidence,capturePerformance,captureGuidance,facePreview,stillFace}.js`
+รวม 335 บรรทัด ไม่มีใคร import เลย และ MERGE.md เดิมบอกให้ "เอามาใช้"
+
+**ตรวจแล้วพบว่าทั้งหกเป็นการเขียนซ้ำของสิ่งที่หน้าจอ scan ทำอยู่แล้ว** — คนละชุด คนละ dependency:
+
+| ไฟล์ที่ลอย | เขียนกับ | ของจริงที่รันอยู่ |
+|---|---|---|
+| `captureCandidates` | `packages/shared/capture-quality` | `ScanPage` + `src/scanQuality.ts` (`candidateCountsRef`) |
+| `captureGuidance` `QUALITY_TEXT` | ตารางของตัวเอง | `copy.scan.quality[register][code]` |
+| `capturePerformance` | `nextSlowInferenceStreak` | `lowFpsSamplesRef` + `performanceFallbackAppliedRef` ใน `ScanPage` |
+| `facePreview` | object-fit cover mapping | `lib/captureImage` |
+| `stillFace` | decode + detector พร้อมกัน | `lib/uploadSlot.prepareUpload` |
+| `captureConfidence` | manual shutter fallback | `ScanPage` inline |
+
+การ "เอามาใช้" จึงไม่ใช่การต่อสายฟีเจอร์ที่ขาด แต่คือ**การเขียน capture flow ที่ทำงานอยู่ใหม่**
+ให้ไปใช้ implementation คู่ขนาน — flow ที่ `b362f3c` เพิ่งจูนไปสามเรื่องเพื่อให้ถ่ายโปรไฟล์ได้จริง
+
+**ไม่ลบและไม่ต่อ รอให้คุณตัดสิน** สองทางที่สมเหตุสมผล:
+
+1. **ลบทิ้งทั้งหกไฟล์ + เทสต์ของมัน** — coverage ที่ได้จากมันคือ coverage ของโค้ดที่ไม่มีใครรัน
+   ซึ่งอันตรายกว่าไม่มี เพราะทำให้เชื่อว่ามีคนคุ้มอยู่
+2. **เก็บไว้** ถ้ามันคือทิศทางที่ตั้งใจจะย้ายไป — แต่ต้องมีคนบันทึกไว้ว่าทำไม ไม่งั้นรอบหน้า
+   ก็จะกลับมาเป็นคำถามเดิม
+
 ## ความเสี่ยง
 
 1. **`Scan.analysis_data` เปลี่ยนรูป** — เป็น JSONField ที่ทั้งสองฝั่งเขียนคนละแบบ การ bump
