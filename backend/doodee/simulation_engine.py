@@ -7,7 +7,9 @@ from .analysis_engine import PROFILE_VIEWS, _landmarks
 from . import procedure_catalog
 from .procedure_catalog import ProcedureSpec
 from .procedures import get_preset
-from .reference_scoring import MAX_REFERENCE_SHIFT, REFERENCE_TARGETS, reference_target
+from .reference_scoring import (
+    MAX_REFERENCE_SHIFT, MIN_MEANINGFUL_DELTA, REFERENCE_TARGETS, reference_target,
+)
 
 
 DEFAULT_MAX_SHIFT = 0.03
@@ -531,14 +533,19 @@ def canonical_available(scan):
     return all(objects.get(view) for view in CANONICAL_VIEWS)
 
 
+def is_reference_selection(selection):
+    return str(selection.get("preset_id", "")).startswith(REFERENCE_PRESET_PREFIX)
+
+
 def engine_for_selections(scan, selections):
     """"canonical" or "legacy" — which renderer this request must use."""
     # Not a preference. The legacy renderer has no way to express a catalog procedure, and
     # `validate_selections` has already refused the stack if this scan cannot run the fused one.
     if any(is_procedure_selection(s) for s in selections):
         return "canonical"
-    if any(str(s.get("preset_id", "")).startswith(REFERENCE_PRESET_PREFIX) for s in selections):
-        return "legacy"
+    # Reference targets used to be legacy-only: the fused engine runs sliders on a 3-D model and
+    # projects back, so it had no loop that could aim at a measured value. `solve_reference_sliders`
+    # is that loop, done on the landmarks alone before anything is rendered.
     return "canonical" if canonical_available(scan) else "legacy"
 
 
@@ -559,6 +566,47 @@ def _canonical_presets(selections):
     return None if any(p is None for p in presets) else presets
 
 
+def _simulate_reference(scan, selection, download_fn, output_format, max_side, view):
+    """Render one region moved toward its published mean, through the fused engine.
+
+    `validate_selections` refuses a reference stacked with anything else, so there is exactly one
+    selection and one region. The measurement it reports is the same dict the legacy path
+    returned, so the reference card on the client is unchanged — with `capped` now meaning
+    something the solver actually measured rather than a shift ceiling: this face may sit further
+    from the mean than the strongest setting can reach, and `reached_ratio` says how far it got.
+    """
+    from .canonical_pipeline import simulate_scan_views
+
+    region = selection["preset_id"][len(REFERENCE_PRESET_PREFIX):]
+    _preset, target = reference_preset(scan, region)
+    result = simulate_scan_views(
+        scan, {}, download_fn, reference_target=target,
+        output_format=output_format, max_side=max_side,
+    )
+    legacy_view = view if view in result["views"] else result["legacy_view"]
+    primary = result["views"][legacy_view]
+    reached = result["reached_ratio"]
+    measurement = {
+        **target,
+        "target_ratio": round(reached, 5),
+        "capped": abs(reached - target["reference_ratio"]) > MIN_MEANINGFUL_DELTA * target["reference_ratio"],
+    }
+    extra = {
+        "model_version": result["model_version"],
+        "legacy_view": legacy_view,
+        "related_procedures": result["related_procedures"],
+        "views": {
+            name: {"yaw": item["yaw"], "max_shift_px": item["max_shift_px"],
+                   "held_back": item["held_back"], "source_object": item["source_object"],
+                   "changed": item["changed"], "visible_percent": item["visible_percent"]}
+            for name, item in result["views"].items()
+        },
+        "encoded_views": {name: item["encoded"] for name, item in result["views"].items()},
+        "before_encoded": primary["before_encoded"],
+    }
+    return primary["encoded"], [measurement], primary["focus_boxes"], extra
+
+
 def simulate_canonical(scan, selections, download_fn, output_format=".png", max_side=1280, view=None):
     """Render one simulation through the fused three-view model.
 
@@ -569,6 +617,9 @@ def simulate_canonical(scan, selections, download_fn, output_format=".png", max_
     """
     from .canonical_pipeline import simulate_scan_views
     from .geometry_controls import INTENSITY_SETTINGS, sliders_for_selections
+
+    if any(is_reference_selection(selection) for selection in selections):
+        return _simulate_reference(scan, selections[0], download_fn, output_format, max_side, view)
 
     presets = _canonical_presets(selections)
     if presets is None:

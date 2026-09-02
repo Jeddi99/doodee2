@@ -688,6 +688,108 @@ def morph_fused(fused, sliders, views, amplify=1.):
 
 
 # --------------------------------------------------------------------------------------------
+# Solving for a published reference target
+#
+# The legacy engine could aim at a measured target because it moved control points on one
+# photograph and could measure the result there directly. This engine runs sliders on a shared
+# 3-D model and projects back, so there is no such loop -- the setting that lands a measurement
+# on its published mean is not known in advance.
+#
+# It is cheap to search for. `morph_fused` touches 478 points and no pixels, so measuring a
+# candidate setting costs a fraction of a millisecond; a dozen of them still cost nothing next to
+# one warp of three photographs. So the setting is found by bisection on the landmarks alone, and
+# only then is a single render done.
+# --------------------------------------------------------------------------------------------
+
+#: Which slider moves each region's measured span. One per region, because the target is one
+#: measurement: `reference_scoring.REFERENCE_TARGETS` lists only regions the Thai study reports.
+REFERENCE_CONTROLS = {"nose": "noseWingSlim", "lips": "lipVolume", "chin": "chinLength"}
+
+#: The landmark pairs behind each reference observation, and the span they are divided by. The
+#: same pairs `analysis_engine` uses to build `observations`, so what is solved for here is the
+#: same number the analysis screen showed — `ReferenceSpanParityTest` holds the two together.
+#: An endpoint is a landmark index, or a tuple of indices to average — stomion is the midpoint
+#: of the lip contact and has no index of its own.
+REFERENCE_SPANS = {
+    "alar_width": (98, 327),
+    "upper_vermillion": (0, 13),
+    "lower_vermillion": (14, 17),
+    # Stomion to gnathion, which is what `analysis_engine` measures. Not the vermillion border
+    # at 17: the lip contact and the lower lip edge are different points, and on a real face the
+    # two spans differ by about 40%, which is more than the whole change being solved for.
+    "chin_height": ((13, 14), 152),
+}
+REFERENCE_DENOMINATOR = (168, 152)   # nasion to gnathion
+
+#: The strongest setting any procedure asks for, so the search cannot return one the renderer
+#: would never otherwise be given.
+REFERENCE_SETTING_LIMIT = 130.0
+
+#: Halvings. Twelve takes a 260-wide bracket to under a hundredth of a setting unit, which is far
+#: finer than the warp can express, and the whole search still costs less than one render.
+REFERENCE_SOLVE_STEPS = 12
+
+
+def reference_observation(points, keys):
+    """The sum of one region's measured ratios on a set of landmarks.
+
+    Summed rather than averaged because that is what `reference_target` compares against: the
+    study splits the vermillion into two bands and the slider moves total lip height, and the two
+    ratios share a denominator, so they add.
+    """
+    def at(endpoint):
+        if isinstance(endpoint, tuple):
+            return points[list(endpoint), :2].mean(axis=0)
+        return points[endpoint, :2]
+
+    low, high = REFERENCE_DENOMINATOR
+    denominator = float(np.linalg.norm(at(low) - at(high)))
+    if denominator <= 0:
+        raise ValueError("invalid_face_dimensions")
+    return sum(float(np.linalg.norm(at(first) - at(second))) / denominator
+               for first, second in (REFERENCE_SPANS[key] for key in keys))
+
+
+def solve_reference_sliders(fused, views, target, amplify=1.):
+    """The slider setting whose morphed landmarks land on the published mean.
+
+    Returns `(sliders, reached)` — `reached` is the ratio actually achieved, which is not always
+    the one asked for: a face far enough from the mean can want more than the strongest setting
+    delivers. Returning it rather than the request is what lets the caller say the image shows as
+    much of the change as the renderer allows, instead of captioning it with a number it did not
+    reach.
+    """
+    control = REFERENCE_CONTROLS.get(target["region"])
+    if control is None:
+        raise ValueError("region_without_reference_data")
+    keys, wanted = tuple(target["keys"]), float(target["reference_ratio"])
+    front = next((index for index, view in enumerate(views) if view["name"] == "front"), 0)
+
+    def measure(setting):
+        _displacement, projected = morph_fused(fused, {control: setting}, views, amplify)
+        return reference_observation(projected[front], keys)
+
+    low, high = -REFERENCE_SETTING_LIMIT, REFERENCE_SETTING_LIMIT
+    at_low, at_high = measure(low), measure(high)
+    # The target outside what this control can reach. Clamped to whichever end gets closest
+    # rather than refused: the honest picture is the biggest change available, and the caller
+    # reports `reached` so nothing claims the mean was met.
+    if not min(at_low, at_high) <= wanted <= max(at_low, at_high):
+        setting = low if abs(at_low - wanted) < abs(at_high - wanted) else high
+        return {control: setting}, measure(setting)
+
+    for _ in range(REFERENCE_SOLVE_STEPS):
+        middle = (low + high) / 2
+        value = measure(middle)
+        if (value > wanted) == (at_low > wanted):
+            low, at_low = middle, value
+        else:
+            high = middle
+    setting = round((low + high) / 2, 2)
+    return {control: setting}, measure(setting)
+
+
+# --------------------------------------------------------------------------------------------
 # Piecewise affine warp of the real photo
 # --------------------------------------------------------------------------------------------
 
@@ -1182,9 +1284,13 @@ def _region_indices(region):
 
 
 def simulate_scan_views(scan, sliders, download_fn, *, selections=None, presets=None,
-                        amplify=1., engine="tps", max_side=1280,
+                        reference_target=None, amplify=1., engine="tps", max_side=1280,
                         output_format=".webp", step=8, refine=True):
-    """Download, fuse and render every available scan view through one shared 3-D model."""
+    """Download, fuse and render every available scan view through one shared 3-D model.
+
+    `reference_target` replaces `sliders`: the setting is solved for after the model is fused,
+    because until the three photographs are fused there is nothing to measure a candidate on.
+    """
     sliders = normalise_sliders(sliders)
     amplify = float(amplify)
     if not np.isfinite(amplify) or not 1. <= amplify <= evidence.AMPLIFY_MAX:
@@ -1220,6 +1326,9 @@ def simulate_scan_views(scan, sliders, download_fn, *, selections=None, presets=
     prepared.sort(key=lambda item: (item["name"] != "front", item["name"]))
 
     fused = fuse_views(prepared)
+    reached = None
+    if reference_target is not None:
+        sliders, reached = solve_reference_sliders(fused, prepared, reference_target, amplify)
     _displacement, projected = morph_fused(fused, sliders, prepared, amplify)
     selections, presets = selections or [], presets or []
     atomic_specs = [preset for preset in presets if isinstance(preset, ProcedureSpec)]
@@ -1356,6 +1465,10 @@ def simulate_scan_views(scan, sliders, download_fn, *, selections=None, presets=
             if atomic_specs else related_union(presets)
         ),
         "model_version": MODEL_VERSION,
+        # The ratio the solve actually landed on, which is not always the one asked for: a face
+        # far enough from the mean can want more than the strongest setting delivers. None when
+        # no target was given.
+        "reached_ratio": reached,
         "sliders": sliders,
         "amplify": amplify,
         "engine": engine,

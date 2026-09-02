@@ -871,6 +871,99 @@ class StoredViewUrlsTest(TestCase):
         self.assertEqual(SimulationSerializer(simulation).data["view_urls"], {})
 
 
+class ReferenceSolveTest(SimpleTestCase):
+    """Aiming the fused engine at a published mean.
+
+    The legacy engine could do this because it moved control points on one photograph and could
+    measure the result there. The fused engine runs sliders on a shared 3-D model and projects
+    back, so the setting that lands a measurement on its mean is not known in advance — it is
+    searched for, on the landmarks alone, before anything is rendered.
+    """
+
+    def fake(self, response):
+        """A stand-in for the fused model: one control, a known linear response."""
+        from doodee import canonical_pipeline
+
+        views = [{"name": "front"}, {"name": "left_profile"}]
+
+        def morph(fused, sliders, given, amplify=1.):
+            setting = next(iter(sliders.values()), 0)
+            points = np.zeros((478, 3))
+            # Denominator nasion→gnathion fixed at 1; the measured span is the response.
+            points[168, :2], points[152, :2] = (0, 0), (0, 1)
+            points[98, :2], points[327, :2] = (0, 0), (response(setting), 0)
+            return None, [points, points]
+
+        return views, morph
+
+    def test_it_finds_the_setting_that_lands_on_the_published_mean(self):
+        from doodee import canonical_pipeline
+
+        views, morph = self.fake(lambda setting: 0.30 + setting * 0.0005)
+        target = {"region": "nose", "keys": ("alar_width",), "reference_ratio": 0.33}
+        with patch.object(canonical_pipeline, "morph_fused", morph):
+            sliders, reached = canonical_pipeline.solve_reference_sliders(None, views, target)
+        self.assertAlmostEqual(sliders["noseWingSlim"], 60, places=1)
+        self.assertAlmostEqual(reached, 0.33, places=4)
+
+    def test_a_falling_response_is_solved_the_same_way(self):
+        """The sliders are not all signed the same way, so the search cannot assume a direction."""
+        from doodee import canonical_pipeline
+
+        views, morph = self.fake(lambda setting: 0.30 - setting * 0.0005)
+        target = {"region": "nose", "keys": ("alar_width",), "reference_ratio": 0.27}
+        with patch.object(canonical_pipeline, "morph_fused", morph):
+            sliders, reached = canonical_pipeline.solve_reference_sliders(None, views, target)
+        self.assertAlmostEqual(sliders["noseWingSlim"], 60, places=1)
+        self.assertAlmostEqual(reached, 0.27, places=4)
+
+    def test_a_target_beyond_reach_is_clamped_and_reports_where_it_got_to(self):
+        """A face far enough from the mean wants more than the strongest setting delivers.
+        Reporting the request rather than the result would caption the image with a number it
+        never reached."""
+        from doodee import canonical_pipeline
+
+        views, morph = self.fake(lambda setting: 0.30 + setting * 0.0001)
+        target = {"region": "nose", "keys": ("alar_width",), "reference_ratio": 0.50}
+        with patch.object(canonical_pipeline, "morph_fused", morph):
+            sliders, reached = canonical_pipeline.solve_reference_sliders(None, views, target)
+        self.assertEqual(sliders["noseWingSlim"], canonical_pipeline.REFERENCE_SETTING_LIMIT)
+        self.assertAlmostEqual(reached, 0.313, places=3)
+        self.assertLess(reached, target["reference_ratio"])
+
+    def test_a_region_with_no_published_reference_is_refused(self):
+        from doodee.canonical_pipeline import solve_reference_sliders
+
+        with self.assertRaisesRegex(ValueError, "region_without_reference_data"):
+            solve_reference_sliders(None, [{"name": "front"}],
+                                    {"region": "jaw", "keys": (), "reference_ratio": 1})
+
+    def test_the_search_measures_the_same_spans_the_analysis_screen_reports(self):
+        """The one way this could lie without failing: solve for a quantity defined slightly
+        differently from the one the user was shown. `chin_height` is the trap — it is stomion to
+        gnathion in `analysis_engine`, not the vermillion border, and the two differ by about 40%.
+        """
+        from pathlib import Path
+
+        from doodee import analysis_engine
+        from doodee.canonical_pipeline import REFERENCE_DENOMINATOR, REFERENCE_SPANS
+        from doodee.reference_scoring import REFERENCE_TARGETS
+
+        source = Path(analysis_engine.__file__).read_text()
+        needed = {key for target in REFERENCE_TARGETS.values() for key in target["keys"]}
+        self.assertEqual(needed, set(REFERENCE_SPANS), "a target names a span nothing measures")
+        for key, (first, second) in REFERENCE_SPANS.items():
+            if key == "chin_height":
+                self.assertIn("hypot(*(stomion - front[152, :2]))", source)
+                self.assertEqual((first, second), ((13, 14), 152))
+                self.assertIn("stomion = (front[13, :2] + front[14, :2]) / 2", source)
+                continue
+            self.assertIn(f'"{key}": _ratio(_distance(front, {first}, {second}), reference_height)',
+                          source, f"{key} is measured somewhere else now")
+        low, high = REFERENCE_DENOMINATOR
+        self.assertIn(f"reference_height = _distance(front, {low}, {high})", source)
+
+
 class ProcedureNamesEnTest(TestCase):
     """Every row carries an English name, and the table names nothing that does not exist.
 
@@ -2107,11 +2200,14 @@ class SavedSimulationWorkerTest(TestCase):
     def test_which_engine_each_request_gets(self):
         """The routing decision, which is the whole reason two renderers are kept.
 
-        A reference target has no canonical equivalent — the fused engine's sliders are a closed
-        catalog of named movements, with no way to express "move this until it measures X" — so it
-        goes to the engine that models it even when the scan could support the other. And the
-        fused engine needs all three views to build its model, so a front-only scan has nothing to
-        fuse and falls back rather than failing.
+        Reference targets used to be pinned to the legacy engine, because the fused one runs a
+        closed catalog of named movements on a 3-D model and had no way to express "move this
+        until it measures X". `solve_reference_sliders` is that missing loop — bisection on the
+        landmarks alone, before any pixel is touched — so a scan that can be fused now gets the
+        fused renderer for a reference target too.
+
+        The fused engine still needs all three views to build its model, so a front-only scan has
+        nothing to fuse and falls back rather than failing.
         """
         from .simulation_engine import engine_for_selections
 
@@ -2120,14 +2216,12 @@ class SavedSimulationWorkerTest(TestCase):
         })
         front_only = Scan(image_objects={"front": "private/front"})
         catalog = [{"region": "eyes", "preset_id": "eyes-open"}]
-        reference = [{"region": "eyes", "preset_id": "reference:eyes"}]
+        reference = [{"region": "nose", "preset_id": "reference:nose"}]
 
         self.assertEqual(engine_for_selections(three_views, catalog), "canonical")
-        self.assertEqual(engine_for_selections(three_views, reference), "legacy")
+        self.assertEqual(engine_for_selections(three_views, reference), "canonical")
         self.assertEqual(engine_for_selections(front_only, catalog), "legacy")
-        # Mixed stacks follow the reference row: rendering half a stack on each engine would put
-        # two renderers' output in one image.
-        self.assertEqual(engine_for_selections(three_views, catalog + reference), "legacy")
+        self.assertEqual(engine_for_selections(front_only, reference), "legacy")
 
 
 class PoseQualityTest(TestCase):
