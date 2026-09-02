@@ -77,6 +77,7 @@ type AppView =
   | "pricing"
   | "settings"
   | "scorecard"
+  | "assessment"
   | "referral"
   | "profile"
   | "skin";
@@ -101,6 +102,7 @@ export const VIEW_ROUTES: Record<AppView, string> = {
   pricing: "/pricing",
   settings: "/settings",
   scorecard: "/score-card",
+  assessment: "/assessment",
   referral: "/referral",
   profile: "/profile",
   skin: "/skin",
@@ -114,6 +116,7 @@ const IMAGE_BACKED_VIEWS = new Set<AppView>(["overview", "analysis", "plan", "si
 const accountViews: { id: AppView; label: string }[] = [
   { id: "profile", label: "Profile" },
   { id: "scorecard", label: "Score card" },
+  { id: "assessment", label: "Assessment" },
   { id: "skin", label: "Skin" },
   { id: "referral", label: "Invite" },
   { id: "tryon", label: "Try-on" },
@@ -1339,6 +1342,10 @@ const HistoryPanel = lazy(() => import("./views/HistoryPanel"));
 const PricingPanel = lazy(() => import("./views/PricingPanel"));
 const SettingsPanel = lazy(() => import("./views/SettingsPanel"));
 const ScoreCardPanel = lazy(() => import("./views/ScoreCardPanel"));
+// Findings, the distribution and the mesh. Its own view rather than a tab inside the score
+// card: the card answers "how close to the reference", this answers "which parts, and what
+// a clinic does about them", and they are read at different moments.
+const AssessmentView = lazy(() => import("../components/AssessmentView"));
 const ReferralPanel = lazy(() => import("./views/ReferralPanel"));
 const ProfilePanel = lazy(() => import("./views/ProfilePanel"));
 const SkinPanel = lazy(() => import("./views/SkinPanel"));
@@ -1504,6 +1511,7 @@ export default function DashboardPage({ view }: { view: AppView }) {
         pricing: { th: "แพ็กเกจ & สิทธิพิเศษ", en: "Plans & Rewards" },
         settings: { th: "ตั้งค่าระบบ", en: "Settings" },
         scorecard: { th: "การ์ดคะแนน", en: "Score Card" },
+        assessment: { th: "ผลวิเคราะห์เชิงลึก", en: "Assessment" },
         referral: { th: "ชวนเพื่อนรับ 30฿", en: "Invite Friends" },
         profile: { th: "โปรไฟล์ของฉัน", en: "My Profile" },
         skin: { th: "วิเคราะห์ผิว", en: "Skin Analysis" },
@@ -1951,6 +1959,7 @@ export default function DashboardPage({ view }: { view: AppView }) {
             {view === "pricing" && <PricingPanel />}
             {view === "settings" && <SettingsPanel />}
             {view === "scorecard" && <ScoreCardPanel />}
+            {view === "assessment" && <AssessmentView lang={th ? "th" : "en"} onNavigate={openView as (view: string) => void} />}
             {view === "referral" && <ReferralPanel />}
             {view === "profile" && <ProfilePanel />}
             {view === "skin" && <SkinPanel />}

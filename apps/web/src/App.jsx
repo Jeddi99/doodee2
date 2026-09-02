@@ -28,7 +28,7 @@ function WorkspaceFallback({ locale }) {
   return <div className="workspace-loading" role="status">{locale === 'th' ? 'กำลังเปิดหน้า…' : 'Opening…'}</div>;
 }
 
-const ROUTE_PATHS = { landing: '/', login: '/login', onboarding: '/onboarding', home: '/home', analysis: '/analysis', plan: '/plan', 'doodee-gpt': '/doodee-gpt', 'face-scan': '/scan', 'skin-scan': '/skin-scan', simulation: '/simulation', skin: '/skin', tryon: '/try-on', history: '/history', pricing: '/pricing', settings: '/settings', scorecard: '/score-card', referral: '/referral', profile: '/profile' };
+const ROUTE_PATHS = { landing: '/', login: '/login', onboarding: '/onboarding', home: '/home', analysis: '/analysis', plan: '/plan', 'doodee-gpt': '/doodee-gpt', 'face-scan': '/scan', 'skin-scan': '/skin-scan', simulation: '/simulation', skin: '/skin', tryon: '/try-on', history: '/history', pricing: '/pricing', settings: '/settings', scorecard: '/score-card', assessment: '/assessment', referral: '/referral', profile: '/profile' };
 
 // Every signed-in route lives inside DashboardPage's shell; the path picks the view.
 const DASHBOARD_VIEWS = {

@@ -6,18 +6,22 @@ import { errorMessage } from './apiError';
 // Matches the port compose.yaml publishes the api service on, and the mobile app's default.
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8001/api/v1';
 
-async function request(path, options = {}) {
-  let token = null;
+/** The bearer token for this request, or the dev stand-in when Firebase is unreachable. */
+async function idToken() {
   try {
     const firebaseAuth = getFirebaseAuth();
     await firebaseAuth.authStateReady();
     if (!firebaseAuth.currentUser) {
       await signInAnonymously(firebaseAuth).catch(() => {});
     }
-    token = await firebaseAuth.currentUser?.getIdToken();
+    return await firebaseAuth.currentUser?.getIdToken();
   } catch {
-    token = 'dev-guest-token';
+    return 'dev-guest-token';
   }
+}
+
+async function request(path, options = {}) {
+  const token = await idToken();
 
   let response;
   try {
@@ -102,6 +106,25 @@ export const setSkinVisionConsent = (accepted, policyVersion) => request('/conse
   body: JSON.stringify({ accepted, policy_version: policyVersion }),
 });
 export const getSession = () => request('/session/');
+// Findings and the distribution in one answer. Two requests would let the page show a percentile
+// beside findings from a different scan, and the two are always read together.
+export const getScanAssessment = (scanId) => request(`/scans/${scanId}/assessment/`);
+// The characteristics the product claims to read, and what backs each one. The same answer for
+// everyone, so it is not attached to a scan.
+export const getMetricCatalog = (group) => request(group ? `/metric-catalog/?group=${encodeURIComponent(group)}` : '/metric-catalog/');
+// The mesh is a PNG, not JSON — the triangulation is the picture. Returned as an object URL the
+// caller must revoke, and null for a view the detector could not read, which the server answers
+// 422 for. A thrown error there would blank the whole panel over one unreadable angle.
+export const getScanMesh = async (scanId, view) => {
+  const token = await idToken();
+  const response = await fetch(`${API_URL}/scans/${scanId}/mesh/${view}/`, {
+    headers: { Authorization: `Bearer ${token || 'dev-guest-token'}` },
+  });
+  if (response.status === 422 || response.status === 404) return null;
+  if (!response.ok) throw new Error(`Mesh request failed (${response.status})`);
+  return URL.createObjectURL(await response.blob());
+};
+export const getMeshLegend = () => request('/mesh-legend/');
 // หน้าโปรไฟล์: identity, plan and expiry, quotas, benefits, referral summary and the last ten
 // receipts in one read — the page is a single answer, not four.
 export const getProfile = () => request('/profile/');

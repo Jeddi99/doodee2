@@ -1,0 +1,271 @@
+/* The assessment screen: findings, where the score sits, and the face as a surface.
+ *
+ * Same palette and scale as `simulation.css` — `--dd-*` tokens throughout, blue on ice — because
+ * the two screens are read one after the other and a change of visual language between them
+ * reads as a change of product.
+ */
+
+.assessment-page {
+  min-height: 100%;
+  padding: var(--dd-space-6);
+  color: var(--dd-text);
+  background: var(--dd-ice);
+}
+
+.assessment-blank {
+  min-height: 70vh;
+  display: grid;
+  place-content: center;
+  text-align: center;
+  gap: 10px;
+  color: var(--dd-muted);
+}
+.assessment-blank svg { margin: auto; }
+.assessment-blank h1 { font-size: 1.2rem; color: var(--dd-text); }
+.assessment-blank button {
+  border: 0;
+  border-radius: 13px;
+  padding: var(--dd-space-3) var(--dd-space-6);
+  background: var(--dd-blue);
+  color: var(--dd-canvas);
+  font-weight: 800;
+}
+
+/* ---- header ------------------------------------------------------------------------------ */
+
+.assessment-header {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  gap: var(--dd-space-4);
+  align-items: center;
+  max-width: 1280px;
+  margin: 0 auto var(--dd-space-4);
+}
+.assessment-header span {
+  font-size: 0.7rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  color: var(--dd-blue);
+}
+.assessment-header h1 { font-size: 1.45rem; margin: 3px 0; }
+.assessment-header p { margin: 0; color: var(--dd-muted); font-size: 0.82rem; }
+
+.assessment-back {
+  width: 42px;
+  height: 42px;
+  border: 1px solid var(--dd-line);
+  border-radius: 14px;
+  background: var(--dd-canvas);
+  display: grid;
+  place-items: center;
+  color: var(--dd-blue);
+}
+
+.assessment-score {
+  min-width: 96px;
+  padding: 10px 16px;
+  border-radius: var(--dd-radius-card);
+  background: var(--dd-ink);
+  color: var(--dd-canvas);
+  text-align: center;
+}
+.assessment-score strong { display: block; font-size: 1.6rem; line-height: 1.1; }
+.assessment-score span { color: var(--dd-blue-soft); font-size: 0.7rem; font-weight: 700; }
+
+/* ---- layout ------------------------------------------------------------------------------- */
+
+.assessment-layout {
+  max-width: 1280px;
+  margin: auto;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+  gap: var(--dd-space-4);
+  align-items: start;
+}
+.assessment-card {
+  background: var(--dd-canvas);
+  border: 1px solid var(--dd-line);
+  border-radius: var(--dd-radius-frame);
+  padding: var(--dd-space-4);
+  box-shadow: var(--dd-shadow-float);
+}
+.assessment-card h2 { margin: 0 0 var(--dd-space-3); font-size: 0.95rem; }
+.assessment-card > small { display: block; margin-top: 10px; font-size: 0.68rem; color: var(--dd-muted); line-height: 1.5; }
+
+.assessment-empty {
+  margin: 0;
+  padding: var(--dd-space-4);
+  border-radius: var(--dd-radius-card);
+  background: var(--dd-ice);
+  color: var(--dd-muted);
+  font-size: 0.78rem;
+  text-align: center;
+}
+
+.assessment-warning {
+  max-width: 1280px;
+  margin: 0 auto var(--dd-space-3);
+  padding: var(--dd-space-2) 11px;
+  border-radius: 10px;
+  /* No amber token exists; a caveat drawn in the ordinary blue reads as a footnote. */
+  background: #fff4df;
+  color: #8b5c16;
+  font-size: 0.72rem;
+  line-height: 1.5;
+}
+.assessment-card .assessment-warning { margin: 10px 0 0; }
+.assessment-warning button {
+  margin-left: 8px;
+  border: 0;
+  background: transparent;
+  padding: 0;
+  color: var(--dd-blue-strong);
+  font-weight: 700;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+/* ---- the distribution --------------------------------------------------------------------- */
+
+.assessment-chart { margin: 0; }
+.assessment-chart svg {
+  width: 100%;
+  height: 150px;
+  display: block;
+  background: var(--dd-ice);
+  border-radius: var(--dd-radius-card);
+}
+.assessment-bar { fill: var(--dd-blue-soft); }
+.assessment-curve { fill: none; stroke: var(--dd-blue); stroke-width: 2; }
+/* The reader's own position, drawn over both so it is never hidden behind a bar. */
+.assessment-marker { stroke: var(--dd-ink); stroke-width: 2; stroke-dasharray: 4 3; }
+.assessment-chart figcaption {
+  position: relative;
+  display: flex;
+  justify-content: space-between;
+  margin-top: 4px;
+  font-size: 0.65rem;
+  color: var(--dd-muted);
+}
+.assessment-chart figcaption b {
+  position: absolute;
+  transform: translateX(-50%);
+  padding: 1px 7px;
+  border-radius: var(--dd-radius-pill);
+  background: var(--dd-ink);
+  color: var(--dd-canvas);
+  font-size: 0.65rem;
+}
+.assessment-chart small { display: block; margin-top: 10px; font-size: 0.68rem; color: var(--dd-muted); }
+
+.assessment-views {
+  list-style: none;
+  margin: var(--dd-space-3) 0 0;
+  padding: 0;
+  display: flex;
+  gap: var(--dd-space-2);
+}
+.assessment-views li {
+  flex: 1;
+  padding: 10px;
+  border-radius: var(--dd-radius-card);
+  background: var(--dd-ice);
+  text-align: center;
+}
+.assessment-views span { display: block; font-size: 0.68rem; color: var(--dd-muted); font-weight: 700; }
+.assessment-views strong { display: block; font-size: 1.15rem; color: var(--dd-blue-strong); }
+.assessment-views small { font-size: 0.62rem; color: var(--dd-muted); }
+
+.assessment-coverage { margin: 10px 0 0; font-size: 0.7rem; color: var(--dd-muted); line-height: 1.5; }
+
+/* ---- findings ----------------------------------------------------------------------------- */
+
+.assessment-findings { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--dd-space-2); }
+.assessment-finding {
+  padding: 11px var(--dd-space-3);
+  border: 1px solid var(--dd-line);
+  /* The severity is carried by a bar on the leading edge rather than by the whole card's
+     colour: a wall of red cards reads as a verdict on the person. */
+  border-left: 4px solid var(--dd-line);
+  border-radius: var(--dd-radius-card);
+  background: var(--dd-canvas);
+}
+.assessment-finding.is-excellent { border-left-color: #2f7f5b; }
+.assessment-finding.is-typical { border-left-color: var(--dd-teal); }
+.assessment-finding.is-moderate { border-left-color: #9a7b1f; }
+.assessment-finding.is-severe { border-left-color: #a3305a; }
+.assessment-finding.is-locked {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  color: var(--dd-muted);
+  background: var(--dd-ice);
+}
+.assessment-finding-head { display: flex; align-items: baseline; justify-content: space-between; gap: var(--dd-space-2); }
+.assessment-finding-name { font-weight: 700; font-size: 0.84rem; }
+.assessment-finding-head em { font-style: normal; font-size: 0.68rem; color: var(--dd-muted); white-space: nowrap; }
+.assessment-finding p { margin: 6px 0 0; font-size: 0.78rem; line-height: 1.6; color: var(--dd-text); }
+.assessment-note,
+.assessment-headroom { display: block; margin-top: 6px; font-size: 0.68rem; color: var(--dd-muted); line-height: 1.5; }
+
+.assessment-procedures {
+  margin-top: var(--dd-space-2);
+  padding-top: var(--dd-space-2);
+  border-top: 1px solid var(--dd-line);
+}
+.assessment-procedures span { font-size: 0.66rem; font-weight: 800; color: var(--dd-blue); }
+.assessment-procedures p { margin: 3px 0; font-size: 0.76rem; }
+.assessment-procedures small { font-size: 0.65rem; color: var(--dd-muted); }
+
+/* ---- the mesh ----------------------------------------------------------------------------- */
+
+.assessment-mesh header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: var(--dd-space-3);
+}
+.assessment-mesh header h2 { margin: 0; }
+.assessment-mesh img {
+  width: 100%;
+  border-radius: var(--dd-radius-card);
+  background: var(--dd-ink);
+  display: block;
+}
+.assessment-tabs { display: flex; gap: 3px; padding: 3px; background: var(--dd-ice-strong); border-radius: 12px; }
+.assessment-tabs button {
+  border: 0;
+  background: transparent;
+  padding: 7px 13px;
+  border-radius: 10px;
+  color: var(--dd-muted);
+  font-weight: 700;
+  font-size: 0.75rem;
+  white-space: nowrap;
+}
+.assessment-tabs button.is-active { background: var(--dd-canvas); color: var(--dd-blue-strong); box-shadow: var(--dd-shadow-float); }
+
+.assessment-legend {
+  list-style: none;
+  margin: var(--dd-space-3) 0 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px var(--dd-space-3);
+}
+.assessment-legend li { display: flex; align-items: center; gap: 6px; font-size: 0.7rem; color: var(--dd-muted); }
+.assessment-legend i { width: 11px; height: 11px; border-radius: 3px; flex: none; }
+
+@media (max-width: 850px) {
+  .assessment-page { padding: var(--dd-space-3) 10px 90px; }
+  .assessment-header { grid-template-columns: auto 1fr; }
+  .assessment-header h1 { font-size: 1.05rem; }
+  .assessment-header p { display: none; }
+  .assessment-score { grid-column: 1 / -1; display: flex; align-items: baseline; justify-content: center; gap: 6px; }
+  .assessment-score strong { font-size: 1.3rem; }
+  .assessment-layout { grid-template-columns: 1fr; }
+  .assessment-card { border-radius: 18px; }
+}
