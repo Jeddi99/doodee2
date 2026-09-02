@@ -1,0 +1,100 @@
+# Build context for backend/Dockerfile, whose build context is the repo root.
+#
+# Today both COPY instructions are scoped to backend/, so most of this file changes nothing about
+# what lands in the image. It is written for the day someone widens a COPY to `. /app` — at that
+# moment the difference between "1.4 MB of Python" and "a published image containing .env.production
+# and a Firebase service-account key" is only this file. Deny-list the dangerous things now, while
+# it costs nothing, rather than after the credential is in a layer on a registry.
+#
+# Rules are deny-list, not allow-list, on purpose: a `*` catch-all plus re-includes silently drops
+# newly added backend directories, and the failure mode is a container that boots and 500s.
+
+# --- Secrets. The reason this file exists. ------------------------------------
+# The bare name and every flavour (.env.production, .env.local, .env.staging), matching .gitignore.
+.env
+.env.*
+# ...except the example, which holds only placeholders and is useful documentation inside an image.
+!.env.example
+# Firebase admin credentials. Named file plus the pattern the console hands out by default, because
+# the second one arrives with a different filename every time it is regenerated.
+firebase-service-account.json
+*firebase-adminsdk*.json
+*service-account*.json
+# Anything that is obviously key material, wherever it sits in the tree.
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa*
+.npmrc
+.netrc
+
+# --- Version control and tooling metadata ------------------------------------
+.git
+.gitignore
+.github
+.dockerignore
+.claude
+.md
+docs
+README.md
+
+# --- Dependencies. Reinstalled inside the image from requirements.txt. ---------
+node_modules
+**/node_modules
+.venv
+venv
+__pycache__
+**/__pycache__
+*.py[cod]
+.pytest_cache
+.mypy_cache
+.ruff_cache
+
+# --- Build output. Rebuilt in the image, or belongs to the frontend, which does not ship here. ---
+apps/web/dist
+apps/*/dist
+dist
+build
+coverage
+.expo
+# collectstatic output: the Dockerfile runs collectstatic itself, so a stale host copy would be
+# copied in and then overwritten. Keeping it out also keeps the context small.
+backend/staticfiles
+staticfiles
+
+# --- Local state that must never become part of an image ----------------------
+backend/db.sqlite3
+*.sqlite3
+*.sqlite
+*.db
+# celery beat's schedule database, written into ./backend by the bind mount in compose.yaml.
+backend/celerybeat-schedule
+backend/celerybeat-schedule.*
+celerybeat.pid
+*.log
+media/
+backend/media/
+
+# --- Test fixtures. Derived by backend/datamock/make_fixtures.py, which is kept. ---------------
+backend/datamock/*
+!backend/datamock/make_fixtures.py
+!backend/datamock/README.md
+
+# --- Frontend source. Not used by backend/Dockerfile, and megabytes of it. ------
+# apps/web/public alone is ~104 MB of imagery and MediaPipe binaries; leaving it in the context
+# means uploading it to the daemon on every build for nothing.
+apps
+packages
+package.json
+package-lock.json
+uv.lock
+.python-version
+
+# --- Editor / OS noise --------------------------------------------------------
+.DS_Store
+**/.DS_Store
+.idea
+.vscode
+*.swp
+Thumbs.db

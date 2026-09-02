@@ -82,6 +82,38 @@ services:
     # Bound to loopback: a reverse proxy terminates TLS and forwards here. Published on 0.0.0.0
     # this would be a plaintext Django open to the internet.
     ports: !override ["127.0.0.1:8001:8000"]
+    # `restart: unless-stopped` only acts on a process that exits. A gunicorn whose threads are
+    # all parked on a dead socket does not exit — it stays "Up 3 days" while Caddy answers 502 to
+    # everyone — and this is what tells the two apart. Be clear about what it does not do: Docker
+    # (unlike Swarm or Kubernetes) never restarts a container for being unhealthy, so this heals
+    # nothing by itself. It turns "Up 3 days" into "Up 3 days (unhealthy)" in `docker compose ps`,
+    # which is the difference between an operator seeing a 502 and guessing at Caddy, DNS and TLS
+    # in turn, and reading the answer off the first command in the runbook.
+    #
+    # Two details that would otherwise make this probe fail against a healthy process:
+    #
+    # The port is 8000, not the 8001 published above. A healthcheck runs *inside* the container,
+    # where gunicorn binds 0.0.0.0:8000 (backend/Dockerfile's CMD, and the two explicit commands
+    # further down); 8001/8002/8003 are host-side publish mappings that do not exist in here.
+    #
+    # The Host header is taken from DJANGO_ALLOWED_HOSTS because Django's CommonMiddleware calls
+    # `request.get_host()` on every request, /healthz included. A probe that sent the default
+    # `Host: 127.0.0.1` to a production container whose ALLOWED_HOSTS is `api.doodee.app` would
+    # be answered 400 DisallowedHost, and the container would report unhealthy for ever while
+    # serving real traffic without a fault. Reading it from the environment rather than hardcoding
+    # the domain keeps this correct on the day the domain changes.
+    #
+    # Slower than the redis checks above on purpose: each run starts a Python interpreter, and on
+    # the 2GB VPS this is sized for (docs/DEPLOY.md) doing that every 5 seconds in three
+    # containers is real memory and real CPU spent to learn nothing new. start_period covers the
+    # Django + mediapipe import, which takes tens of seconds and would otherwise show as a string
+    # of failures at every boot.
+    healthcheck:
+      test: ["CMD", "python", "-c", "import os, urllib.request as request; host = os.getenv('DJANGO_ALLOWED_HOSTS', 'localhost').split(',')[0]; request.urlopen(request.Request('http://127.0.0.1:8000/healthz', headers={'Host': host}), timeout=5).read()"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
     restart: unless-stopped
 
   worker:
@@ -169,6 +201,15 @@ services:
       gunicorn config.wsgi:application --bind 0.0.0.0:8000 -k gthread
       --workers 2 --threads 15 --timeout 60 --max-requests 2000 --max-requests-jitter 200
     ports: !override ["127.0.0.1:8002:8000"]
+    # The same probe as `api` — see the note there for why the port is 8000 and where the Host
+    # header comes from. 8002 is the host side of the mapping on the line above; inside this
+    # container gunicorn is on 8000 like every other one.
+    healthcheck:
+      test: ["CMD", "python", "-c", "import os, urllib.request as request; host = os.getenv('DJANGO_ALLOWED_HOSTS', 'localhost').split(',')[0]; request.urlopen(request.Request('http://127.0.0.1:8000/healthz', headers={'Host': host}), timeout=5).read()"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
     restart: unless-stopped
 
   # Permanent compatibility lane for old multipart POST /scans/. Route only that exact method
@@ -200,6 +241,14 @@ services:
       gunicorn config.wsgi:application --bind 0.0.0.0:8000 -k gthread
       --workers 1 --threads 2 --timeout 120 --max-requests 500 --max-requests-jitter 50
     ports: !override ["127.0.0.1:8003:8000"]
+    # As above. This one matters most of the three: with 1 worker x 2 threads, two stuck uploads
+    # are the entire capacity of this container, and nothing about that is visible from outside.
+    healthcheck:
+      test: ["CMD", "python", "-c", "import os, urllib.request as request; host = os.getenv('DJANGO_ALLOWED_HOSTS', 'localhost').split(',')[0]; request.urlopen(request.Request('http://127.0.0.1:8000/healthz', headers={'Host': host}), timeout=5).read()"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
     restart: unless-stopped
 
 volumes:

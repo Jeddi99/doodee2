@@ -65,8 +65,10 @@
 - [ ] `npm run doctor` บนเครื่องตัวเองผ่านครบ (ยกเว้น omise)
 - [ ] Supabase project สิงคโปร์ + bucket `face-scans` แบบ private
 - [ ] **Supabase connection string สองเส้น** จาก Project Settings → Database:
-      **Session pooler** URI → `DATABASE_URL` · **Direct connection** URI → `MIGRATION_DATABASE_URL`
-      (compose.prod บังคับให้มีทั้งคู่ ไม่มีแล้วไม่ยอมขึ้น)
+      **Transaction pooler** URI (พอร์ต 6543) → `DATABASE_URL` ·
+      **Direct connection** URI (พอร์ต 5432) → `MIGRATION_DATABASE_URL`
+      (compose.prod บังคับให้มีทั้งคู่ ไม่มีแล้วไม่ยอมขึ้น · **transaction ไม่ใช่ session** —
+      เหตุผลอยู่ท้ายข้อ 4 และผิดเส้นนี้แล้ว connection pool ของ Supabase จะเต็มตอนมีคนใช้จริง)
 - [ ] `firebase-service-account.json` ของ project ใหม่
 - [ ] VPS Ubuntu 24.04 สิงคโปร์ **2GB ก็พอ, 4GB สบาย** (ดู "เครื่องต้องใหญ่แค่ไหน" ท้ายไฟล์) · จด public IP
 - [ ] A record `api.doodee.app` → IP ของ VPS (ตั้งไว้ล่วงหน้าแล้วรอ DNS กระจาย)
@@ -246,16 +248,50 @@ Authentication → Settings → **Authorized domains** → เพิ่ม `dood
 docker compose -f compose.yaml -f compose.prod.yaml exec api \
   python manage.py check_production_config          # → Production configuration OK
 
+# ชั้น 1.5 — ค่าความปลอดภัยของ Django ครบ
+docker compose -f compose.yaml -f compose.prod.yaml exec api \
+  python manage.py check --deploy                   # → System check identified no issues (1 silenced)
+```
+
+> **`1 silenced` ถูกต้องแล้ว** ตัวที่ถูกปิดเสียงคือ `security.W021` ที่บอกว่ายังไม่ได้ตั้ง
+> `SECURE_HSTS_PRELOAD` — เราตั้งใจไม่ตั้ง เหตุผลอยู่ในคอมเมนต์ `settings.py` ตรงบล็อก HSTS
+> โดยย่อ: preload คือการฝากคำสัญญาไว้ในตัวเบราว์เซอร์ ถอนออกใช้เวลาเป็นเดือน ส่วน `.app`
+> ถูก preload ทั้ง TLD อยู่แล้ว จึงไม่ได้อะไรเพิ่มเลยแลกกับสิ่งที่กดปุ่มถอยไม่ได้
+>
+> **ถ้าเห็น 4 warnings (W004, W008, W012, W016)** แปลว่า process นี้อ่าน `DJANGO_DEBUG=true` —
+> ค่าความปลอดภัยทั้งสี่ผูกกับ `DEBUG` เพื่อให้ http บนเครื่องตัวเองยังใช้งานได้ ไปแก้ `.env`
+
+```sh
 # ชั้น 2 — บริการภายนอกต่อติดจากบน VPS
 docker compose -f compose.yaml -f compose.prod.yaml exec api \
   python manage.py check_services
 
 # ชั้น 3 — Caddy + TLS + routing
-curl -I https://api.doodee.app/api/v1/session/      # → HTTP/2 403
+curl -s -o /dev/null -w '%{http_code}\n' https://api.doodee.app/healthz    # → 200
+curl -s https://api.doodee.app/healthz                                     # → {"status": "ok"}
 ```
 
-**`403` คือผลลัพธ์ที่ถูกต้อง** แปลว่า TLS ผ่าน, Caddy หาปลายทางเจอ, Django ตอบ, และ auth ทำงาน
-(ไม่มี token ก็ต้องถูกปฏิเสธ) — ถ้าได้ `200` ต่างหากที่น่ากลัว
+**`200` คือผลลัพธ์ที่ถูกต้อง** แปลว่า DNS ชี้ถูก, TLS ผ่าน, Caddy หาปลายทางเจอ และ gunicorn
+ยังเดินไปถึง view ได้จริง — ไม่ใช่แค่ "พอร์ตยังเปิดอยู่"
+
+> **`/healthz` ไม่แตะฐานข้อมูลโดยตั้งใจ** มันตอบคำถามเดียวคือ "โปรเซสนี้ยังมีชีวิตไหม"
+> ไม่ใช่ "Supabase ต่อติดไหม" — คำถามหลังคือชั้น 1 กับชั้น 2 ข้างบน ซึ่งเป็นคนถามเองครั้งเดียว
+>
+> ถ้าใส่ `SELECT 1` ลงไปใน `/healthz` ตอน Supabase สะดุดสิบวินาที ทุกคอนเทนเนอร์จะรายงานว่า
+> ไม่แข็งแรงพร้อมกันทั้งที่ยังให้บริการได้ และอะไรก็ตามที่ทำงานตามสถานะนั้นจะรีสตาร์ตมันทั้งหมด
+> พร้อมกัน — ซ้ำเข้าไปตอนที่ฐานข้อมูลรับ connection ใหม่ไหวน้อยที่สุด
+
+```sh
+# ชั้น 3.5 — auth ยังกันคนไม่มี token อยู่ไหม
+curl -s -o /dev/null -w '%{http_code}\n' https://api.doodee.app/api/v1/session/   # → 403
+```
+
+`403` คือผลลัพธ์ที่ถูกต้องของ**ข้อนี้** (ไม่มี token ก็ต้องถูกปฏิเสธ) — ถ้าได้ `200` ต่างหากที่น่ากลัว
+
+> **แต่ห้ามใช้ 403 เป็นตัววัดว่าระบบดี** ซึ่งเอกสารนี้เคยเขียนไว้แบบนั้น: 403 จากเส้นนี้เกิดได้จาก
+> service account ของ Firebase หมดอายุ, `FirebaseAuthentication` พัง, หรือ permission ตั้งผิด
+> ได้เหมือนกันหมด และเส้นนี้ยังแตะฐานข้อมูลด้วย — "ผลลัพธ์ที่ถูกต้อง" ที่แยกความพังสามแบบไม่ออก
+> จึงไม่ได้ยืนยันอะไรเลย นั่นคือเหตุผลที่ `/healthz` มาก่อน
 
 > **ทำไม 403 ไม่ใช่ 401** ซึ่งเป็นสิ่งที่ทุกคนคาดหวังจาก endpoint ที่ต้องล็อกอิน:
 > DRF จะตอบ 401 ก็ต่อเมื่อ authentication class มีเมธอด `authenticate_header()` ที่บอกได้ว่าจะขอ
@@ -263,13 +299,31 @@ curl -I https://api.doodee.app/api/v1/session/      # → HTTP/2 403
 > (`backend/doodee/authentication.py`) ไม่ได้นิยามไว้ DRF จึงลด `NotAuthenticated` เป็น 403 ตามสเปก
 > ถ้าอยากได้ 401 ต้องเพิ่มเมธอดนั้น ไม่ใช่แก้ที่ Caddy
 
+ตารางนี้อ่านคู่กับคำสั่ง `/healthz` ของชั้น 3:
+
 | ผลที่ได้ | ชั้นที่พัง |
 |---|---|
 | `could not resolve host` | DNS — A record ยังไม่กระจาย |
 | ค้างแล้ว timeout | ufw ปิด 443 หรือ Caddy ไม่ได้รัน |
 | `502 Bad Gateway` | Caddy ทำงาน แต่ container ปลายทางตาย → `docker compose logs api` |
 | `400 Bad Request` | `DJANGO_ALLOWED_HOSTS` ไม่มี `api.doodee.app` |
-| `403` | ✅ ถูกต้อง |
+| `301` ไปที่ `https://` ซ้ำ ๆ | ยิงเป็น `http://` เข้ามาเอง หรือ Caddy ไม่ได้ส่ง `X-Forwarded-Proto` |
+| `200` | ✅ ถูกต้อง |
+
+```sh
+# ชั้น 3.6 — สามคอนเทนเนอร์ที่รับ request ยังรายงานว่าแข็งแรง
+docker compose -f compose.yaml -f compose.prod.yaml ps
+# api, chat-api, legacy-upload-api ต้องขึ้น "Up ... (healthy)"
+```
+
+> `compose.prod.yaml` ตั้ง `healthcheck` ของสามตัวนี้ให้ยิง `/healthz` ของตัวเองทุก 30 วินาที
+> ประโยชน์คือแยก "gunicorn ค้าง" ออกจาก "gunicorn ตาย" ได้ — ตัวที่ตายจะถูก `restart:
+> unless-stopped` ปลุกขึ้นมาเอง ส่วนตัวที่ค้างจะขึ้นว่า `Up 3 days` เฉย ๆ ทั้งที่ Caddy ตอบ 502
+> ให้ทุกคน จนกว่าจะมี healthcheck มาเปลี่ยนมันเป็น `Up 3 days (unhealthy)`
+>
+> **Docker ไม่รีสตาร์ตคอนเทนเนอร์ที่ unhealthy ให้เอง** (Swarm/Kubernetes ทำ, Docker เปล่า ๆ ไม่ทำ)
+> เห็น `unhealthy` เมื่อไหร่ต้อง `docker compose ... restart <service>` เอง — บรรทัดนี้คือ
+> "ตัวบอกอาการ" ไม่ใช่ "ตัวรักษา" และการเข้าใจผิดข้อนี้แปลว่าจะรอการรีสตาร์ตที่ไม่มีวันมา
 
 ```sh
 # ชั้น 4 — chat เข้าพอร์ตแยกจริงไหม

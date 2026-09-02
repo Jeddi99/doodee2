@@ -112,6 +112,86 @@ STORAGES = {
 # Trusting this header is only safe because the proxy sets it on every request it forwards and
 # gunicorn is bound to 127.0.0.1 (compose.prod.yaml), so nothing else can reach it to forge one.
 SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
+
+# The four settings `manage.py check --deploy` asks for, every one of them keyed off DEBUG rather
+# than switched on flat. That is not timidity. Each of them breaks a plain-http localhost in a
+# way that reads as a bug rather than as a policy — an admin login form that accepts the password
+# and then returns to itself, a redirect to an https port nothing is listening on — and a
+# hardening switch that breaks development is a switch the next person turns off to get their
+# work done. It is then off in production too, which is the only place it was ever doing anything.
+#
+# Turning them on production-only does mean they are never exercised locally, so the reasoning
+# for each is written down here rather than left to be rediscovered on the server.
+
+# Redirect http to https. This one is safe *only* because SECURE_PROXY_SSL_HEADER above is set
+# and actually honoured, and it is worth being exact about why, because getting it wrong does not
+# degrade the API, it removes it.
+#
+# SecurityMiddleware redirects when `request.is_secure()` is false, and `is_secure()` reads
+# SECURE_PROXY_SSL_HEADER out of settings *at request time* (django/http/request.py, the `scheme`
+# property) — not when the middleware is constructed. So the order of these two assignments in
+# this file does not matter, and neither does the middleware order; what matters is only that the
+# header is trusted at all. If it were not, every request Caddy forwards over loopback http would
+# look insecure, Django would answer each one with a 301 to the https URL the browser had just
+# requested, and the browser would follow that loop until it gave up. The site would be entirely
+# down and the logs would show nothing but 301s.
+#
+# It is honoured: Caddy sets X-Forwarded-Proto on every request it proxies (see Caddyfile), and
+# gunicorn is published to 127.0.0.1 only (compose.prod.yaml), so the header is both always
+# present on real traffic and unforgeable by anything that is not the proxy.
+SECURE_SSL_REDIRECT = not DEBUG
+# The one exception, and it is the container health probe. It speaks plain http to 127.0.0.1
+# inside the container and has no proxy in front of it to set the forwarded header, so without
+# this it would be answered with a 301 to https://api.doodee.app/healthz — sending the probe out
+# to DNS, the internet and Caddy and back. A liveness check that fails when the certificate
+# expires is not checking whether this process is alive. Matched against `request.path` with the
+# leading slash stripped, hence no slash in the pattern.
+SECURE_REDIRECT_EXEMPT = [r"^healthz$"]
+
+# HSTS: one hour to begin with, not a year. max-age is the only header here that cannot be taken
+# back — a browser that has seen it refuses to speak http to this host for the full duration, and
+# the only way to shorten that is to serve a smaller max-age over a *working* https connection,
+# which is precisely what is unavailable when the certificate is the thing that broke. Every
+# visitor who already cached a year is locked out for the rest of that year.
+#
+# An hour is long enough to prove the header is really being served on production traffic, and
+# short enough that a mistake ages out over lunch. Raise it deliberately once a Let's Encrypt
+# renewal has been watched to succeed unattended, in steps — a day, a week, then a year.
+SECURE_HSTS_SECONDS = 0 if DEBUG else 3600
+# Nothing is served under api.doodee.app, so this covers no additional host today. It is set
+# because it costs nothing here and because `check --deploy` counts its absence as a warning, and
+# a runbook step that is expected to print warnings is a runbook step nobody reads.
+SECURE_HSTS_INCLUDE_SUBDOMAINS = not DEBUG
+# SECURE_HSTS_PRELOAD is deliberately NOT set. Submitting to the preload list writes the promise
+# into browser binaries, where our own max-age no longer governs it and removal takes months of
+# release cycles rather than an hour. It would also buy nothing: `.app` is already on the preload
+# list as an entire TLD, so browsers refuse plain http to every name under it regardless of what
+# we send. That is the same fact docs/DEPLOY.md opens with, and it is why the header above is a
+# belt beside an existing brace rather than the thing keeping this site on https.
+
+# With the settings above in place, `manage.py check --deploy` on a production-shaped process
+# reports exactly one remaining warning: W021, "you have not set SECURE_HSTS_PRELOAD". Silenced
+# rather than fixed, because the fix is the irreversible step above that we are choosing not to
+# take. A runbook check whose expected output is "1 issue" is a check whose next reader makes it
+# green, and the way to make this one green is to submit the domain to a list that browsers ship
+# in their binaries. Silencing it makes the expected output "no issues", so a real regression
+# stands out instead of hiding in the noise of an argument we already had, in writing, above.
+SILENCED_SYSTEM_CHECKS = ["security.W021"]
+
+# The API sets no cookie at all — it authenticates with a Firebase bearer token and runs no CSRF
+# check — so these two govern exactly one surface: /admin. That is the surface where a bank
+# transfer becomes a paid entitlement (docs/DEPLOY.md section 10), which makes the session cookie
+# of whoever confirms payments the most valuable credential this deployment holds. Secure means
+# the browser will not attach it to a plain-http request, including one an attacker induces on a
+# shared network for the sole purpose of watching the cookie go past.
+#
+# Off under DEBUG because a Secure cookie is dropped by any browser on a non-https origin that is
+# not localhost — and this project is tested from a real phone on the same wifi (DEPLOY section
+# 9, step 4), which is http to a LAN address. The symptom is not an error: the login POST
+# succeeds, redirects, and arrives back at the login form, for ever.
+SESSION_COOKIE_SECURE = not DEBUG
+CSRF_COOKIE_SECURE = not DEBUG
+
 # Defaults to https:// for each configured host rather than being a second list to keep in step
 # with DJANGO_ALLOWED_HOSTS by hand. localhost is skipped: it is served over http in development,
 # and an https:// origin that never occurs would only be noise.
