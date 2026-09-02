@@ -5,6 +5,8 @@ import math
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 
+from django.http import HttpResponse
+
 import cv2
 import numpy as np
 from django.conf import settings
@@ -1142,6 +1144,56 @@ def _redact_assessment(payload):
         ],
         "locked_findings": [item.get("key") for item in hidden],
     }
+
+
+@api_view(("GET",))
+def scan_mesh(request, scan_id, view):
+    """The depth-shaded mesh for one captured view, as a PNG.
+
+    Rendered server-side because the triangulation is what makes the picture: filling each
+    Delaunay triangle by its own mean depth is what turns a landmark cloud into a surface, and
+    the browser has no triangulator. The landmarks are re-detected here rather than stored, so
+    the mesh always describes the same measurement the scores came from.
+    """
+    scan = Scan.objects.filter(pk=scan_id, user=request.user).exclude(
+        status=Scan.Status.DELETION_PENDING).first()
+    if not scan:
+        raise NotFound("scan_not_found")
+    object_name = (scan.image_objects or {}).get(view)
+    if not object_name:
+        raise NotFound("view_not_captured")
+
+    from .analysis_engine import _landmarks
+    from .face_mesh_render import mesh_png
+
+    try:
+        image_bytes = download_image(object_name)
+        points, _pose = _landmarks(cv2.imdecode(np.frombuffer(image_bytes, np.uint8), cv2.IMREAD_COLOR))
+    except (FileNotFoundError, ValueError) as exc:
+        # A view the detector cannot read has no mesh to draw. Said plainly rather than as a
+        # blank dark panel, which is indistinguishable from a render that failed to load.
+        return Response({"detail": str(exc) or "no_landmarks"},
+                        status=status.HTTP_422_UNPROCESSABLE_ENTITY)
+
+    response = HttpResponse(mesh_png(image_bytes, points), content_type="image/png")
+    # The same window the signed image links use: the mesh is derived from a face photograph and
+    # should not outlive one in a shared cache.
+    response["Cache-Control"] = "private, max-age=900"
+    return response
+
+
+@api_view(("GET",))
+def mesh_legend(request):
+    """Zone names and colours, so the legend beside the mesh cannot drift from the render."""
+    from .face_mesh_render import ZONE_COLOURS, ZONE_LABELS_TH
+
+    return Response({
+        "zones": [
+            # Reversed out of OpenCV's BGR for the browser.
+            {"key": key, "label_th": ZONE_LABELS_TH[key], "colour": [colour[2], colour[1], colour[0]]}
+            for key, colour in ZONE_COLOURS.items()
+        ],
+    })
 
 
 class MetricCatalogList(APIView):

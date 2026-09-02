@@ -4,7 +4,7 @@ from rest_framework.routers import DefaultRouter
 from .views import (
     ChatViewSet, NotificationViewSet, OrderViewSet, MetricCatalogList, ProcedureCategoryList, ProcedureList, ScanViewSet, SimulationViewSet,
     attribution_view, cancel_withdrawal, credits, delete_account, demo_scan, omise_webhook,
-    pay_order, payout_account, scan_assessment, plans, profile, redeem, referral_claim, referral_overview,
+    mesh_legend, pay_order, payout_account, scan_assessment, scan_mesh, plans, profile, redeem, referral_claim, referral_overview,
     register_push_token, session, skin_vision_consent, validate_coupon_view, visit, withdrawals,
 )
 
@@ -38,6 +38,10 @@ urlpatterns = [
     # Findings and the distribution in one answer: they are read together, and two requests
     # would let the page show a percentile beside findings from a different scan.
     path("scans/<uuid:scan_id>/assessment/", scan_assessment),
+    # The mesh is a PNG, not JSON: the triangulation is the picture, and the browser has no
+    # triangulator to rebuild it from a landmark list.
+    path("scans/<uuid:scan_id>/mesh/<slug:view>/", scan_mesh),
+    path("mesh-legend/", mesh_legend),
     path("metric-catalog/", MetricCatalogList.as_view()),
     path("procedures/", ProcedureList.as_view()),
     # The 13 headings, so a client can group the list without hardcoding them.

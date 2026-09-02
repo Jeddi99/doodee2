@@ -963,6 +963,72 @@ class ReferenceSolveTest(SimpleTestCase):
         self.assertIn(f"reference_height = _distance(front, {low}, {high})", source)
 
 
+class MeshEndpointTest(TestCase):
+    """The face as a depth-shaded mesh, and the legend that names its colours."""
+
+    def setUp(self):
+        self.user = User.objects.create_user("mesh-reader")
+        self.client = APIClient()
+        self.client.force_authenticate(self.user)
+        self.scan = Scan.objects.create(
+            user=self.user, age_band="adult", status=Scan.Status.COMPLETED,
+            image_objects={"front": "m/front.jpg"},
+            expires_at=timezone.now() + timedelta(days=30),
+        )
+
+    def url(self, view="front", scan=None):
+        return f"/api/v1/scans/{(scan or self.scan).id}/mesh/{view}/"
+
+    @patch("doodee.views.download_image", return_value=b"\x89PNG")
+    def test_it_answers_with_a_png_that_is_not_cached_publicly(self, download):
+        """The mesh is derived from a face photograph and must not outlive one in a shared cache."""
+        with patch("doodee.analysis_engine._landmarks", return_value=(np.zeros((478, 3)), {})), \
+             patch("doodee.face_mesh_render.mesh_png", return_value=b"\x89PNG mesh"):
+            response = self.client.get(self.url())
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response["Content-Type"], "image/png")
+        self.assertEqual(response["Cache-Control"], "private, max-age=900")
+
+    def test_a_view_this_scan_never_captured_is_a_404(self):
+        self.assertEqual(self.client.get(self.url("left_profile")).status_code, 404)
+
+    @patch("doodee.views.download_image", return_value=b"not an image")
+    def test_a_view_the_detector_cannot_read_says_so_rather_than_going_blank(self, download):
+        """A blank dark panel is indistinguishable from a render that failed to load."""
+        with patch("doodee.analysis_engine._landmarks", side_effect=ValueError("no_face")):
+            response = self.client.get(self.url())
+        self.assertEqual(response.status_code, 422)
+        self.assertIn("no_face", json.dumps(response.data))
+
+    def test_someone_elses_scan_is_not_found(self):
+        other = User.objects.create_user("mesh-other")
+        theirs = Scan.objects.create(
+            user=other, age_band="adult", status=Scan.Status.COMPLETED,
+            image_objects={"front": "m/front.jpg"}, expires_at=timezone.now() + timedelta(days=30),
+        )
+        self.assertEqual(self.client.get(self.url(scan=theirs)).status_code, 404)
+
+    def test_the_legend_names_every_zone_the_render_draws(self):
+        """Two lists that must not drift: a colour on the picture with no name beside it is a
+        colour the reader cannot ask about."""
+        from .face_mesh_render import ZONE_COLOURS, ZONE_LABELS_TH
+
+        response = self.client.get("/api/v1/mesh-legend/")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual([zone["key"] for zone in response.data["zones"]], list(ZONE_COLOURS))
+        self.assertEqual(set(ZONE_COLOURS), set(ZONE_LABELS_TH))
+        self.assertTrue(all(zone["label_th"] for zone in response.data["zones"]))
+
+    def test_the_legend_hands_over_rgb_because_the_renderer_works_in_bgr(self):
+        """OpenCV's byte order reaching a browser unchanged would swap red and blue."""
+        from .face_mesh_render import ZONE_COLOURS
+
+        response = self.client.get("/api/v1/mesh-legend/")
+        first = response.data["zones"][0]
+        blue, green, red = ZONE_COLOURS[first["key"]]
+        self.assertEqual(first["colour"], [red, green, blue])
+
+
 class ProcedureNamesEnTest(TestCase):
     """Every row carries an English name, and the table names nothing that does not exist.
 
