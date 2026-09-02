@@ -54,6 +54,14 @@ export type Pillar = {
   note: string;
   score: string;
   locked: boolean;
+  /**
+   * Why it is locked, which is not one thing.
+   *
+   * `not_scored` means this scan has no score for it yet — a paid plan or a better scan can
+   * change that. `unmeasurable` means no published reference measures it at all, so paying
+   * changes nothing and offering the upgrade is selling something that does not exist.
+   */
+  lockReason: 'not_scored' | 'unmeasurable' | null;
   metricCount: number;
 };
 
@@ -70,13 +78,13 @@ const PILLAR_LABELS: Record<'th' | 'en', Record<PillarId, { label: string; note:
   th: {
     harmony: { label: 'ความสมดุล', note: 'สัดส่วนโดยรวมสมดุล' },
     angularity: { label: 'โครงสร้างเหลี่ยมคม', note: 'มิติและความคมชัด' },
-    dimorphism: { label: 'เอกลักษณ์เฉพาะ', note: 'สัดส่วนเฉพาะบุคคล' },
+    dimorphism: { label: 'เอกลักษณ์เฉพาะ', note: 'ยังไม่มีงานวิจัยที่ให้ค่ามาตรฐานไว้ จึงให้คะแนนไม่ได้' },
     features: { label: 'ตา จมูก ปาก', note: 'ความสมดุลขององค์ประกอบ' },
   },
   en: {
     harmony: { label: 'Harmony', note: 'Balanced proportions' },
     angularity: { label: 'Angularity', note: 'Shape and definition' },
-    dimorphism: { label: 'Dimorphism', note: 'Individual characteristics' },
+    dimorphism: { label: 'Dimorphism', note: 'No published reference measures this, so it cannot be scored' },
     features: { label: 'Features', note: 'Eyes, nose and lips' },
   },
 };
@@ -307,7 +315,12 @@ export function pillarsFor(scan: Scan, locale: 'th' | 'en' = 'en'): Pillar[] {
       return item ? [item] : [];
     });
     const { label, note } = dict[id] || PILLAR_LABELS.en[id];
-    if (!present.length) return { id, label, note, score: '—', locked: true, metricCount: 0 };
+    if (!present.length) {
+      // No category behind it at all means no study measures it — as against a category that
+      // exists but this particular scan did not score.
+      const lockReason = categories.length ? 'not_scored' : 'unmeasurable';
+      return { id, label, note, score: '—', locked: true, lockReason, metricCount: 0 };
+    }
     const mean = present.reduce((total, item) => total + item.score, 0) / present.length;
     return {
       id,
@@ -315,6 +328,7 @@ export function pillarsFor(scan: Scan, locale: 'th' | 'en' = 'en'): Pillar[] {
       note,
       score: (toTenScale(mean) ?? 0).toFixed(1),
       locked: false,
+      lockReason: null,
       metricCount: present.reduce((total, item) => total + item.metric_count, 0),
     };
   });

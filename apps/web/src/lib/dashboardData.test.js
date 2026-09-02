@@ -67,6 +67,30 @@ test('a pillar with no scored category stays locked instead of showing a number'
   assert.equal(byId.dimorphism.score, '—');
 });
 
+test('a pillar nothing can measure is not the same lock as one this scan did not score', () => {
+  /**
+   * Both render locked, and the difference is what happens on the click: a locked pillar opens
+   * the pricing modal. For `dimorphism` that was selling something that does not exist — no
+   * published reference measures sexual dimorphism, so paying reveals nothing. The reason has
+   * to reach the component, or the component cannot tell the two apart.
+   */
+  const byId = Object.fromEntries(pillarsFor(scan).map((pillar) => [pillar.id, pillar]));
+
+  assert.equal(byId.dimorphism.lockReason, 'unmeasurable');
+  assert.equal(byId.harmony.lockReason, null, 'a scored pillar has nothing to explain');
+  // And it says so in the note, which is what the disabled control shows on hover.
+  assert.match(byId.dimorphism.note, /No published reference/);
+});
+
+test('a scan with no scores locks every pillar as unscored, not as unmeasurable', () => {
+  /** Otherwise a scan still processing would tell the user their face cannot be measured. */
+  const byId = Object.fromEntries(pillarsFor(emptyScan).map((pillar) => [pillar.id, pillar]));
+
+  assert.equal(byId.harmony.lockReason, 'not_scored');
+  assert.equal(byId.features.lockReason, 'not_scored');
+  assert.equal(byId.dimorphism.lockReason, 'unmeasurable', 'this one is unmeasurable regardless');
+});
+
 test('every pillar locks when the scan carries no reference scores at all', () => {
   assert.deepEqual(
     pillarsFor(emptyScan).map((pillar) => pillar.locked),

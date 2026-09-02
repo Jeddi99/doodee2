@@ -471,7 +471,18 @@ function Overview({
             className={`pillar-card app-glass ${item.id === current?.id ? "is-active" : ""} ${item.locked ? "is-locked" : ""}`}
             data-pillar={item.id}
             type="button"
-            onClick={() => (item.locked ? onUnlock() : openView("analysis"))}
+            // A pillar nothing can measure must not open the pricing modal. Paying would not
+            // reveal it, because no published reference measures it — offering the upgrade there
+            // is selling something that does not exist.
+            disabled={item.lockReason === "unmeasurable"}
+            title={item.lockReason === "unmeasurable" ? item.note : undefined}
+            onClick={() =>
+              item.lockReason === "unmeasurable"
+                ? undefined
+                : item.locked
+                  ? onUnlock()
+                  : openView("analysis")
+            }
             key={item.id}
           >
             <span className={`pillar-art pillar-art--${item.id}`} aria-hidden="true" />
