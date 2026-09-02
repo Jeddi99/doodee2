@@ -645,6 +645,16 @@ function Overview({
                 </>
               )}
             </strong>
+            {/* How many measurements the score rests on. Without it a 9.9 from two numbers sits
+                beside an overall of 7.8 from twelve and reads as the more confident of the two;
+                a reader asked which one was fabricated, and the honest answer was that both were
+                real and the page had not said what either was made of. `pillarsFor` was already
+                computing the count. */}
+            {!item.locked && item.metricCount > 0 && (
+              <span className="pillar-basis">
+                {th ? `จาก ${item.metricCount} ค่าวัด` : `from ${item.metricCount} measurements`}
+              </span>
+            )}
             {item.locked ? (
               <span className="pillar-unlock">
                 {item.lockReason === "unmeasurable" ? (

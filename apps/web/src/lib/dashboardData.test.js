@@ -365,3 +365,43 @@ test('catalog entries the backend cannot compute are reported unavailable, not f
   assert.equal(isAvailable('facial-thirds'), false);
   assert.equal(catalogAvailability(emptyScan).availableCount, 0);
 });
+
+test('a pillar says what it measured, and never calls one category the whole face', () => {
+  /**
+   * A reader saw ความสมดุล 9.9 beside an overall of 7.8 and asked which number was invented.
+   * Neither was. The pillar is `proportions` alone — two measurements of facial height — and the
+   * overall averages all twelve, including a weak one. What misled was the note: "สัดส่วนโดยรวม
+   * สมดุล", overall proportions, over a score that is nothing of the kind.
+   *
+   * The pillar-to-category map is the fact this guards against: `harmony` is one category, so no
+   * copy attached to it may claim the face as a whole.
+   */
+  const source = readFileSync(fileURLToPath(new URL('./dashboardData.ts', import.meta.url)), 'utf8');
+  const labels = source.slice(source.indexOf('const PILLAR_LABELS'), source.indexOf('\n};', source.indexOf('const PILLAR_LABELS')));
+  for (const word of ['โดยรวม', 'overall', 'Overall']) {
+    assert.ok(!labels.includes(word), `a pillar note says "${word}" over a score covering one part of the face`);
+  }
+});
+
+test('a pillar reports how many measurements it rests on', () => {
+  // Two measurements and twelve produce numbers that look equally confident on screen. The count
+  // is what separates them, and it is computed here, so it has to survive here.
+  const scan = {
+    analysis_data: {
+      reference_scores: {
+        overall_score: 78,
+        categories: [
+          { key: 'proportions', score: 99, metric_count: 2 },
+          { key: 'eyes', score: 70, metric_count: 4 },
+        ],
+        metrics: [],
+      },
+    },
+  };
+  const byId = Object.fromEntries(pillarsFor(scan, 'th').map((item) => [item.id, item]));
+  assert.equal(byId.harmony.score, '9.9');
+  assert.equal(byId.harmony.metricCount, 2, 'the 9.9 must carry the two measurements it came from');
+  // And a pillar nothing measures reports no count rather than a confident zero-of-nothing.
+  assert.equal(byId.dimorphism.metricCount, 0);
+  assert.equal(byId.dimorphism.locked, true);
+});

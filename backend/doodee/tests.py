@@ -3084,18 +3084,20 @@ class UserAdminTest(TestCase):
         redemption = self.vip.promo_redemptions.get()
         url = f"/admin/auth/user/{self.vip.pk}/change/"
 
-        # The submitted value is the group name itself. It used to be a short word mapped to a
-        # group by a second dict, and the two drifted: "member" granted `pro_member` — the ฿799
-        # tier — and no word at all reached `plus_member`.
+        # The submitted value is a plan code, and saving writes the `Subscription` row that
+        # names it — the same row a purchase writes — so nothing downstream has to infer the
+        # tier from a group two plans can share. It used to be a short word mapped to a group by
+        # a second dict, and the two drifted: "member" granted `pro_member`, and no word at all
+        # reached `plus_member`.
         #
-        # `clinic_partner` used to be a third row here. It is gone because the choices come from
-        # the Plan table and migration 0041 deleted the plan that named that group — so the form
-        # can no longer offer it, which is the correct behaviour for a tier that is no longer
-        # sold, and submitting it now fails validation rather than granting anything.
+        # `clinic` used to be a third row here. It is gone because the choices come from the Plan
+        # table and migration 0041 deleted that plan — so the form can no longer offer it, which
+        # is the correct behaviour for a tier that is no longer sold, and submitting it now fails
+        # validation rather than granting anything.
         tiers = ("plus_member", "pro_member")
         for membership, expected in (
-            ("plus_member", {"plus_member"}),
-            ("pro_member", {"pro_member"}),
+            ("plus", {"plus_member"}),
+            ("pro", {"pro_member"}),
             ("", set()),
         ):
             response = self.client.post(url, {"membership": membership, "is_active": "on", "_save": "Save"})
@@ -3121,13 +3123,15 @@ class UserAdminTest(TestCase):
         url = f"/admin/auth/user/{self.plus.pk}/change/"
 
         form = self.client.get(url).context["adminform"].form
-        self.assertEqual(form["membership"].value(), "plus_member")
-        self.assertIn(("plus_member", "พลัส"), list(form.fields["membership"].choices))
+        self.assertEqual(form["membership"].value(), "plus")
+        self.assertIn(("plus", "พลัส"), list(form.fields["membership"].choices))
 
         response = self.client.post(url, dict(form.initial, membership=form["membership"].value(),
                                               is_active="on", _save="Save"))
         self.assertEqual(response.status_code, 302, response.context)
         self.assertTrue(self.plus.groups.filter(name="plus_member").exists())
+        # Saving also names the tier on a row, so the group is no longer the only record of it.
+        self.assertEqual(entitlement.plan_code(self.plus), "plus")
 
     def test_password_change_is_staff_only_and_uses_validators(self):
         self.client.force_login(self.superuser)

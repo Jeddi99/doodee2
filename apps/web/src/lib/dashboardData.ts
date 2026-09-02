@@ -92,18 +92,27 @@ const PILLAR_CATEGORIES: Record<PillarId, MetricCategory[]> = {
   dimorphism: [],
 };
 
+/**
+ * A pillar names the measurements behind it, not a quality of the face.
+ *
+ * `harmony` read "ความสมดุล · สัดส่วนโดยรวมสมดุล" — "overall proportions are balanced" — and a
+ * reader saw 9.9 beside an overall of 7.8 and asked which of the two was made up. Neither was:
+ * the pillar is the `proportions` category alone, two measurements of facial height, while the
+ * overall averages all twelve including a weak one. The word "โดยรวม" was doing the damage, so
+ * every note now says which part of the face was measured and none of them says "overall".
+ */
 const PILLAR_LABELS: Record<'th' | 'en', Record<PillarId, { label: string; note: string }>> = {
   th: {
-    harmony: { label: 'ความสมดุล', note: 'สัดส่วนโดยรวมสมดุล' },
-    angularity: { label: 'โครงสร้างเหลี่ยมคม', note: 'มิติและความคมชัด' },
+    harmony: { label: 'สัดส่วนความสูงใบหน้า', note: 'ความสูงของกลางหน้าและหน้าส่วนล่าง เทียบค่าอ้างอิง' },
+    angularity: { label: 'คาง', note: 'ความสูงและความกว้างของคาง เทียบค่าอ้างอิง' },
     dimorphism: { label: 'เอกลักษณ์เฉพาะ', note: 'ยังไม่มีงานวิจัยที่ให้ค่ามาตรฐานไว้ จึงให้คะแนนไม่ได้' },
-    features: { label: 'ตา จมูก ปาก', note: 'ความสมดุลขององค์ประกอบ' },
+    features: { label: 'ตา จมูก ปาก', note: 'สัดส่วนของตา จมูกและปาก เทียบค่าอ้างอิง' },
   },
   en: {
-    harmony: { label: 'Harmony', note: 'Balanced proportions' },
-    angularity: { label: 'Angularity', note: 'Shape and definition' },
+    harmony: { label: 'Facial height', note: 'Midface and lower-face height against the reference' },
+    angularity: { label: 'Chin', note: 'Chin height and width against the reference' },
     dimorphism: { label: 'Dimorphism', note: 'No published reference measures this, so it cannot be scored' },
-    features: { label: 'Features', note: 'Eyes, nose and lips' },
+    features: { label: 'Features', note: 'Eye, nose and lip proportions against the reference' },
   },
 };
 

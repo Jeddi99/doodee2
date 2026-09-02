@@ -6,17 +6,19 @@ import { fileURLToPath } from 'node:url';
 /**
  * Guards the one property of this screen that costs money to get wrong.
  *
- * Selecting a procedure used to render it. `add A → add B → remove B → re-add B` was four paid
- * renders for two distinct images, because the render fired on every change to the stack and
- * nothing cached a result. The flow now batches: ticking, unticking and re-levelling only change
- * what is selected, and one explicit press turns the selection into a picture.
+ * `add A → add B → remove B → re-add B` was four renders for two distinct images, because a render
+ * fired on every change to the stack and nothing cached a result. It was briefly fixed by batching
+ * — ticking changed the selection and one press turned it into a picture — and the owner asked for
+ * the immediate feedback back. So the cost is now held down by the cache instead: every request
+ * goes through `renderNow`, which returns early when this exact stack has already been rendered at
+ * this exact angle, and the re-add above costs nothing.
  *
- * That property lives in which function calls which — the sort of thing a well-meaning edit
- * restores in a line ("just refresh it here") without anybody noticing until the bill arrives. So
- * it is asserted on the source, the way `DashboardPage.test.js` asserts its own literals: there is
- * no DOM renderer in this suite, and what is being guarded is a call appearing in a function, which
- * a source read catches exactly. The behaviour underneath is tested properly in
- * `lib/renderPlan.test.js` and `lib/doseNotes.test.js`.
+ * That makes `renderNow` the single choke point, and this file exists to keep it single. A
+ * well-meaning edit that calls `requestPreview` or `previewSimulation` directly ("just refresh it
+ * here") reopens the whole bill, silently, and nothing else in the suite would notice. It is
+ * asserted on the source the way `DashboardPage.test.js` asserts its own literals: there is no DOM
+ * renderer here, and what is guarded is a call appearing in a function, which a source read catches
+ * exactly. The behaviour underneath is tested properly in `lib/renderPlan.test.js`.
  */
 const source = readFileSync(fileURLToPath(new URL('./SimulationView.jsx', import.meta.url)), 'utf8');
 
@@ -28,13 +30,21 @@ const between = (from, to) => {
   return source.slice(start, end);
 };
 
-test('changing what is selected fires no request', () => {
-  // `changeStack`, `chooseProcedure` and `changeIntensity` are the three ways a selection moves.
-  // Between them and the Create button there must be no path to the API.
-  const selecting = between('const changeStack = ', 'const createImage = ');
-  assert.ok(!selecting.includes('renderNow('), 'selecting a procedure must not start a render');
-  assert.ok(!selecting.includes('requestPreview('), 'nor reach the request queue directly');
+test('selecting reaches the API only through the cache check', () => {
+  // `changeStack`, `chooseProcedure`, `changeIntensity` and `raiseIntensity` are the four ways a
+  // selection moves. They may render — that is what the owner asked for — but only via `renderNow`,
+  // which consults the cache first. A direct call to the queue or the endpoint would skip it.
+  const selecting = between('const changeStack = ', 'const renderCurrent = ');
+  assert.ok(selecting.includes('renderNow('), 'selecting must show the result, not sit there');
+  assert.ok(!selecting.includes('requestPreview('), 'but must not reach the request queue directly');
   assert.ok(!selecting.includes('previewSimulation('), 'nor call the endpoint itself');
+});
+
+test('renderNow refuses to spend a render the cache already holds', () => {
+  // The line that makes immediate rendering affordable. Without it every toggle is a quota unit
+  // again, and the free tier is given three a month.
+  const body = between('const renderNow = ', '\n\n  /**');
+  assert.match(body, /if \(renderFor\(renders, stackFingerprint\(next\), view\)\) return;/);
 });
 
 test('ticking consent does not render anything on its own either', () => {
@@ -43,26 +53,27 @@ test('ticking consent does not render anything on its own either', () => {
   assert.ok(!consent.includes('renderNow('));
 });
 
-test('only three presses spend a render, and each is a press that asked for a picture', () => {
+test('every path to a render goes through renderNow', () => {
   /**
-   * Create, "try the strongest setting", and the camera-angle tabs. The last two are not
-   * exceptions to the batching rule but the same rule read carefully: both are a single press
-   * whose whole meaning is "show me this", with no intermediate state to accumulate.
+   * Not a limit on how many places may render — the owner wants selecting to render — but on how
+   * many may do it without asking the cache first. `renderNow` is the only function permitted to
+   * touch `requestPreview`; everything else must go through it.
    */
   const callers = [...source.matchAll(/^ {2}const (\w+) = [\s\S]*?(?=^ {2}const |\n\n {2}\/\*\*|\n\n {2}\/\/)/gm)]
     .filter(([body]) => body.includes('renderNow(') || body.includes('requestPreview('))
     .map(([, name]) => name);
   assert.deepEqual(
     callers.sort(),
-    ['changeAngle', 'chooseReferenceTarget', 'createImage', 'raiseIntensity', 'renderNow'].sort(),
-    'a new function is asking for a render; if that is deliberate, say why here',
+    ['changeAngle', 'changeStack', 'chooseReferenceTarget', 'renderCurrent', 'renderNow'].sort(),
+    'a new function is asking for a render; make sure it goes through renderNow, then say why here',
   );
 });
 
 test('the pending state is on the screen four different ways', () => {
   /**
-   * The state that batching creates: a face on display that belongs to a previous selection. It is
-   * the whole safety of the design, so it does not rest on one signal. Colour alone fails a
+   * A face on display that belongs to a previous selection. Rarer now that selecting renders — it
+   * lasts while a render is in flight, or after one fails — but it is still the state where
+   * believing the picture is wrong, so it does not rest on one signal. Colour alone fails a
    * colourblind reader, a filter alone fails anyone who never saw the unfiltered version, and a
    * sentence alone fails whoever is looking at the face rather than reading.
    */

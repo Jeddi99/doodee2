@@ -298,14 +298,20 @@ export default function SimulationView({ lang = 'th', onNavigate }) {
   };
 
   /**
-   * Spend a render on this exact stack at this exact angle.
+   * Show this exact stack at this exact angle, rendering it only if it has not been rendered yet.
    *
-   * The stack is passed in rather than read from state because the two callers that are not the
-   * Create button — "try the strongest setting", and the angle tabs — know the stack they mean
-   * and would otherwise be reading the previous value of a `useState` they have just written.
+   * The cache lookup is here rather than in `requestPreview` because this is the one choke point
+   * every render request passes through, and a hit must not reach the queue at all: a preview
+   * costs a quota unit whether or not the picture is new, and the free tier is given three a
+   * month. `add A → add B → remove B → re-add B` therefore costs two renders and not four, which
+   * is what makes selecting-renders-immediately affordable again.
+   *
+   * The stack is passed in rather than read from state because the callers know the stack they
+   * mean and would otherwise read the previous value of a `useState` they have just written.
    */
   const renderNow = (next, view) => {
     if (!consented || procedureCount(next) === 0) return;
+    if (renderFor(renders, stackFingerprint(next), view)) return;
     requestPreview({
       view,
       requestView: view,
@@ -316,11 +322,14 @@ export default function SimulationView({ lang = 'th', onNavigate }) {
   };
 
   /**
-   * Change what is selected, without asking for a picture of it.
+   * Change what is selected, and show it.
    *
-   * This is the whole redesign in one function. Ticking, unticking and re-levelling used to each
-   * fire a render, so `add A → add B → remove B → re-add B` cost four paid renders to look at two
-   * distinct images. The user now assembles the selection for free and presses Create once.
+   * Ticking renders immediately, which is what this screen has always done and what the owner
+   * asked to keep. It went through a spell of requiring a Create press, because every toggle used
+   * to spend a render and `add A → add B → remove B → re-add B` cost four of them to look at two
+   * distinct images. The cache in `lib/renderPlan.js` is what removed that cost — a stack already
+   * rendered at this angle comes back without touching the network — so the button it justified
+   * is gone and the immediate feedback is back.
    *
    * The saved row is dropped on the way through: it is a stored image of the previous selection,
    * and it outranks the preview when the picture is chosen, so leaving it would let a save from
@@ -331,6 +340,7 @@ export default function SimulationView({ lang = 'th', onNavigate }) {
     setStack(next);
     setSimulationId(null);
     setSavedKey('');
+    renderNow(next, activeView);
   };
 
   const chooseProcedure = (row) => {
@@ -349,22 +359,20 @@ export default function SimulationView({ lang = 'th', onNavigate }) {
   };
 
   /** The one press that buys an image, and the only path in this mode that spends quota. */
-  const createImage = () => renderNow(stack, activeView);
+  /** Render whatever is selected right now, if it is not already rendered at this angle. */
+  const renderCurrent = () => renderNow(stack, activeView);
 
   /**
    * Raise one procedure to its strongest setting and show it.
    *
-   * The exception to "selecting never renders", and a deliberate one: this button appears inside
-   * the sentence "this render changes very little", its label promises a stronger picture, and a
-   * press that answered by lighting up a different button would be answering a question the user
-   * did not ask. One press, one image — which is the rule the Create button follows too.
+   * It renders because `changeStack` renders; the explicit call this used to make alongside it is
+   * gone, since it would now queue the same picture twice.
    */
   const raiseIntensity = (id) => {
     const next = setProcedureIntensity(stack, id, 5);
     if (next === stack) return;
     setLastTouched(proceduresById.get(id)?.regions?.[0] || null);
     changeStack(next);
-    renderNow(next, activeView);
   };
 
   const chooseReferenceTarget = () => {
@@ -517,15 +525,10 @@ export default function SimulationView({ lang = 'th', onNavigate }) {
   ].filter(Boolean);
   const pendingText = pendingClauses.join(isTh ? ' · ' : ' · ');
 
-  // Pressing Create buys nothing when this exact stack has already been rendered into this exact
-  // angle, so the button says so by being off rather than by taking the money and changing nothing.
+  // Retrying buys nothing when this exact stack has already been rendered into this exact angle,
+  // so the button says so by being off rather than by taking the money and changing nothing.
   const canCreate = !isReference && consented && catalogAvailable && !simulationOff
     && procedureCount(stack) > 0 && unrendered && !renderingView;
-  const createLabel = renderingView
-    ? (isTh ? 'กำลังสร้างภาพ…' : 'Rendering…')
-    : isTh
-      ? `สร้างภาพ${angleName(activeView, true)} · ${procedureCount(stack)} รายการ`
-      : `Create the ${angleName(activeView, false).toLowerCase()} image · ${procedureCount(stack)} chosen`;
 
   // What the renderer did to the doses on the way in, which the user cannot see from the picture.
   // Absent on a server that has not shipped the field; absent means no notes, never a blank box.
@@ -777,7 +780,10 @@ export default function SimulationView({ lang = 'th', onNavigate }) {
                 ? 'ภาพนี้ยังไม่ใช่สิ่งที่คุณเลือกไว้ตอนนี้'
                 : 'This picture is not what you have selected now.'}</strong>
               <span>{pendingText}</span>
-              <button onClick={createImage} disabled={!canCreate}>{isTh ? 'สร้างภาพใหม่' : 'Create it'}</button>
+              {/* A retry, not a create. Selecting renders on its own now, so this button is only
+                  reachable while one is in flight or after one failed — and in the second case
+                  there is no cached picture, so pressing it does ask for a new one. */}
+              <button onClick={renderCurrent} disabled={!canCreate}>{isTh ? 'ลองใหม่' : 'Try again'}</button>
             </p>
           )}
           {renderingView && beforeUrl && <p className="simulation-note" role="status">{isTh ? 'กำลังสร้างภาพ…' : 'Rendering…'}</p>}
@@ -831,24 +837,6 @@ export default function SimulationView({ lang = 'th', onNavigate }) {
               is chosen from — the two things it is about. It is loud while there is something
               unrendered and quiet once the picture matches, because a permanently bright button
               teaches people to stop reading it. */}
-          {!isReference && (
-            <>
-              <button
-                className={`simulation-create${unrendered && consented ? ' is-pending' : ''}`}
-                disabled={!canCreate}
-                title={canCreate ? undefined
-                  : !consented ? (isTh ? 'ติ๊กยินยอมก่อน' : 'Tick consent first')
-                    : procedureCount(stack) === 0 ? (isTh ? 'ยังไม่ได้เลือกหัตถการ' : 'Nothing is chosen yet')
-                      : renderingView ? (isTh ? 'กำลังสร้างภาพอยู่' : 'A render is already running')
-                        : (isTh ? 'ภาพในมุมนี้ตรงกับสิ่งที่เลือกไว้แล้ว' : 'This angle already matches your selection')}
-                onClick={createImage}
-              >{renderingView ? <Activity className="capture-spin" /> : <Sparkles />}{createLabel}</button>
-              <p className="simulation-note">{isTh
-                ? 'การติ๊กเลือกไม่เสียโควตา ระบบสร้างภาพเมื่อกดปุ่มนี้เท่านั้น และหนึ่งครั้งคือหนึ่งภาพต่อหนึ่งมุม'
-                : 'Ticking costs nothing. An image is made only when this button is pressed — one press, one image, for one angle.'}</p>
-            </>
-          )}
-
           {isReference ? (
             <div className="simulation-reference-card">
               <p>{isTh

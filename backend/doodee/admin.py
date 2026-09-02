@@ -43,17 +43,80 @@ def membership_groups():
     return set(Plan.objects.exclude(grants_group="").values_list("grants_group", flat=True))
 
 
-def membership_choices():
-    """`(group name, label)` for the permanent tiers a person can be put on, ฟรี first.
+def membership_plans():
+    """The plans an admin can put somebody on by hand: the cheapest live plan per paid group.
 
-    Only active plans are offered — you should not be able to newly assign a retired tier — and
-    plans sharing a group (พลัส with พลัส รายปี) collapse to one entry, labelled with whichever
-    comes first by `sort_order`, because the group is what is actually granted.
+    One per group rather than one per plan — `plus` and `plus_year` differ only in how long the
+    customer paid for, and a comp has no billing period to shorten. Retired plans are not
+    offered: you should not be able to newly assign a tier nobody can buy.
     """
-    seen = {}
-    for plan in Plan.objects.filter(is_active=True).exclude(grants_group="").order_by("sort_order", "code"):
-        seen.setdefault(plan.grants_group, plan.name_th)
-    return [("", "ฟรี — ไม่มีสิทธิ์ถาวร"), *seen.items()]
+    chosen = {}
+    for plan in Plan.objects.filter(is_active=True).exclude(grants_group="").order_by("sort_order", "price_satang"):
+        chosen.setdefault(plan.grants_group, plan)
+    return list(chosen.values())
+
+
+def membership_choices():
+    """`(plan code, label)` for the permanent tiers, ฟรี first."""
+    return [("", "ฟรี — ไม่มีสิทธิ์ถาวร"), *((plan.code, plan.name_th) for plan in membership_plans())]
+
+
+# `billing._period_end` already uses a century as "does not expire" rather than a nullable
+# column. The same idiom keeps this field meaning สิทธิ์ถาวร while still writing a real row.
+PERMANENT_GRANT_DAYS = 36500
+
+
+def granted_plan_code(user):
+    """Which tier this user holds, for the form to open on.
+
+    A comp written by this admin names its plan, so it is read back exactly. The group fallback
+    is for accounts granted before comps carried a plan; for those the group is all there is, so
+    it gets the same cheapest-live-plan reading the dropdown offers.
+    """
+    held = Subscription.objects.filter(
+        user=user, current_period_end__gt=timezone.now(),
+    ).exclude(status=Subscription.Status.CANCELLED).select_related("plan").order_by(
+        "-plan__tier_rank", "-plan__price_satang",
+    ).first()
+    if held and held.plan.grants_group:
+        return held.plan.code
+    groups = set(user.groups.values_list("name", flat=True))
+    return next((plan.code for plan in membership_plans() if plan.grants_group in groups), "")
+
+
+def grant_membership(user, plan_code):
+    """Put a user on a plan by hand, naming the plan rather than only its group.
+
+    A bare group cannot say which plan: `member` and `pro` both grant `pro_member`, so
+    `entitlement._granted_by_group` had to guess, and it guessed the cheaper one — the retired
+    ฿149 tier. An account an admin put on โปร was served three saved simulations a month instead
+    of unlimited, and the badge in the app read "Member". Writing the same `Subscription` row a
+    purchase writes removes the guess, rather than changing what a guess means for everyone.
+
+    `order` is null, and that is what separates a comp from a sale. Only comps are ended here,
+    and only groups no live purchase justifies are removed, so nothing a customer paid for can be
+    revoked from this form by accident.
+    """
+    now = timezone.now()
+    Subscription.objects.filter(
+        user=user, order__isnull=True, status=Subscription.Status.ACTIVE,
+    ).update(status=Subscription.Status.CANCELLED, cancelled_at=now)
+    paid_groups = set(
+        Subscription.objects.filter(user=user, order__isnull=False, current_period_end__gt=now)
+        .exclude(status=Subscription.Status.CANCELLED)
+        .exclude(plan__grants_group="")
+        .values_list("plan__grants_group", flat=True)
+    )
+    user.groups.remove(*Group.objects.filter(name__in=membership_groups() - paid_groups))
+    if not plan_code:
+        return
+    plan = Plan.objects.get(code=plan_code)
+    Subscription.objects.create(
+        user=user, plan=plan, order=None,
+        current_period_end=now + timedelta(days=PERMANENT_GRANT_DAYS),
+    )
+    if plan.grants_group:
+        user.groups.add(Group.objects.get_or_create(name=plan.grants_group)[0])
 
 
 class ConfirmingModelAdmin(admin.ModelAdmin):
@@ -137,14 +200,13 @@ class UserChangeForm(DjangoUserChangeForm):
         choices = membership_choices()
         current = ""
         if self.instance.pk:
-            groups = set(self.instance.groups.values_list("name", flat=True)) & membership_groups()
-            # A tier the user holds but no active plan offers — a retired plan they bought before
-            # it was withdrawn. It is added rather than ignored, because a value missing from the
-            # list would come back as ฟรี and be taken away by the save that follows.
-            offered = {value for value, _ in choices}
-            for name in sorted(groups - offered):
-                choices.append((name, f"{name} (แผนที่ปิดการขายแล้ว)"))
-            current = next((value for value, _ in choices if value and value in groups), "")
+            current = granted_plan_code(self.instance)
+            # A tier withdrawn after this user was put on it. Added rather than ignored, because
+            # a value missing from the list would come back as ฟรี and be taken away by the save
+            # that follows.
+            if current and current not in {value for value, _ in choices}:
+                retired = Plan.objects.filter(code=current).first()
+                choices.append((current, f"{retired.name_th if retired else current} (ปิดการขายแล้ว)"))
         self.fields["membership"].choices = choices
         self.fields["membership"].initial = current
 
@@ -340,11 +402,7 @@ class UserAdmin(DjangoUserAdmin):
         if "membership" not in form.cleaned_data:
             return
         user = form.instance
-        # The submitted value *is* the group name, so there is no second mapping to keep in step.
-        user.groups.remove(*Group.objects.filter(name__in=membership_groups()))
-        group_name = form.cleaned_data["membership"]
-        if group_name:
-            user.groups.add(Group.objects.get_or_create(name=group_name)[0])
+        grant_membership(form.instance, form.cleaned_data["membership"])
 
     def changeform_view(self, request, object_id=None, form_url="", extra_context=None):
         with transaction.atomic():
@@ -875,8 +933,9 @@ class OrderAdmin(ExportCsvMixin, ConfirmingModelAdmin):
         from django.urls import reverse
         from django.utils.html import format_html
 
-        label = obj.user.email or obj.user.get_username()
-        return format_html('<a href="{}">{}</a>', reverse("admin:auth_user_change", args=(obj.user_id,)), label)
+        return format_html(
+            '<a href="{}">{}</a>', reverse("admin:auth_user_change", args=(obj.user_id,)), person(obj.user),
+        )
 
     @admin.display(ordering="created_at", description="รอมา")
     def waiting(self, obj):
@@ -895,7 +954,7 @@ class OrderAdmin(ExportCsvMixin, ConfirmingModelAdmin):
 
     def user_email(self, obj):
         """CSV only. Never in `list_display` — `buyer` is the on-screen version."""
-        return obj.user.email or obj.user.get_username()
+        return person(obj.user)
 
     def status_display(self, obj):
         """CSV only. `status` exports the stored code; this exports the word a person reads."""

@@ -508,6 +508,16 @@ body:has(.doodee-app),
   user-select: none;
 }
 
+/* What the score rests on, under the number rather than beside it: two measurements and twelve
+   produce numbers that look equally confident, and only one of them is. */
+.pillar-card > span.pillar-basis {
+  margin-top: -18px;
+  font-size: .68rem;
+  font-weight: 600;
+  letter-spacing: .01em;
+  opacity: .58;
+}
+
 .pillar-card > span.pillar-unlock {
   width: max-content;
   max-width: 100%;

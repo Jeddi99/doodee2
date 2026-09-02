@@ -118,16 +118,20 @@ def _granted_by_group(user, exclude_groups=()):
     lookup therefore cannot say *which* plan, so the cheapest is taken — a hand-granted group is
     the base tier, not the yearly upsell.
 
-    Cheapest *among the plans still on sale*, though, which is the part that used to be missing.
-    `member` is ฿149 and retired; `pro` is ฿799 and current; both grant `pro_member`. Taking the
-    cheapest of all of them meant every account an admin put on โปร was silently served the
-    retired ฿149 tier instead — three saved simulations a month and 300 chat turns rather than
-    the unlimited both are on Pro — while the badge in the app read "Member". Nobody can buy
-    `member` any more, so it cannot be what granting that group now means.
+    Cheapest *among the plans still on sale*, though. `member` is ฿149 and retired; `pro` is ฿799
+    and current; both grant `pro_member`. Taking the cheapest of all of them meant every account
+    an admin put on โปร was served the retired ฿149 tier — three saved simulations a month and
+    300 chat turns rather than unlimited — while the badge in the app read "Member". Nobody can
+    buy `member` any more, so it cannot be what granting that group now means. Migration 0041
+    restates `member`'s closure for exactly this reason.
 
-    A retired plan is still the answer when no live plan grants the group at all: someone who
-    bought a tier before it was withdrawn keeps what they bought, because the alternative is
-    revoking paid access as a side effect of a price-list change.
+    A retired plan is still the answer when nothing live grants the group: someone who bought a
+    tier before it was withdrawn keeps what they bought, because the alternative is revoking paid
+    access as a side effect of editing the price list.
+
+    This is only ever the fallback. `UserAdmin.grant_membership` writes a real `Subscription` row
+    naming the plan it grants, so a group with no subscription behind it is a legacy grant — and
+    for those the group is genuinely all the information there is.
 
     `exclude_groups` drops groups a subscription already accounts for, so the precise plan named
     by a payment always wins over the guess this function has to make.
@@ -135,8 +139,8 @@ def _granted_by_group(user, exclude_groups=()):
     groups = set(user.groups.values_list("name", flat=True)) - set(exclude_groups)
     if not groups:
         return []
-    # `-is_active` first, so a live plan is picked over a retired one at any price, and only a
-    # group with nothing live falls through to what it used to sell.
+    # `-is_active` first, so a live plan beats a retired one at any price, and only a group with
+    # nothing live falls through to what it used to sell.
     ordered = Plan.objects.filter(grants_group__in=groups).exclude(
         grants_group="",
     ).order_by("-is_active", "price_satang")
