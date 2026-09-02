@@ -1,10 +1,12 @@
 from rest_framework import serializers
 
+from .analysis_engine import strip_metric_geometry
 from .models import ChatConversation, ChatMessage, Order, Plan, Scan, Simulation
 from .storage import signed_url
 
 
 class ScanSerializer(serializers.ModelSerializer):
+    analysis_data = serializers.SerializerMethodField()
     analysis_tier = serializers.SerializerMethodField()
     missing_optional_views = serializers.SerializerMethodField()
     front_url = serializers.SerializerMethodField()
@@ -22,6 +24,20 @@ class ScanSerializer(serializers.ModelSerializer):
             "error_code", "error_message", "expires_at", "created_at", "started_at", "finished_at",
         )
         read_only_fields = fields
+
+    def get_analysis_data(self, obj):
+        """The stored analysis, minus the measured points once the photographs are gone.
+
+        `purge_scan_images` already removes them at 30 days, so this is the same rule enforced a
+        second time at the moment of serving. Worth the duplication: that task is a retrying
+        Celery job and this is the only path the coordinates can reach a browser by, so a broker
+        outage must not be able to hand out a landmark set for a photograph that no longer
+        exists. It is also what covers a scan whose upload failed after the row was written.
+        """
+        if obj.image_objects:
+            return obj.analysis_data
+        stripped, _changed = strip_metric_geometry(obj.analysis_data)
+        return stripped
 
     def get_has_profile_images(self, obj):
         """Lets clients gate profile presets on the photos that exist, not the mode name."""

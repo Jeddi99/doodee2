@@ -185,12 +185,7 @@ def capabilities():
     Reading this is also the cheap way to discover a maskless gateway model before a render spends
     a call on one.
     """
-    from django.conf import settings
-
-    # SIMULATION_POLISH_ENABLED was already in settings.py, described as the switch for exactly
-    # this -- an optional hosted polish over a deterministic local render. It is the flag rather
-    # than a second one so there is one answer to "is the paid path on".
-    if not getattr(settings, "SIMULATION_POLISH_ENABLED", False):
+    if not enabled():
         return {"ready": False, "backend": None, "model": None, "masked_edits": False,
                 "reason": "disabled"}
     try:
@@ -219,8 +214,19 @@ def enabled() -> bool:
     What travels is a box around one feature, not the whole frame (see the module docstring), but
     a crop of an eyelid or a jawline is still a photograph of a person, and consent for a
     simulation is not consent to send it somewhere.
+
+    Read from `settings`, which is the one place the environment variable is turned into a boolean
+    (`config/settings.py`). This function used to call `os.getenv` itself while `capabilities()`
+    read the setting, and the setting was never defined — so `capabilities()["ready"]` was False in
+    every configuration, `available()` with it, and this whole module was unreachable code that
+    nonetheless had tests passing over it. Two readers of one switch is how that happened, so there
+    is now one. It is also the safer of the two mechanisms at runtime: `settings` is fixed for the
+    life of the process, where `os.getenv` could return a different answer between the
+    `available()` check and the `refine()` call that puts the crop on the wire.
     """
-    return os.getenv("SIMULATION_POLISH_ENABLED", "false").lower() == "true"
+    from django.conf import settings
+
+    return bool(getattr(settings, "SIMULATION_POLISH_ENABLED", False))
 
 
 def available() -> bool:

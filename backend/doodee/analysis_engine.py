@@ -85,6 +85,143 @@ METRIC_KEYS = frozenset(
 )
 
 
+# ---------------------------------------------------------------------------
+# Where each number was measured from.
+#
+# The scan stored 478 landmarks per view, measured across a handful of them, and threw the
+# coordinates away — so the analysis screen had no way to draw a proportion line and drew a fixed
+# decorative one instead, over a real customer's face. What goes on the wire now is not the mesh
+# but the endpoints of the spans below: the client is given the two points a ratio was measured
+# between, so a drawn line and the number beside it cannot disagree. See `_metric_geometry`.
+#
+# These tables mirror the expressions in `analyze_images` and are the thing to read when checking
+# that a line means what its label says. They are deliberately next to the metric tables they
+# mirror, and `apps/web/src/data/faceMetrics.test.js` parses this file and fails when the client's
+# copy of a span stops matching the one measured here.
+# ---------------------------------------------------------------------------
+
+#: Bumped when the shape below changes, so a client can refuse to read a payload it predates.
+GEOMETRY_VERSION = 1
+
+FACE_WIDTH_SPAN = (234, 454)          # tragion to tragion
+FACE_HEIGHT_SPAN = (10, 152)          # trichion to menton
+REFERENCE_HEIGHT_SPAN = (168, 152)    # nasion to menton, the reference family's denominator
+
+#: The stomion is the midpoint of the two inner lip landmarks, so it is computed rather than
+#: indexed. Spelled the same way the client spells it in `faceMetrics.js`.
+STOMION = "stomion"
+
+#: Geometry for the metrics that are not one landmark pair over the face box. Keys must match
+#: `EXTRA_FRONT_METRIC_KEYS` exactly; the assertion below refuses to import otherwise.
+#:
+#: `span` is one or more distances the value is built from — two of them for the asymmetry
+#: metrics, which are a difference between a left and a right measurement and are only honest
+#: drawn as both. `over` is what that is divided by. `angle` is `(arm, vertex, arm)` in the order
+#: `reference_scoring.angle` reads them.
+EXTRA_FRONT_METRIC_GEOMETRY = {
+    "right_eye_aspect_ratio": {"span": ((159, 145),), "over": (33, 133)},
+    "left_eye_aspect_ratio": {"span": ((386, 374),), "over": (362, 263)},
+    "upper_lower_lip_ratio": {"span": ((0, 13),), "over": (14, 17)},
+    "eye_width_asymmetry": {"span": ((33, 133), (362, 263)), "over": FACE_WIDTH_SPAN},
+    "brow_gap_asymmetry": {"span": ((105, 159), (334, 386)), "over": FACE_HEIGHT_SPAN},
+    "mandible_asymmetry": {"span": ((234, 152), (454, 152)), "over": FACE_WIDTH_SPAN},
+    "bizygomatic_to_upper_face_ratio": {"span": ((116, 345),), "over": (168, 0)},
+    # The value is how far the worst third is from an even split, so the three thirds it compared
+    # are what there is to show. One of them is the number; which one changes per face.
+    "facial_thirds_balance": {"span": ((10, 168), (168, 2), (2, 152)), "over": FACE_HEIGHT_SPAN},
+    "eye_separation_ratio": {"span": ((133, 362),), "over": (116, 345)},
+    "nose_proportion_ratio": {"span": ((98, 327),), "over": (168, 2)},
+    "mouth_to_nose_ratio": {"span": ((61, 291),), "over": (98, 327)},
+    "chin_philtrum_ratio": {"span": ((17, 152),), "over": (2, 0)},
+    "cheekbone_prominence_ratio": {"span": ((116, 345),), "over": (172, 397)},
+    # A tilt reports the slope of the very line it is drawn as, medial end first, matching the
+    # argument order of `_tilt_degrees`. There is nothing it is divided by.
+    "right_canthal_tilt_deg": {"span": ((133, 33),)},
+    "left_canthal_tilt_deg": {"span": ((362, 263),)},
+    "right_brow_tilt_deg": {"span": ((107, 70),)},
+    "left_brow_tilt_deg": {"span": ((336, 300),)},
+    "right_gonial_angle_deg": {"angle": (234, 172, 152)},
+    "left_gonial_angle_deg": {"angle": (454, 397, 152)},
+    "alar_asymmetry": {"span": ((98, 1), (327, 1)), "over": FACE_WIDTH_SPAN},
+    "lip_corner_asymmetry": {"span": ((61, 1), (291, 1)), "over": FACE_WIDTH_SPAN},
+}
+
+#: Geometry for `PROFILE_METRIC_KEYS`, in that view's own landmark indices.
+#:
+#: `offset` is `(point, line_a, line_b)`: the metric is a distance from a point to a line, so what
+#: is drawn is the perpendicular the server measured plus the line it was dropped onto. An E-line
+#: ratio drawn as a bare number tells a reader nothing; drawn as the lip, its offset and Ricketts'
+#: line, it is checkable by eye.
+PROFILE_METRIC_GEOMETRY = {
+    "nose_projection_ratio": {"span": ((168, 1),), "over": FACE_HEIGHT_SPAN},
+    "facial_convexity_ratio": {"offset": (1, 10, 152), "over": FACE_HEIGHT_SPAN},
+    "upper_lip_eline_ratio": {"offset": (0, 1, 152), "over": FACE_HEIGHT_SPAN},
+    "lower_lip_eline_ratio": {"offset": (17, 1, 152), "over": FACE_HEIGHT_SPAN},
+    "mentolabial_angle_deg": {"angle": (17, 200, 152)},
+    "chin_projection_ratio": {"offset": (152, 168, 2), "over": FACE_HEIGHT_SPAN},
+}
+
+#: The second metric family: the `observations` dict scored in `score_observations`. Everything
+#: here divides by n–gn rather than by the face box, which is why it is a separate table and a
+#: separate section on screen.
+FRONT_REFERENCE_GEOMETRY = {
+    "midface_height": {"span": ((168, 2),), "over": REFERENCE_HEIGHT_SPAN},
+    "lower_face_height": {"span": ((2, 152),), "over": REFERENCE_HEIGHT_SPAN},
+    "intercanthal": {"span": ((133, 362),), "over": REFERENCE_HEIGHT_SPAN},
+    # The mean of both eye fissures, so both are drawn — one of them alone would be a different
+    # measurement that happens to look like this one.
+    "eye_fissure": {"span": ((33, 133), (362, 263)), "over": REFERENCE_HEIGHT_SPAN},
+    "alar_width": {"span": ((98, 327),), "over": REFERENCE_HEIGHT_SPAN},
+    "upper_lip_length": {"span": ((2, 0),), "over": REFERENCE_HEIGHT_SPAN},
+    "upper_vermillion": {"span": ((0, 13),), "over": REFERENCE_HEIGHT_SPAN},
+    "lower_vermillion": {"span": ((14, 17),), "over": REFERENCE_HEIGHT_SPAN},
+    "chin_height": {"span": ((STOMION, 152),), "over": REFERENCE_HEIGHT_SPAN},
+}
+
+#: The three reference observations read off a profile. Each is an angle, so each is drawn as its
+#: two arms from the vertex rather than as a length.
+PROFILE_REFERENCE_GEOMETRY = {
+    "nasofrontal_angle": {"angle": (10, 168, 1)},
+    "nasolabial_angle": {"angle": (1, 2, 0)},
+    "facial_convexity_angle": {"angle": (168, 2, 152)},
+}
+
+
+def _front_metric_geometry():
+    """One geometry entry per front metric, derived from `FRONT_METRICS` where it can be.
+
+    Derived rather than written out again: seventeen of these rows already say which two
+    landmarks they measure and which denominator they use, and a second hand-kept copy of that
+    is a copy that will eventually disagree with the number it claims to illustrate.
+    """
+    geometry = {"face_width_to_height": {"span": (FACE_WIDTH_SPAN,), "over": FACE_HEIGHT_SPAN}}
+    for key, _category, a, b, denominator in FRONT_METRICS:
+        geometry[key] = {
+            "span": ((a, b),),
+            "over": FACE_WIDTH_SPAN if denominator == "width" else FACE_HEIGHT_SPAN,
+        }
+    geometry.update(EXTRA_FRONT_METRIC_GEOMETRY)
+    return geometry
+
+
+FRONT_METRIC_GEOMETRY = _front_metric_geometry()
+
+if set(EXTRA_FRONT_METRIC_GEOMETRY) != set(EXTRA_FRONT_METRIC_KEYS):
+    raise AssertionError(
+        "EXTRA_FRONT_METRIC_GEOMETRY and EXTRA_FRONT_METRIC_KEYS disagree: "
+        f"{sorted(set(EXTRA_FRONT_METRIC_GEOMETRY) ^ set(EXTRA_FRONT_METRIC_KEYS))}"
+    )
+if set(PROFILE_METRIC_GEOMETRY) != set(PROFILE_METRIC_KEYS):
+    raise AssertionError(
+        "PROFILE_METRIC_GEOMETRY and PROFILE_METRIC_KEYS disagree: "
+        f"{sorted(set(PROFILE_METRIC_GEOMETRY) ^ set(PROFILE_METRIC_KEYS))}"
+    )
+if set(FRONT_METRIC_GEOMETRY) != METRIC_KEYS - {
+    f"{view}_{key}" for view in PROFILE_VIEWS for key in PROFILE_METRIC_KEYS
+}:
+    raise AssertionError("a front metric has no geometry, or geometry names a metric that is gone")
+
+
 def _decode(data):
     import cv2
     import numpy as np
@@ -413,6 +550,135 @@ def _signed_point_line_distance(points, point, line_a, line_b, facing):
     return -float(np.cross(line, p - a)) * facing / length
 
 
+def _geometry_point(points, index):
+    """One point of a span, in the isotropic space every measurement is taken in."""
+    if index == STOMION:
+        return (points[13, :2] + points[14, :2]) / 2
+    return points[index, :2]
+
+
+def _perpendicular_foot(points, point, line_a, line_b):
+    """Where the perpendicular from `point` meets the line, so the offset can be drawn.
+
+    Computed here rather than in image coordinates because `_isotropic` scales the two axes by
+    different amounts, and a right angle does not survive that: dropping the perpendicular on the
+    stored image would land somewhere the server never measured, which is exactly the class of
+    error this whole field exists to remove.
+    """
+    p, a, b = _geometry_point(points, point), _geometry_point(points, line_a), _geometry_point(points, line_b)
+    line = b - a
+    length_squared = float(line @ line)
+    if length_squared <= 0:
+        raise ValueError("invalid_face_dimensions")
+    return a + line * (float((p - a) @ line) / length_squared)
+
+
+def _geometry_entry(points, spec, aspect):
+    """One metric's drawable geometry, as fractions of the stored image.
+
+    Coordinates go out normalised 0..1 against the photograph the client is served, not in the
+    isotropic space the arithmetic happens in — the browser scales them by whatever size it
+    renders the photo at, and an x still carrying `width / height` would put every line
+    progressively further off toward the edges of a portrait frame. `aspect` undoes exactly the
+    rescale `_isotropic` applied, so the round trip is lossless apart from the rounding below.
+
+    Five decimal places is ~0.02px on a 1600px edge and roughly halves the stored payload against
+    full float repr.
+    """
+    def out(point):
+        return [round(float(point[0]) / aspect, 5), round(float(point[1]), 5)]
+
+    def segment(a, b):
+        return [out(a), out(b)]
+
+    entry = {}
+    if "angle" in spec:
+        arm_a, vertex, arm_b = spec["angle"]
+        origin = _geometry_point(points, vertex)
+        # Vertex first in both arms, so a client can tell the shared corner from the two ends
+        # without being told which key is an angle.
+        entry["kind"] = "angle"
+        entry["measured"] = [
+            segment(origin, _geometry_point(points, arm_a)),
+            segment(origin, _geometry_point(points, arm_b)),
+        ]
+    elif "offset" in spec:
+        point, line_a, line_b = spec["offset"]
+        entry["kind"] = "offset"
+        entry["measured"] = [segment(
+            _geometry_point(points, point), _perpendicular_foot(points, point, line_a, line_b),
+        )]
+        entry["baseline"] = [segment(_geometry_point(points, line_a), _geometry_point(points, line_b))]
+    else:
+        entry["kind"] = "distance"
+        entry["measured"] = [
+            segment(_geometry_point(points, a), _geometry_point(points, b)) for a, b in spec["span"]
+        ]
+    if spec.get("over"):
+        a, b = spec["over"]
+        entry["denominator"] = [segment(_geometry_point(points, a), _geometry_point(points, b))]
+    return entry
+
+
+def _view_geometry(points, image, metric_specs, reference_specs, prefix=""):
+    height, width = image.shape[:2]
+    aspect = width / height
+    return {
+        # Sent so a client can confirm it is drawing on the photograph these were measured on,
+        # and so a saved payload stays readable if the stored image is ever re-encoded.
+        "image_size": [int(width), int(height)],
+        "metrics": {
+            f"{prefix}{key}": _geometry_entry(points, spec, aspect)
+            for key, spec in metric_specs.items()
+        },
+        "reference": {
+            key: _geometry_entry(points, spec, aspect) for key, spec in reference_specs.items()
+        },
+    }
+
+
+def _metric_geometry(points, decoded, has_profiles):
+    """The points every emitted number was measured between, per view.
+
+    Only the spans, never the mesh. The 478-point set is a face-recognition-grade template and
+    all but forty of its points are measured across by nothing, so sending it would be a larger
+    disclosure, a larger row and a larger response in exchange for points no screen can draw.
+    Sending the spans instead also moves the pairing to the server: the client is told *which two
+    points this ratio divides*, rather than being trusted to look the pair up in a table of its
+    own that can fall out of step with the formula.
+
+    Views that measure nothing — the obliques, the smile, the basal — are absent rather than
+    empty. There is no line to draw on them.
+    """
+    views = {"front": _view_geometry(points["front"], decoded["front"], FRONT_METRIC_GEOMETRY, FRONT_REFERENCE_GEOMETRY)}
+    if has_profiles:
+        for view in PROFILE_VIEWS:
+            views[view] = _view_geometry(
+                points[view], decoded[view], PROFILE_METRIC_GEOMETRY, PROFILE_REFERENCE_GEOMETRY,
+                prefix=f"{view}_",
+            )
+    return {"version": GEOMETRY_VERSION, "views": views}
+
+
+def strip_metric_geometry(analysis_data):
+    """Drop the measured points from a stored scan, keeping every number built from them.
+
+    Called when the photographs are deleted. The privacy policy this repo publishes promises that
+    after 30 days "the image files are gone from storage, but the measurements taken from them
+    remain" — a ratio is a measurement, and a set of coordinates on someone's face is not. Points
+    that outlive the photograph would also be undrawable, since there is nothing left to draw
+    them on, so nothing is lost by removing them and a promise is kept by doing so.
+
+    Returns `(analysis_data, changed)` and never mutates its argument. `None` rather than a
+    deleted key, so a purged scan stays distinguishable from one analysed before this existed.
+    """
+    if not isinstance(analysis_data, dict) or analysis_data.get("metric_geometry") is None:
+        return analysis_data, False
+    stripped = dict(analysis_data)
+    stripped["metric_geometry"] = None
+    return stripped, True
+
+
 def _pose_error(view, pose):
     target = POSE_TARGETS[view]
     corrections = {}
@@ -520,12 +786,16 @@ def analyze_images(images, age_band="adult", scan_mode=DEFAULT_SCAN_MODE, refere
             "pose_advisories": pose_advisories,
             "poses": {view: {axis: round(value, 2) for axis, value in pose.items()} for view, pose in poses.items()},
             "reference_scores": None,
+            # A skin scan measures no proportions, so there are no spans to draw. Present and
+            # null rather than absent, so "this mode has no lines" and "this scan predates the
+            # field" stay two different answers to the client.
+            "metric_geometry": None,
             "skin_analysis": skin,
         }
 
     front = points["front"]
-    width, height = _distance(front, 234, 454), _distance(front, 10, 152)
-    reference_height = _distance(front, 168, 152)
+    width, height = _distance(front, *FACE_WIDTH_SPAN), _distance(front, *FACE_HEIGHT_SPAN)
+    reference_height = _distance(front, *REFERENCE_HEIGHT_SPAN)
     metrics = [_metric("face_width_to_height", "harmony", _ratio(width, height))]
 
     for key, category, a, b, denominator in FRONT_METRICS:
@@ -637,5 +907,9 @@ def analyze_images(images, age_band="adult", scan_mode=DEFAULT_SCAN_MODE, refere
         # against real scans before it is tightened or widened again.
         "poses": {view: {axis: round(value, 2) for axis, value in pose.items()} for view, pose in poses.items()},
         "reference_scores": score_observations(observations, reference_profile, reference_age_band, age_band, reference_population),
+        # The endpoints of every span above, normalised against the stored photograph, so the
+        # analysis screen can draw the measurement beside the number instead of a decoration.
+        # Deleted with the images by `purge_scan_images`; see `strip_metric_geometry`.
+        "metric_geometry": _metric_geometry(points, decoded, has_profiles),
         "skin_analysis": skin,
     }

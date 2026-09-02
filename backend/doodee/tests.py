@@ -1,6 +1,7 @@
 import base64
 from datetime import date, timedelta
 import hashlib
+from io import StringIO
 import hmac
 import json
 import os
@@ -20,6 +21,7 @@ from django.core.management.base import CommandError
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import SimpleTestCase, TestCase, override_settings
 from django.utils import timezone
+from rest_framework.exceptions import AuthenticationFailed
 from rest_framework.test import APIClient
 
 from django.core.cache import cache
@@ -32,7 +34,8 @@ from . import chat as chat_module
 from . import request_cache
 from .models import (
     ChatConversation, ChatMessage, ChatRole, ChatSetting, ChatUsage, ConsentEvent, Coupon,
-    CouponGrant, CouponRedemption, CreditLedger, DailyActive, FirebaseIdentity, Notification,
+    CouponGrant, CouponRedemption, CreditLedger, DailyActive, FirebaseAlias, FirebaseIdentity,
+    Notification,
     Order, PayoutAccount, Plan, PromoCode, PromoRedemption, PushToken, Referral, ReferralCode,
     Scan, SiteSetting, UserAttribution, Visit, WithdrawalRequest,
     Simulation, SimulationPreviewUsage, Subscription,
@@ -55,6 +58,8 @@ from .chat import (
 from .demo_data import create_demo_scan, demo_analysis_data
 from .chat_facts import TOPICS, answer as topic_answer
 from .activity import record_activity
+from .authentication import FirebaseAuthentication, account_to_join
+from .management.commands.merge_duplicate_accounts import duplicate_emails
 from .analytics import (
     acquisition_funnel, attribution_rows, capture_method_rows, chat_cost_thb, expiring_soon,
     funnel, headline, interval_mix, marketing_report, monthly_rows, mrr_satang, order_kind_rows,
@@ -651,22 +656,20 @@ class ScoreDistributionTest(TestCase):
         self.assertTrue(result["includes_you"])
         self.assertEqual(result["drawn_sample_size"], 1)
 
-    def test_seeded_scores_are_counted_so_the_screen_can_say_they_are_not_real(self):
-        from .score_distribution import distribution_of
+    def test_no_score_in_the_comparison_population_is_invented(self):
+        """Replaces two tests of the seeding machinery, deleted with it.
 
-        self.assertEqual(distribution_of(80, [70, 90], [70, 80, 90], synthetic=2)["synthetic_sample_size"], 2)
+        They covered `retire_seed_scores` and a `synthetic=` count that no caller ever passed,
+        for a `seed_demo_scores` command this repository never had. See the note in
+        `score_distribution` above `all_latest_by_user` for why it was removed rather than
+        ported. This is what is left worth asserting: the population comes from scans and
+        nothing else, so there is no argument by which a fabricated score enters it.
+        """
+        from . import score_distribution
 
-    def test_placeholders_are_dropped_once_the_real_sample_can_stand_alone(self):
-        from .score_distribution import RELIABLE_SAMPLE_SIZE, retire_seed_scores
-
-        seeded = set(range(100, 110))
-        real_enough = {index: 70 for index in range(RELIABLE_SAMPLE_SIZE)}
-        thin = {index: 70 for index in range(5)}
-        by_user = {"overall": {**real_enough, **{index: 60 for index in seeded}},
-                   "side": {**thin, **{index: 60 for index in seeded}}}
-        retired = retire_seed_scores(by_user, seeded)
-        self.assertEqual(len(retired["overall"]), RELIABLE_SAMPLE_SIZE, "real sample stands alone")
-        self.assertEqual(len(retired["side"]), len(thin) + len(seeded), "still needs the shape")
+        self.assertFalse(hasattr(score_distribution, "SYNTHETIC_FLAG"))
+        self.assertFalse(hasattr(score_distribution, "retire_seed_scores"))
+        self.assertNotIn("synthetic_sample_size", score_distribution.distribution_of(80, [70, 90]))
 
 
 class ScanAssessmentEndpointTest(TestCase):
@@ -1012,8 +1015,14 @@ class ReferenceSolveTest(SimpleTestCase):
                 continue
             self.assertIn(f'"{key}": _ratio(_distance(front, {first}, {second}), reference_height)',
                           source, f"{key} is measured somewhere else now")
-        low, high = REFERENCE_DENOMINATOR
-        self.assertIn(f"reference_height = _distance(front, {low}, {high})", source)
+        # The denominator is asserted through the constant rather than through the source text.
+        # `analysis_engine` names it now, and a test that pins the spelling of a line fails on a
+        # rename while still passing if someone changes the landmarks the constant holds — which
+        # is the only thing this assertion is here to catch.
+        self.assertEqual(REFERENCE_DENOMINATOR, analysis_engine.REFERENCE_HEIGHT_SPAN,
+                         "the solver and the analysis screen measure different denominators")
+        self.assertIn("reference_height = _distance(front, *REFERENCE_HEIGHT_SPAN)", source,
+                      "the denominator is measured somewhere else now")
 
 
 class MeshEndpointTest(TestCase):
@@ -8554,3 +8563,476 @@ class HealthEndpointTest(SimpleTestCase):
         """
         response = self.client.get("/healthz", HTTP_AUTHORIZATION="Bearer not-a-real-token")
         self.assertEqual(response.status_code, 200)
+
+
+class SimulationPolishSwitchIsWiredTest(TestCase):
+    """The switch that turns Stage 2 on has to actually respond to configuration.
+
+    It did not. `flux_refine.capabilities()` read `settings.SIMULATION_POLISH_ENABLED` and
+    `flux_refine.enabled()` read `os.getenv("SIMULATION_POLISH_ENABLED")`, and the setting was
+    never defined in `config/settings.py` — so `capabilities()["ready"]` was False in every
+    configuration, `available()` was False with it, and `canonical_pipeline._refine_views` always
+    returned the unrefined image. 544 lines of ported, tested, wired-up code that could not run.
+
+    `SimulationPolishSwitchTest` above did not catch it, because everything it asserts is about
+    the switch being OFF — and a switch that is stuck off passes every one of those. So this
+    asserts the other direction, which is the direction that was broken.
+    """
+
+    def test_the_setting_exists_and_is_off_unless_someone_turns_it_on(self):
+        """An outbound paid call over a crop of a user's face is opt-in, and stays opt-in."""
+        self.assertTrue(hasattr(settings, "SIMULATION_POLISH_ENABLED"),
+                        "capabilities() reads this; if it is missing, ready is pinned False")
+        source = (Path(settings.BASE_DIR) / "config" / "settings.py").read_text()
+        self.assertIn('SIMULATION_POLISH_ENABLED = os.getenv("SIMULATION_POLISH_ENABLED", "false")',
+                      source, "the switch must come from the environment and default to off")
+
+    @override_settings(SIMULATION_POLISH_ENABLED=False)
+    def test_off_reports_disabled_and_refuses_to_upload(self):
+        from doodee import flux_refine
+
+        with patch.dict(os.environ, {"BFL_API_KEY": "k"}):
+            self.assertEqual(flux_refine.capabilities()["reason"], "disabled")
+            self.assertFalse(flux_refine.enabled())
+            self.assertFalse(flux_refine.available())
+
+    @override_settings(SIMULATION_POLISH_ENABLED=True)
+    def test_on_stops_saying_disabled_and_reports_what_is_actually_missing(self):
+        """The bug's signature: `reason` stuck at 'disabled' no matter how it was configured.
+        Turned on without a key it must say `no_key`, which is a different problem."""
+        from doodee import flux_refine
+
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("BFL_API_KEY", None)
+            os.environ.pop("AI_GATEWAY_API_KEY", None)
+            os.environ.pop("AI_GATEWAY_TOKEN", None)
+            os.environ.pop("OPENAI_API_KEY", None)
+            self.assertTrue(flux_refine.enabled())
+            self.assertEqual(flux_refine.capabilities()["reason"], "no_key")
+            self.assertFalse(flux_refine.available(), "a decision without a key is still no call")
+
+    @override_settings(SIMULATION_POLISH_ENABLED=True)
+    def test_on_with_a_key_is_the_only_state_that_makes_the_paid_path_reachable(self):
+        from doodee import flux_refine
+
+        with patch.dict(os.environ, {"BFL_API_KEY": "k", "FLUX_BACKEND": "bfl"}):
+            capabilities = flux_refine.capabilities()
+            self.assertTrue(capabilities["ready"])
+            self.assertIsNone(capabilities["reason"])
+            self.assertEqual(capabilities["backend"], "bfl")
+            self.assertTrue(flux_refine.available())
+
+    def test_the_switch_has_exactly_one_reader_of_the_environment(self):
+        """Two readers of one switch is how it died the first time: one of them was fed by a
+        setting that did not exist and nobody noticed, because the other one still worked."""
+        from doodee import flux_refine
+
+        source = Path(flux_refine.__file__).read_text()
+        self.assertNotIn('os.getenv("SIMULATION_POLISH_ENABLED"', source,
+                         "flux_refine must read the setting, not the environment")
+
+    @override_settings(SIMULATION_POLISH_ENABLED=True)
+    def test_the_render_still_falls_back_when_the_switch_is_on_but_nothing_is_configured(self):
+        """Turning the switch on must not be able to break a render. Without a key there is no
+        provider, and the deterministic OpenCV image is the complete answer."""
+        from doodee import canonical_pipeline
+
+        image = np.full((64, 64, 3), 128, np.uint8)
+        with patch("doodee.flux_refine.backend", return_value=None), \
+             patch("urllib.request.urlopen") as urlopen:
+            returned = canonical_pipeline._refine_views(image, [], [], [], "front", 1.0)
+        self.assertIs(returned, image)
+        urlopen.assert_not_called()
+
+
+class ReferenceTargetRegionsAreRenderableTest(SimpleTestCase):
+    """Every region offered as a reference target must have a control that can reach it.
+
+    This is the check that decides whether `eyes` can be added. `reference_scoring` scores
+    `eye_fissure` on every scan, so an `eyes` row looks like a one-line omission — but
+    `eye_fissure` is the *horizontal* palpebral fissure length and the `eyeOpening` control moves
+    the lid margins *vertically*. See the note above `REFERENCE_TARGETS`.
+
+    Stated as a rule rather than as a comment so that adding a row without a control that moves
+    its span fails here instead of shipping a solve that silently clamps to maximum on every face.
+    """
+
+    def test_every_target_region_has_a_control_and_a_span(self):
+        from .canonical_pipeline import REFERENCE_CONTROLS, REFERENCE_SPANS
+        from .geometry_controls import CONTROLS
+
+        for region, target in REFERENCE_TARGETS.items():
+            self.assertIn(region, REFERENCE_CONTROLS, f"{region} has no slider to solve with")
+            self.assertIn(REFERENCE_CONTROLS[region], CONTROLS)
+            for key in target["keys"]:
+                self.assertIn(key, REFERENCE_SPANS, f"{key} has no span to measure")
+
+    def test_the_eyes_region_is_not_offered_at_all_rather_than_offered_and_broken(self):
+        """`resolve_preset` must refuse `reference:eyes` cleanly. A half-wired region — a table
+        row with no control behind it — would raise `region_without_reference_data` from inside
+        the renderer instead, after quota was already spent."""
+        self.assertNotIn("eyes", REFERENCE_TARGETS)
+        with self.assertRaisesRegex(ValueError, "region_without_reference_data"):
+            reference_target(reference_scores_fixture(), "eyes")
+
+    def test_no_target_publishes_a_ceiling_no_renderer_enforces(self):
+        """`max_shift` belonged to the deleted single-image renderer. The fused engine clamps in
+        slider units with `REFERENCE_SETTING_LIMIT`, so a per-region `max_shift` here would be a
+        safety limit in name only."""
+        for region, target in REFERENCE_TARGETS.items():
+            self.assertNotIn("max_shift", target, f"{region} names a cap nothing applies")
+
+
+class SimulationRequestFieldsAreClosedTest(TestCase):
+    """`sliders`, `amplify` and `engine` are implemented and deliberately not exposed.
+
+    `canonical_pipeline` supports all three. The reasoning for keeping them off the API is written
+    out at `views.SIMULATION_REQUEST_FIELDS`; this pins the behaviour so reopening them is a
+    decision someone makes on purpose rather than a field that drifts back in.
+    """
+
+    def setUp(self):
+        self.user = User.objects.create_user("closed-fields")
+        self.user.groups.add(Group.objects.get_or_create(name="pro_member")[0])
+        self.client = APIClient()
+        self.client.force_authenticate(self.user)
+        cache.clear()
+        self.scan = Scan.objects.create(
+            user=self.user, age_band="adult", scan_mode="full", status="completed",
+            image_objects={"front": "private/front", "left_profile": "private/left",
+                           "right_profile": "private/right"},
+            analysis_data={"reference_scores": reference_scores_fixture()},
+            expires_at=timezone.now() + timedelta(days=1),
+        )
+
+    def send(self, url, **changes):
+        payload = {"scan_id": str(self.scan.id), "region": "nose", "preset_id": "nose-narrow",
+                   "simulation_consent_version": "2026.3-local"}
+        payload.update(changes)
+        return self.client.post(url, payload, format="json",
+                                HTTP_IDEMPOTENCY_KEY=os.urandom(8).hex())
+
+    @override_settings(SIMULATION_ENABLED=True)
+    def test_both_endpoints_refuse_raw_sliders_amplify_and_engine(self):
+        for url in ("/api/v1/simulations/", "/api/v1/simulations/preview/"):
+            for field, value in (("sliders", {"noseWingSlim": 80}), ("amplify", 2.5),
+                                 ("engine", "affine")):
+                response = self.send(url, **{field: value})
+                self.assertEqual(response.status_code, 400,
+                                 f"{url} accepted {field}: {response.data}")
+        self.assertEqual(Simulation.objects.count(), 0, "nothing may be rendered or stored")
+
+    @override_settings(SIMULATION_ENABLED=True)
+    def test_an_amplify_inside_the_source_repos_legal_range_is_still_refused(self):
+        """1.0-3.0 is what the reference port validates. Refused here means refused as an
+        unknown field, not accepted-then-clamped: 3x exaggerates the movement past what the
+        procedure evidence supports, with nothing on the image saying so."""
+        for value in (1.0, 2.0, 3.0):
+            self.assertEqual(self.send("/api/v1/simulations/preview/", amplify=value).status_code,
+                             400)
+
+    def test_the_two_endpoints_read_one_field_set(self):
+        """They drifted apart once already. One constant, so they cannot again."""
+        from . import views
+
+        self.assertNotIn("sliders", views.SIMULATION_REQUEST_FIELDS)
+        self.assertNotIn("amplify", views.SIMULATION_REQUEST_FIELDS)
+        self.assertNotIn("engine", views.SIMULATION_REQUEST_FIELDS)
+        source = Path(views.__file__).read_text()
+        self.assertEqual(source.count("set(request.data) - SIMULATION_REQUEST_FIELDS"), 2)
+
+
+class FirebaseAccountLinkTest(TestCase):
+    """One person, one email address, two Firebase uids — and the paid plan that fell between.
+
+    Firebase issues a different uid per sign-in provider, and `FirebaseAuthentication` used to
+    create a brand-new Django user for every uid it had not seen. So the owner of this app held
+    two accounts on `doodeeontop01@gmail.com`: one from the Google button with a free plan, one
+    from the password form with a membership and thirteen simulations. Signing in the first way
+    showed him the free account and refused every screen he had paid for. Nothing errored — the
+    money was simply attached to a row nobody was looking at.
+
+    Half of these tests are about joining the accounts. The other half are about the ways it must
+    refuse to, because "same email address" is not evidence of anything on its own: a provider
+    that never sends a confirmation mail will hand out a token for any address that is typed into
+    it, and matching on that string alone would turn this class into a way to walk into somebody
+    else's face scans and subscription.
+    """
+
+    def setUp(self):
+        self.owner = User.objects.create_user("firebase:google-uid", email="owner@example.com")
+        FirebaseIdentity.objects.create(user=self.owner, firebase_uid="google-uid")
+
+    def sign_in(self, uid="password-uid", **claims):
+        """Authenticate a token the way a real request would, with `verify_id_token` stubbed.
+
+        Only the signature check is faked. Everything after it — the uid lookup, the join
+        decision, the is_active check — is the code that runs in production.
+        """
+        from django.test import RequestFactory
+
+        token = {
+            "uid": uid, "email": "owner@example.com", "email_verified": True,
+            "firebase": {"sign_in_provider": "password"},
+        }
+        token.update(claims)
+        request = RequestFactory().get("/api/v1/session/", HTTP_AUTHORIZATION="Bearer stub")
+        with patch("doodee.authentication.auth.verify_id_token", return_value=token):
+            return FirebaseAuthentication().authenticate(request)
+
+    def test_a_new_uid_with_a_verified_matching_email_joins_the_existing_account(self):
+        user, _ = self.sign_in()
+        self.assertEqual(user, self.owner)
+        self.assertEqual(User.objects.filter(email="owner@example.com").count(), 1)
+        self.assertEqual(
+            set(self.owner.firebase_aliases.values_list("firebase_uid", flat=True)),
+            {"password-uid"},
+        )
+
+    def test_the_paid_plan_is_what_the_second_sign_in_now_sees(self):
+        """The point of the whole change, stated as the thing the customer experiences."""
+        self.owner.groups.add(Group.objects.get(name="pro_member"))
+        user, _ = self.sign_in()
+        self.assertEqual(entitlement.plan_code(user), "member")
+
+    def test_the_joined_uid_resolves_on_every_later_request_without_re_deciding(self):
+        self.sign_in()
+        self.owner.email = "changed@example.com"
+        self.owner.save(update_fields=("email",))
+        # The alias is the record now. Even with the email no longer matching — and with the
+        # token unverified, which would never be joined afresh — the uid still means this account.
+        user, _ = self.sign_in(email_verified=False)
+        self.assertEqual(user, self.owner)
+        self.assertEqual(User.objects.count(), 1)
+
+    def test_a_matching_but_unverified_email_gets_its_own_account(self):
+        """The account-takeover case, and the reason email alone is never enough.
+
+        An email/password signup at Firebase confirms nothing: anybody can type
+        `owner@example.com` into it and be handed a token carrying that address. If this joined on
+        the address, that token would inherit the owner's scans, their face photographs and their
+        subscription. It has to land on a separate, empty account instead.
+        """
+        user, _ = self.sign_in(email_verified=False)
+        self.assertNotEqual(user, self.owner)
+        self.assertEqual(user.username, "firebase:password-uid")
+        self.assertEqual(User.objects.filter(email="owner@example.com").count(), 2)
+        self.assertFalse(FirebaseAlias.objects.exists())
+
+    def test_a_google_token_joins_even_without_the_email_verified_claim(self):
+        """`identity_is_verified` is the single definition of confirmed, and this is why.
+
+        Google has already proved the address before it issues the token, so its sign-ins are
+        trusted with or without the claim. Re-reading `email_verified` here instead of calling
+        the helper would give this file two definitions of "verified" that could drift apart.
+        """
+        user, _ = self.sign_in(
+            email_verified=False, firebase={"sign_in_provider": "google.com"},
+        )
+        self.assertEqual(user, self.owner)
+
+    def test_a_token_carrying_no_email_never_joins_anything(self):
+        user, _ = self.sign_in(email="")
+        self.assertNotEqual(user, self.owner)
+
+    def test_an_address_held_by_several_accounts_is_never_guessed_at(self):
+        """Which of two accounts holds the subscription is not something to flip a coin over.
+
+        This is the state the bug already left behind in the live database, so it is reachable
+        today. `merge_duplicate_accounts` is the deliberate answer; joining one at random would
+        be a second way to lose the same purchase.
+        """
+        twin = User.objects.create_user("firebase:other-uid", email="owner@example.com")
+        FirebaseIdentity.objects.create(user=twin, firebase_uid="other-uid")
+        user, _ = self.sign_in()
+        self.assertNotIn(user, (self.owner, twin))
+        self.assertFalse(FirebaseAlias.objects.exists())
+
+    def test_a_staff_account_is_never_adopted(self):
+        self.owner.is_staff = True
+        self.owner.save(update_fields=("is_staff",))
+        user, _ = self.sign_in()
+        self.assertNotEqual(user, self.owner)
+
+    def test_an_account_that_does_not_sign_in_through_firebase_is_never_adopted(self):
+        """A `createsuperuser` or fixture account must not be reachable with a Firebase token.
+
+        Verification proves the bearer controls the address. It does not prove the Django row
+        carrying that address was ever meant to be signed into this way, and adopting one would
+        hand out whatever permissions it holds.
+        """
+        FirebaseIdentity.objects.filter(user=self.owner).delete()
+        user, _ = self.sign_in()
+        self.assertNotEqual(user, self.owner)
+
+    def test_joining_a_disabled_account_does_not_get_past_the_disabled_check(self):
+        """Signing up again through another provider must not be a way around a ban."""
+        self.owner.is_active = False
+        self.owner.save(update_fields=("is_active",))
+        with self.assertRaises(AuthenticationFailed):
+            self.sign_in()
+        # And the uid is bound to the banned account, so the next attempt is refused too rather
+        # than falling through to a fresh one.
+        self.assertEqual(FirebaseAlias.objects.get(firebase_uid="password-uid").user, self.owner)
+
+    def test_an_unknown_uid_with_no_match_still_creates_an_account_as_before(self):
+        user, _ = self.sign_in(uid="stranger-uid", email="stranger@example.com")
+        self.assertEqual(user.username, "firebase:stranger-uid")
+        self.assertEqual(FirebaseIdentity.objects.get(firebase_uid="stranger-uid").user, user)
+
+    def test_account_to_join_is_readable_on_its_own(self):
+        self.assertEqual(
+            account_to_join({"email": "owner@example.com", "email_verified": True}), self.owner,
+        )
+        self.assertIsNone(
+            account_to_join({"email": "owner@example.com", "email_verified": False}),
+        )
+
+    def test_a_uid_cannot_mean_two_accounts(self):
+        """No database can express this constraint across two tables, so the model does."""
+        with self.assertRaises(ValueError):
+            FirebaseAlias.objects.create(user=self.owner, firebase_uid="google-uid")
+
+
+class MergeDuplicateAccountsCommandTest(TestCase):
+    """Repairing the accounts the old behaviour already split.
+
+    The fixture is the shape of the real one found in the dev database: an older free account
+    holding most of the scans, and a newer paid one holding the order, the membership group and
+    the chat history.
+    """
+
+    def setUp(self):
+        self.plan = Plan.objects.get(code="plus")
+        self.free = User.objects.create_user("firebase:free-uid", email="owner@example.com")
+        FirebaseIdentity.objects.create(user=self.free, firebase_uid="free-uid")
+        self.paid = User.objects.create_user("firebase:paid-uid", email="owner@example.com")
+        FirebaseIdentity.objects.create(user=self.paid, firebase_uid="paid-uid")
+        self.paid.groups.add(Group.objects.get(name="pro_member"))
+        create_order(self.paid, self.plan)
+        Subscription.objects.create(
+            user=self.paid, plan=self.plan, current_period_end=timezone.now() + timedelta(days=30),
+        )
+
+        self.scan = Scan.objects.create(
+            user=self.free, status=Scan.Status.COMPLETED, age_band=Scan.AgeBand.ADULT,
+            scan_mode=Scan.ScanMode.STANDARD, expires_at=timezone.now() + timedelta(days=30),
+        )
+        self.simulation = Simulation.objects.create(
+            scan=self.scan, region="nose", model_version="test",
+            expires_at=timezone.now() + timedelta(days=30),
+        )
+        ConsentEvent.objects.create(
+            user=self.free, purpose=ConsentEvent.Purpose.ANALYSIS, policy_version="2026.3",
+        )
+        ReferralCode.objects.create(user=self.free, code="FREECODE")
+        ReferralCode.objects.create(user=self.paid, code="PAIDCODE")
+        UserAttribution.objects.create(user=self.free, source="tiktok")
+        # A day both accounts were used, so the unique (user, date) constraint is actually hit.
+        self.today = timezone.now().date()
+        DailyActive.objects.create(user=self.free, date=self.today)
+        DailyActive.objects.create(user=self.paid, date=self.today)
+        DailyActive.objects.create(user=self.free, date=self.today - timedelta(days=1))
+        period = self.today.replace(day=1)
+        ChatUsage.objects.create(user=self.free, period=period, count=4)
+        ChatUsage.objects.create(user=self.paid, period=period, count=7)
+
+    def merge(self, **flags):
+        out = StringIO()
+        call_command(
+            "merge_duplicate_accounts", email="owner@example.com", stdout=out, **flags,
+        )
+        return out.getvalue()
+
+    def test_the_dry_run_writes_nothing(self):
+        output = self.merge()
+        self.assertIn("DRY RUN", output)
+        self.assertEqual(User.objects.filter(email="owner@example.com").count(), 2)
+        self.assertEqual(Scan.objects.get(pk=self.scan.pk).user, self.free)
+        self.assertFalse(FirebaseAlias.objects.exists())
+
+    def test_the_dry_run_reports_the_same_moves_the_real_run_makes(self):
+        """The dry run is the real merge inside a rolled-back transaction, so this is a tautology
+        by construction — and that is the point. It is asserted anyway because the moment someone
+        splits them into two code paths, the report becomes a guess."""
+        self.assertEqual(
+            [line for line in self.merge().splitlines() if "moved" in line],
+            [line for line in self.merge(apply=True).splitlines() if "moved" in line],
+        )
+
+    def test_the_paid_account_survives(self):
+        self.merge(apply=True)
+        self.assertFalse(User.objects.filter(pk=self.free.pk).exists())
+        self.assertTrue(User.objects.filter(pk=self.paid.pk).exists())
+        self.assertEqual(entitlement.plan_code(User.objects.get(pk=self.paid.pk)), "plus")
+
+    def test_every_related_row_moves_and_nothing_is_left_orphaned(self):
+        self.merge(apply=True)
+        survivor = User.objects.get(pk=self.paid.pk)
+        self.assertEqual(Scan.objects.get(pk=self.scan.pk).user, survivor)
+        # Simulations hang off the scan, not the user, so they follow it. Asserted rather than
+        # assumed: thirteen of them were the thing missing from the free account in production.
+        self.assertEqual(Simulation.objects.get(pk=self.simulation.pk).scan.user, survivor)
+        self.assertEqual(ConsentEvent.objects.filter(user=survivor).count(), 1)
+        self.assertEqual(UserAttribution.objects.get().user, survivor)
+        self.assertEqual(Subscription.objects.get().user, survivor)
+        self.assertEqual(Order.objects.get().user, survivor)
+        # The whole point of introspecting `related_objects` rather than listing them: not one
+        # row anywhere may still point at the account that has gone.
+        leftovers = {
+            rel.related_model._meta.label: rel.related_model.objects.filter(
+                **{rel.field.name: self.free.pk}
+            ).count()
+            for rel in User._meta.related_objects
+        }
+        self.assertEqual({label: n for label, n in leftovers.items() if n}, {})
+
+    def test_the_merged_away_uid_still_signs_in_afterwards(self):
+        """Otherwise the repair would lock the owner out of the sign-in route that caused it."""
+        self.merge(apply=True)
+        self.assertEqual(
+            FirebaseAlias.objects.get(firebase_uid="free-uid").user_id, self.paid.pk,
+        )
+        self.assertFalse(FirebaseIdentity.objects.filter(firebase_uid="free-uid").exists())
+
+    def test_quota_counters_are_added_up_rather_than_dropped(self):
+        self.merge(apply=True)
+        usage = ChatUsage.objects.get(user=self.paid)
+        self.assertEqual(usage.count, 11)
+
+    def test_a_day_both_accounts_were_active_is_counted_once(self):
+        self.merge(apply=True)
+        self.assertEqual(DailyActive.objects.filter(user=self.paid, date=self.today).count(), 1)
+        self.assertEqual(DailyActive.objects.filter(user=self.paid).count(), 2)
+
+    def test_the_survivor_keeps_its_own_referral_code(self):
+        self.merge(apply=True)
+        self.assertEqual(ReferralCode.objects.get().code, "PAIDCODE")
+
+    def test_the_survivor_takes_the_older_signup_date(self):
+        """The surviving row now stands for the whole history, so the cohort reports should not
+        move it forward by however long the person went before signing in the second way."""
+        self.merge(apply=True)
+        self.assertEqual(
+            User.objects.get(pk=self.paid.pk).date_joined, self.free.date_joined,
+        )
+
+    def test_a_staff_account_stops_the_merge_rather_than_being_swallowed(self):
+        self.free.is_staff = True
+        self.free.save(update_fields=("is_staff",))
+        with self.assertRaises(CommandError):
+            self.merge(apply=True)
+        self.assertEqual(User.objects.filter(email="owner@example.com").count(), 2)
+
+    def test_accounts_with_no_email_are_never_grouped_together(self):
+        """`User.email` defaults to "", and a phone or Apple-relay signup leaves it that way. If
+        the empty string counted as an address they would all be merged into one person."""
+        User.objects.create_user("firebase:phone-a")
+        User.objects.create_user("firebase:phone-b")
+        self.assertNotIn("", list(duplicate_emails()))
+
+    def test_the_survivor_can_be_forced(self):
+        self.merge(apply=True, into=self.free.pk)
+        self.assertTrue(User.objects.filter(pk=self.free.pk).exists())
+        self.assertFalse(User.objects.filter(pk=self.paid.pk).exists())
+        self.assertEqual(Order.objects.get().user_id, self.free.pk)

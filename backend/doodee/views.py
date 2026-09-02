@@ -863,6 +863,52 @@ class ScanViewSet(viewsets.GenericViewSet, mixins.ListModelMixin, mixins.Retriev
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
+#: Everything `POST /simulations/` and `POST /simulations/preview/` will accept. Both endpoints
+#: read this one set, because they are the same request and drifting them apart is how one of them
+#: ends up accepting something the other refuses.
+#:
+#: DELIBERATELY CLOSED: `sliders`, `amplify` and `engine`.
+#:
+#: `canonical_pipeline` implements all three, and the reference port exposes all three, so their
+#: absence here reads like an oversight. It is a decision, and this is the record of it.
+#:
+#: Every image this API renders is anchored to a named thing: a catalogue procedure whose
+#: displacement is derived from measured millimetres in `evidence.py`, a retired geometric preset,
+#: or a `reference:<region>` target solved against a published Thai mean. That anchor is what the
+#: product's safety story rests on — the picture corresponds to a documented outcome, the response
+#: carries `related_procedures` and a `measurement`, the consent the user gave names a procedure,
+#: and the row saved in `Simulation` records which one. `sliders` is the one input that removes the
+#: anchor: it renders an arbitrary 27-control deformation of a real person's photograph with no
+#: procedure attached, no evidence behind it, an empty `related_procedures`, and a `Simulation` row
+#: whose `region`/`preset_id` columns have nothing to hold. `normalise_sliders` clamps the values
+#: and rejects unknown keys, so the result is bounded — but bounded is not the same as answerable,
+#: and "which procedure produced this face?" would have no answer. On a medical-adjacent product
+#: already carrying `SIMULATION_ENABLED=true` as an accepted risk, that is the wrong direction to
+#: spend the remaining margin in.
+#:
+#: `amplify` multiplies the evidence-derived displacement by up to 3x. `evidence.AMPLIFY_MAX` says
+#: what that is for in its own words: "how far the 'show me clearly' control may exaggerate the
+#: measured movement. Anything above this stops being an aid to seeing the direction of change and
+#: starts being a different face." A debugging aid for whoever is tuning the renderer, in other
+#: words — and the moment it is a request field, a 3x render is indistinguishable to the user from
+#: a 1x one, while showing three times the change the procedure evidence supports. If it is ever
+#: opened it needs to travel to the client in the response and be labelled on the image, not just
+#: be accepted.
+#:
+#: `engine` picks TPS or piecewise-affine. Harmless on its own, and the only one of the three with
+#: a case for opening — but it is a renderer-internals knob with no user-facing meaning, and a
+#: public field is a compatibility promise. Not worth making for a debug switch.
+#:
+#: None of the three is one line away in any case: `simulation_engine.simulate_canonical` and
+#: `_simulate_reference` do not thread `amplify` or `engine` through to `simulate_scan_views`, and
+#: `_resolve_stack`/`simulation_columns` require a non-empty resolved stack that raw sliders cannot
+#: produce. Opening them means building that path, not widening this set. Whoever does should also
+#: port the source's validation verbatim — engine in {tps, affine}, 1.0 <= amplify <= 3.0, and
+#: `sliders` and `selections` mutually exclusive — and cover the rejection cases with tests.
+SIMULATION_REQUEST_FIELDS = frozenset(
+    {"scan_id", "region", "preset_id", "selections", "view", "simulation_consent_version"})
+
+
 class SimulationViewSet(viewsets.GenericViewSet, mixins.RetrieveModelMixin):
     serializer_class = SimulationSerializer
 
@@ -884,8 +930,8 @@ class SimulationViewSet(viewsets.GenericViewSet, mixins.RetrieveModelMixin):
             return Response({"detail": "simulation_requires_entitlement"}, status=status.HTTP_403_FORBIDDEN)
         if not _heavy_queue_available():
             return _queue_busy_response()
-        allowed_fields = {"scan_id", "region", "preset_id", "selections", "view", "simulation_consent_version"}
-        if set(request.data) - allowed_fields:
+        # See SIMULATION_REQUEST_FIELDS: sliders, amplify and engine are closed on purpose.
+        if set(request.data) - SIMULATION_REQUEST_FIELDS:
             raise ValidationError({"detail": "Only scan_id, selections (or region and preset_id), view and simulation_consent_version are accepted"})
         consent_version = str(request.data.get("simulation_consent_version", "")).strip()
         if not consent_version:
@@ -941,8 +987,8 @@ class SimulationViewSet(viewsets.GenericViewSet, mixins.RetrieveModelMixin):
             return Response({"detail": "Simulation is temporarily unavailable"}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
         if _simulation_locked(request.user):
             return Response({"detail": "simulation_requires_entitlement"}, status=status.HTTP_403_FORBIDDEN)
-        allowed_fields = {"scan_id", "region", "preset_id", "selections", "view", "simulation_consent_version"}
-        if set(request.data) - allowed_fields:
+        # See SIMULATION_REQUEST_FIELDS: sliders, amplify and engine are closed on purpose.
+        if set(request.data) - SIMULATION_REQUEST_FIELDS:
             raise ValidationError({"detail": "Only scan_id, selections (or region and preset_id), view and simulation_consent_version are accepted"})
         consent_version = str(request.data.get("simulation_consent_version", "")).strip()
         if not consent_version:

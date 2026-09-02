@@ -70,6 +70,43 @@ REFERENCE_POPULATIONS = ("TH", "LA", "KH", "MM", "VN", "MY", "SG", "ID", "PH", "
 # by more than a factor of two. Farkas, Katic & Forrest 2005 (J Craniofac Surg 16:615-646)
 # includes a Thai sample and reports zy-zy, go-go and ch-ch; adding those means and SDs to
 # REFERENCE and an entry here is all that is needed to switch those regions on.
+#
+# `eyes` is absent for a different reason, and it is worth stating because the row looks obvious
+# and is wrong. The study does report `eye_fissure`, and it is scored on every scan — so an
+# `{"keys": ("eye_fissure",), "movement": "eye_open"}` row looks like a one-line omission. It is
+# not, because those two names are two different quantities:
+#
+#   * `eye_fissure` is palpebral fissure *length* — the horizontal endocanthion-to-exocanthion
+#     span, 27.15 mm feminine / 28.63 mm masculine. `analysis_engine` measures it that way, as
+#     the mean of |33-133| and |362-263| over nasion-gnathion.
+#   * "eye open" is the *vertical* separation of the lid margins. That is what the `eyeOpening`
+#     control moves (`geometry_controls.RULES`: EYE_LID_UPPER up, EYE_LID_LOWER down), and what
+#     the `eyes-open` / `eyes-soft` presets show.
+#
+# So a target keyed on `eye_fissure` and solved through `eyeOpening` would aim a vertical control
+# at a horizontal measurement, and the numbers say what that costs. Run on
+# `backend/datamock/upload-front.jpg` through `canonical_pipeline.morph_fused` and
+# `solve_reference_sliders`, against the neutral pooled mean (0.24108 of nasion-gnathion, pooled
+# SD 0.02681): that face observes 0.21668 and needs +0.02440, which is 0.91 SD. Driven to its
+# strongest legal setting, `eyeOpening` delivers +0.00039 — 1.6% of the correction, 0.01 SD —
+# while moving the lid separation by 40%. The solver brackets, finds the target outside reach and
+# clamps to the limit, so the wired region would return `{"eyeOpening": 130.0}` for that face and
+# for every other face: the maximum eye deformation the renderer allows, always, regardless of
+# the measurement it claims to be aiming at. That is strictly worse than the fixed preset step it
+# would be replacing.
+#
+# The only control that meaningfully moves this span is `canthalTiltLift` (+0.00996 at the limit,
+# 40.8% of the correction), because it spreads EYE_OUTER away from the midline. It still clamps —
+# it cannot reach the mean either — and it is a canthoplasty: it lengthens the fissure by dragging
+# the outer corner up and out, and leaves lid separation completely unchanged. Solving it against
+# `eye_fissure` would render a lateral canthoplasty and caption it as an eye-opening result, for a
+# dimension that is largely skeletal and that nothing in the catalogue moves that far.
+#
+# Wiring this honestly needs one of: a published mean for the vertical palpebral fissure height
+# (which this study does not report), or a separate `eyes` region whose movement is named
+# `canthal_tilt` and whose card says canthoplasty. Both are new product decisions, not a port.
+# Until then the eyes region keeps its fixed preset step, which at least does not claim to be
+# aiming at a number.
 REFERENCE_TARGETS = {
     "nose": {"keys": ("alar_width",), "movement": "width"},
     # The study splits the vermillion into two bands; the warp moves total lip height, so the
@@ -83,6 +120,20 @@ MIN_MEANINGFUL_DELTA = 0.01
 # Ceiling on how far the warp may push a control point, as a share of face width or height.
 # Presets stay at 3%; reference targets may go to 10%, which covers roughly two SD on alar
 # width. Past that the Gaussian remap visibly bends the background around the region.
+#
+# Nothing enforces this any more, and that is deliberate rather than an oversight. It belonged to
+# the single-image renderer, which stepped a control point by a share of the face and needed a
+# ceiling in those units. The fused engine does not step: `canonical_pipeline` searches for a
+# slider setting and clamps that search with `REFERENCE_SETTING_LIMIT`, in slider units, which is
+# a different quantity in a different space. The constant survives only because
+# `simulation_engine.reference_preset` publishes it on the preset it hands back, where no reader
+# in this repo or in `apps/web` looks at it.
+#
+# The reference port carries a per-region `max_shift` override in `REFERENCE_TARGETS`, and it is
+# not brought across for that reason: a per-region ceiling that no renderer consults is not a
+# safety limit, it is a number that looks like one. If a per-region cap is wanted, it has to be
+# expressed as a bound the solver actually applies — a per-region `REFERENCE_SETTING_LIMIT` — and
+# then this constant should go with the renderer that used to read it.
 MAX_REFERENCE_SHIFT = 0.10
 
 

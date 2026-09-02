@@ -96,14 +96,28 @@ def all_latest_scores(exclude_user_id=None, readers=None):
     }
 
 
-# Set by `seed_demo_scores`, which writes a small placeholder population so the chart has a shape
-# before this deployment has one of its own.
+# REMOVED, on purpose: `SYNTHETIC_FLAG`, `retire_seed_scores`, and the `synthetic` argument and
+# `synthetic_sample_size` field on `distribution_of`.
 #
-# They are counted, not filtered out -- filtering would defeat the point of seeding -- and two things
-# keep that from turning into a claim nobody can support. The count travels to the client, so the
-# screen can say a rank is not a real one. And `retire_seed_scores` drops them for good once there
-# are enough real people to be a population without them, so nobody has to remember to.
-SYNTHETIC_FLAG = "synthetic_demo_score"
+# They were the seeding machinery: a `seed_demo_scores` management command would write a handful of
+# invented scored users so a new deployment's chart had a shape, `SYNTHETIC_FLAG` marked them,
+# `retire_seed_scores` stopped counting them once the real sample reached RELIABLE_SAMPLE_SIZE, and
+# the count travelled to the client so the screen could say the curve was not real people.
+#
+# None of it worked here. The command was never ported, so nothing ever wrote the flag; and even in
+# the repository the command *does* live in, the assessment view never passes `synthetic=`, so the
+# count is structurally zero there too and the screen's "these are placeholders" line is
+# unreachable in both. Porting the command would therefore have seeded fake users into the
+# comparison population *and still* not produced the warning that is supposed to make that
+# acceptable — the warning is the entire justification for the seeding, and it does not fire.
+#
+# It also should not come back without a much better reason. This module exists to refuse invented
+# populations: its first paragraph is about not drawing a smooth curve nobody has the data for.
+# Writing fabricated scores into the table that every percentile is computed against is that same
+# problem with an extra step, on a product about to take money.
+#
+# If the shape of an empty chart is the real complaint, the honest fixes are to draw nothing and
+# say why, or to say "you are the first" — both of which need no fake rows in the database.
 
 
 def all_latest_by_user(readers=None):
@@ -228,31 +242,7 @@ def distribution_for(score, exclude_user_id=None):
     return distribution_of(score, scores)
 
 
-def retire_seed_scores(by_user, seeded):
-    """Drop the placeholder scores once the real ones can stand on their own.
-
-    Automatic, and at `RELIABLE_SAMPLE_SIZE` because that is already this module's answer to "is this
-    a population yet". Below it no percentile is presented as a fact anyway, which is exactly the
-    window a placeholder curve is useful in: something to draw while there is nothing to rank. At or
-    above it the real sample is the better answer on both counts, and keeping invented scores in it
-    would start costing accuracy rather than buying a shape.
-
-    Done here rather than by a scheduled job or a reminder in a checklist: a cleanup that depends on
-    somebody remembering is a cleanup that happens after the numbers have already been wrong for a
-    while. Nothing is deleted -- `seed_demo_scores --clear` still does that -- they simply stop being
-    counted.
-
-    Judged per population. The overall comparison can reach the threshold while the side one has not,
-    because a scan without a profile is in neither side population.
-    """
-    retired = {}
-    for name, scores in by_user.items():
-        real = {user_id: score for user_id, score in scores.items() if user_id not in seeded}
-        retired[name] = real if len(real) >= RELIABLE_SAMPLE_SIZE else scores
-    return retired
-
-
-def distribution_of(score, scores, drawn=None, synthetic=0):
+def distribution_of(score, scores, drawn=None):
     """`distribution_for` without the query, so a per-view comparison can reuse it.
 
     Split out because the score screen asks the same question three times — overall, front and side
@@ -275,9 +265,6 @@ def distribution_of(score, scores, drawn=None, synthetic=0):
         "histogram": histogram(drawn),
         "curve": density_curve(drawn),
         "drawn_sample_size": len(drawn),
-        # How many of the drawn scores are fabricated. Zero in any deployment that has not been
-        # seeded, and the only reason the screen can avoid calling a seeded curve "real data".
-        "synthetic_sample_size": synthetic,
         # Whether the reader is one of the scores in the picture, so the caption can say so.
         "includes_you": len(drawn) > sample_size,
     }

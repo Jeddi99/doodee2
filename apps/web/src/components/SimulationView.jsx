@@ -120,15 +120,26 @@ export function FixedImageCompare({ beforeUrl, afterUrl, focusBox, zoom, mode, i
 
 export default function SimulationView({ lang = 'th', onNavigate }) {
   const isTh = lang === 'th';
-  const requestedScanId = new URLSearchParams(window.location.search).get('scan_id');
+  // Where this screen was opened from. `scan_id` is the handoff from a specific scan; `region`
+  // and `target` are the handoff from one measurement on the analysis screen, which knows which
+  // region that measurement feeds and wants reference mode aimed at it. An unrecognised region
+  // is ignored rather than set, so a stale or hand-typed link lands on the default rather than
+  // on a region with no published mean behind it.
+  const params = new URLSearchParams(window.location.search);
+  const requestedScanId = params.get('scan_id');
+  const requestedRegion = params.get('region');
   const scans = useQuery({ queryKey: ['scans'], queryFn: getScans, enabled: !requestedScanId });
   const scanId = requestedScanId || latestCraniofacialScan(scans.data)?.id;
   const scan = useQuery({ queryKey: ['scan', scanId], queryFn: () => getScan(scanId), enabled: Boolean(scanId) });
   const session = useQuery({ queryKey: ['session'], queryFn: getSession });
-  const [targetMode, setTargetMode] = useState('procedure'); // 'procedure' | 'reference'
+  const [targetMode, setTargetMode] = useState(
+    params.get('target') === 'reference' ? 'reference' : 'procedure',
+  ); // 'procedure' | 'reference'
   // Reference mode still works in the six coarse regions: it compares one measured ratio against
   // a published mean, and the means are published for regions, not for procedures.
-  const [region, setRegion] = useState('nose');
+  const [region, setRegion] = useState(
+    REFERENCE_REGIONS.includes(requestedRegion) ? requestedRegion : 'nose',
+  );
   const [category, setCategory] = useState(null);
   // The whole catalog, not one category: the list of what is being simulated has to name
   // procedures from categories whose tab is not open.

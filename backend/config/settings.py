@@ -219,6 +219,22 @@ CORS_ALLOW_HEADERS = (*default_headers, "idempotency-key")
 # privacy and validation review before any public medical launch, so a real deployment must
 # set SIMULATION_ENABLED=false deliberately until those are done.
 SIMULATION_ENABLED = os.getenv("SIMULATION_ENABLED", "true").lower() == "true"
+# Stage 2 of the render: an optional hosted polish over the deterministic local image
+# (`doodee/flux_refine.py`). Deliberately separate from `SIMULATION_ENABLED`, because it answers a
+# different question. Simulation being on means the product draws a face; this being on means a
+# crop of a user's photograph is uploaded to a third party and billed per call. A key being
+# present says the call *could* be made; this says someone decided it should be.
+#
+# Default off, and it stays off until whoever owns the bill and the privacy notice turns it on.
+# The deterministic local render is always complete without it, so off costs texture, not output —
+# `canonical_pipeline._refine_views` checks `flux_refine.available()` and keeps the OpenCV result.
+#
+# THIS IS THE ONLY DEFINITION AND THE ONLY READ OF THE ENVIRONMENT VARIABLE. `flux_refine` used to
+# read `os.getenv("SIMULATION_POLISH_ENABLED")` in `enabled()` while `capabilities()` read this
+# setting — and this setting did not exist, so `capabilities()["ready"]` was pinned False and the
+# entire 544-line Stage 2 path was unreachable in every configuration. Both readers now go through
+# here. `SimulationPolishSwitchIsWiredTest` in `doodee/tests.py` fails if a second reader appears.
+SIMULATION_POLISH_ENABLED = os.getenv("SIMULATION_POLISH_ENABLED", "false").lower() == "true"
 # Promo codes grant paid entitlement for free and may be redeemed without limit, so anyone who
 # learns a code keeps renewing. Turn this off in any environment real users can reach.
 # Default off. It used to default on, and `docs/DEPLOY.md` and `docs/SETUP.md` both tell you to

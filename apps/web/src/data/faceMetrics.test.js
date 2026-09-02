@@ -3,8 +3,14 @@ import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
-import { FACE_METRICS, METRIC_CATEGORIES, MERGED_INTO } from './faceMetrics.js';
+import {
+  FACE_METRICS, METRIC_CATEGORIES, MERGED_INTO,
+  REFERENCE_DENOMINATOR, REFERENCE_METRIC_ANGLES, REFERENCE_METRIC_SPANS,
+} from './faceMetrics.js';
 import { CATALOG_SIZE } from '../lib/dashboardData.ts';
+
+const enginePath = () => fileURLToPath(new URL('../../../../backend/doodee/analysis_engine.py', import.meta.url));
+const engineSource = () => readFileSync(enginePath(), 'utf8');
 
 /**
  * The keys `analysis_engine.py` declares it can emit, read out of the file itself.
@@ -18,10 +24,7 @@ import { CATALOG_SIZE } from '../lib/dashboardData.ts';
  * in `tests/skinCapture.test.ts`.
  */
 function declaredMetricKeys() {
-  const engine = readFileSync(
-    fileURLToPath(new URL('../../../../backend/doodee/analysis_engine.py', import.meta.url)),
-    'utf8',
-  );
+  const engine = engineSource();
   // Balanced-paren scan rather than a regex: two of these tuples are multi-line and one is not,
   // and a pattern loose enough for both was a pattern that matched the wrong closing bracket.
   const tuple = (name) => {
@@ -107,4 +110,120 @@ test('the headline catalogue count matches the catalogue the server serves', () 
   const rows = [...catalog.matchAll(/^\s*_item\(\s*\d+,/gm)].length;
   assert.ok(rows > 0, 'no _item rows found in metric_catalog.py');
   assert.equal(rows, CATALOG_SIZE, `metric_catalog.py has ${rows} rows, the client claims ${CATALOG_SIZE}`);
+});
+
+/**
+ * The landmark tables in `analysis_engine.py`, read out of the file the same way the metric keys
+ * above are.
+ *
+ * The spans matter more now than they did when they were only documentation. The server sends the
+ * coordinates it measured at (`analysis_data.metric_geometry`) and the overlay draws those, so a
+ * line on a customer's photograph is only as trustworthy as the table it came from. Nothing in a
+ * coordinate says which anatomical points it was meant to be — that claim lives here, in the
+ * indices, and it is worth failing a build over. A metric that quietly gains a line measuring the
+ * wrong pair is the exact failure the decorative overlay was removed for.
+ */
+function pythonTable(name) {
+  const engine = engineSource();
+  const head = engine.indexOf(`${name} = {`);
+  assert.ok(head !== -1, `${name} is gone from analysis_engine.py`);
+  const open = engine.indexOf('{', head);
+  let depth = 0;
+  let close = -1;
+  for (let i = open; i < engine.length; i += 1) {
+    if (engine[i] === '{') depth += 1;
+    else if (engine[i] === '}') {
+      depth -= 1;
+      if (depth === 0) { close = i; break; }
+    }
+  }
+  assert.ok(close !== -1, `${name} is never closed`);
+  const constants = {
+    FACE_WIDTH_SPAN: pythonTuple('FACE_WIDTH_SPAN'),
+    FACE_HEIGHT_SPAN: pythonTuple('FACE_HEIGHT_SPAN'),
+    REFERENCE_HEIGHT_SPAN: pythonTuple('REFERENCE_HEIGHT_SPAN'),
+  };
+  let body = engine.slice(open, close + 1).replace(/#[^\n]*/g, '');
+  for (const [constant, value] of Object.entries(constants)) {
+    body = body.replaceAll(constant, JSON.stringify(value));
+  }
+  // `STOMION` is a computed midpoint rather than an index, and both sides spell it the same way.
+  body = body.replaceAll('STOMION', '"stomion"');
+  const json = body
+    .replaceAll('(', '[').replaceAll(')', ']')
+    .replace(/,(\s*[\]}])/g, '$1');
+  return JSON.parse(json);
+}
+
+/** A module-level `NAME = (a, b)` tuple of integers. */
+function pythonTuple(name) {
+  const match = engineSource().match(new RegExp(`^${name} = \\(([^)]*)\\)`, 'm'));
+  assert.ok(match, `${name} is gone from analysis_engine.py`);
+  return match[1].split(',').map((part) => Number(part.trim())).filter((n) => !Number.isNaN(n));
+}
+
+/** `FRONT_METRICS` as `{key: {span, denominator}}`, the shape this file stores them in. */
+function frontMetricSpans() {
+  const engine = engineSource();
+  const table = engine.slice(engine.indexOf('FRONT_METRICS = ('));
+  const rows = [...table.matchAll(/\(\s*"([a-z0-9_]+)",\s*"[a-z_]+",\s*(\d+),\s*(\d+),\s*"(width|height)"\s*\)/g)];
+  assert.ok(rows.length >= 17, 'FRONT_METRICS parsed too few rows');
+  const width = pythonTuple('FACE_WIDTH_SPAN');
+  const height = pythonTuple('FACE_HEIGHT_SPAN');
+  return Object.fromEntries(rows.map(([, key, a, b, denominator]) => [
+    key, { span: [Number(a), Number(b)], denominator: denominator === 'width' ? width : height },
+  ]));
+}
+
+const byKey = () => new Map(FACE_METRICS.map((metric) => [metric.key, metric]));
+
+test('a front metric measures here between the same two landmarks the server measured', () => {
+  const catalog = byKey();
+  for (const [key, expected] of Object.entries(frontMetricSpans())) {
+    const metric = catalog.get(key);
+    assert.ok(metric, `${key} has no entry here`);
+    assert.deepEqual(metric.span, expected.span, `${key} span`);
+    assert.deepEqual(metric.denominator, expected.denominator, `${key} denominator`);
+  }
+  // The one front metric not in that table: the server builds it in `_front_metric_geometry`.
+  assert.deepEqual(catalog.get('face_width_to_height').span, pythonTuple('FACE_WIDTH_SPAN'));
+  assert.deepEqual(catalog.get('face_width_to_height').denominator, pythonTuple('FACE_HEIGHT_SPAN'));
+});
+
+test('the metrics measured against another feature agree with the server, or claim no line', () => {
+  const catalog = byKey();
+  for (const [key, geometry] of Object.entries(pythonTable('EXTRA_FRONT_METRIC_GEOMETRY'))) {
+    const metric = catalog.get(key);
+    assert.ok(metric, `${key} has no entry here`);
+    const single = !geometry.angle && !geometry.offset && geometry.span.length === 1;
+    if (!single) {
+      // An angle, or a value built from two or three distances. One `span` cannot describe it, so
+      // this file must say so rather than name one of the several spans and imply it is the whole
+      // measurement. The overlay still draws all of them, from the server's own coordinates.
+      assert.equal(metric.span, null, `${key} is not one distance, so it cannot claim one span`);
+      continue;
+    }
+    assert.deepEqual(metric.span, geometry.span[0], `${key} span`);
+    assert.deepEqual(metric.denominator, geometry.over ?? null, `${key} denominator`);
+  }
+});
+
+test('the reference family divides by n–gn, between the landmarks the server used', () => {
+  assert.deepEqual(REFERENCE_DENOMINATOR, pythonTuple('REFERENCE_HEIGHT_SPAN'));
+  const front = pythonTable('FRONT_REFERENCE_GEOMETRY');
+  for (const [key, geometry] of Object.entries(front)) {
+    assert.deepEqual(geometry.over, REFERENCE_DENOMINATOR, `${key} is scored against something else`);
+    const expected = geometry.span.length === 1 ? geometry.span[0] : geometry.span;
+    assert.deepEqual(REFERENCE_METRIC_SPANS[key], expected, `${key} span`);
+  }
+  const profile = pythonTable('PROFILE_REFERENCE_GEOMETRY');
+  for (const [key, geometry] of Object.entries(profile)) {
+    assert.deepEqual(REFERENCE_METRIC_ANGLES[key], geometry.angle, `${key} arms`);
+    // An angle has no length, so it must not also be listed as a distance somewhere.
+    assert.equal(REFERENCE_METRIC_SPANS[key], null, `${key} is an angle and cannot have a span`);
+  }
+  const declared = new Set([...Object.keys(front), ...Object.keys(profile)]);
+  assert.deepEqual([...Object.keys(REFERENCE_METRIC_SPANS)].filter((key) => !declared.has(key)), []);
+  assert.deepEqual([...Object.keys(REFERENCE_METRIC_ANGLES)].filter((key) => !declared.has(key)), []);
+  assert.deepEqual([...declared].filter((key) => !(key in REFERENCE_METRIC_SPANS)), []);
 });

@@ -386,6 +386,26 @@ export const REFERENCE_METRIC_SPANS = {
   facial_convexity_angle: null,
 };
 
+/**
+ * The three side measurements are angles, not distances, which is why their spans above are null.
+ *
+ * `[arm, vertex, arm]`, in the order `analysis_engine.PROFILE_REFERENCE_GEOMETRY` declares them:
+ * nasofrontal is angle(10, 168, 1), nasolabial angle(1, 2, 0), convexity angle(168, 2, 152). Kept
+ * in the server's order so the rays named here are the arms of the number it computed — a diagram
+ * of a different angle that happens to look plausible is worse than no diagram, and
+ * `faceMetrics.test.js` reads the server's table and fails if these two ever drift apart.
+ *
+ * These are indices, not coordinates. Nothing draws from them: the scan carries the points the
+ * server measured at, in `analysis_data.metric_geometry`, and `lib/metricLines.js` draws those.
+ * This table is the reviewable statement of *which* points those are meant to be, which is the
+ * half a coordinate cannot tell you.
+ */
+export const REFERENCE_METRIC_ANGLES = {
+  nasofrontal_angle: [10, 168, 1],
+  nasolabial_angle: [1, 2, 0],
+  facial_convexity_angle: [168, 2, 152],
+};
+
 export const REFERENCE_METRIC_LABELS = {
   midface_height: ['ความสูงกลางใบหน้า', 'Midface height'],
   lower_face_height: ['ความสูงส่วนล่างของใบหน้า', 'Lower face height'],

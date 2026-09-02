@@ -8,7 +8,7 @@ from django.db.models import F
 from django.utils import timezone
 
 from . import ai_budget, consent, skin_vision
-from .analysis_engine import analyze_images
+from .analysis_engine import analyze_images, strip_metric_geometry
 from .models import ConsentEvent, Scan, Simulation, SimulationPreviewUsage
 from .simulation_engine import (
     has_profile_images, related_union, simulate_canonical, validate_selections,
@@ -393,7 +393,12 @@ def purge_scan_images(scan_id):
         return
     _delete_objects(scan.image_objects.values())
     scan.image_objects = {}
-    scan.save(update_fields=("image_objects", "updated_at"))
+    # The measured points go with the photograph they were measured on. They are the one part of
+    # `analysis_data` that is a description of a face rather than a number about one, and with the
+    # image gone there is nothing left to draw them over. `strip_metric_geometry` explains the
+    # promise this keeps.
+    scan.analysis_data, _stripped = strip_metric_geometry(scan.analysis_data)
+    scan.save(update_fields=("image_objects", "analysis_data", "updated_at"))
 
 
 @shared_task(autoretry_for=(Exception,), retry_backoff=True, retry_kwargs={"max_retries": 8})
