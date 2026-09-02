@@ -1,15 +1,21 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import test from 'node:test';
+import { fileURLToPath } from 'node:url';
 
 import {
+  METRIC_SIMULATION_REGION,
+  METRIC_VIEW,
   catalogAvailability,
   deviationStatus,
   improvementsFor,
   overallScore,
   pillarsFor,
   ratioRows,
+  referenceCohortFor,
   strengthsFor,
   toTenScale,
+  viewScoresFor,
 } from './dashboardData.ts';
 
 const scan = {
@@ -121,6 +127,197 @@ test('strengths are the highest scores and improvements the largest deviations',
   // Signed, so the card reads the same way qijek's hardcoded "−0.42" did.
   assert.equal(improvements[0].score, '+2.4');
   assert.equal(improvements[1].score, '+0.7');
+});
+
+/**
+ * The Front/Side strip on the analysis screen.
+ *
+ * It used to render the string literals "7.4" and "5.9" — the same two numbers beside every
+ * customer's own photograph — so these assert the two figures move with the payload and that an
+ * unscored view reads as absent rather than as a low score.
+ */
+test('the front and side figures are averages of this scan\'s own measurements', () => {
+  const [front, side] = viewScoresFor(scan);
+
+  // front: midface 88, lower face 72, chin 95 -> 85. side: the one angle, 31.
+  assert.equal(front.key, 'front');
+  assert.equal(front.score, '8.5');
+  assert.equal(front.metricCount, 3);
+  assert.equal(side.key, 'side');
+  assert.equal(side.score, '3.1');
+  assert.equal(side.metricCount, 1);
+
+  // And the same shape read against a different face gives different numbers, which is the whole
+  // point: a constant passes every test that only looks at one scan.
+  const other = {
+    analysis_data: {
+      reference_scores: {
+        metrics: [
+          { key: 'midface_height', score: 60 },
+          { key: 'chin_height', score: 70 },
+          { key: 'nasolabial_angle', score: 90 },
+        ],
+      },
+    },
+  };
+  assert.deepEqual(viewScoresFor(other).map((item) => item.score), ['6.5', '9.0']);
+});
+
+test('a stored per-view summary is used ahead of re-deriving one', () => {
+  /** The server writes it at scoring time; re-deriving over it would be a second opinion. */
+  const summarised = {
+    analysis_data: {
+      reference_scores: {
+        ...scan.analysis_data.reference_scores,
+        views: [{ key: 'front', score: 83, metric_count: 9 }, { key: 'side', score: 49, metric_count: 3 }],
+      },
+    },
+  };
+  assert.deepEqual(viewScoresFor(summarised).map((item) => item.score), ['8.3', '4.9']);
+});
+
+test('the view written on a metric is preferred to the key table', () => {
+  /**
+   * Both are fallbacks for a scan with no summary, and they can disagree only if the server has
+   * moved a measurement from one photograph to the other — in which case the scan's own record of
+   * where it was read off is the true one.
+   */
+  const relabelled = {
+    analysis_data: {
+      reference_scores: {
+        metrics: [{ key: 'midface_height', view: 'side', score: 40 }],
+      },
+    },
+  };
+  const [front, side] = viewScoresFor(relabelled);
+  assert.equal(front.scored, false);
+  assert.equal(side.score, '4.0');
+});
+
+test('a view with nothing scored reads as absent, never as zero', () => {
+  /** A front-only scan has no profile angles at all, and 0.0 would look like a bad side score. */
+  const frontOnly = {
+    analysis_data: { reference_scores: { metrics: [{ key: 'eye_fissure', score: 77 }] } },
+  };
+  const [front, side] = viewScoresFor(frontOnly);
+  assert.equal(front.score, '7.7');
+  assert.equal(front.scored, true);
+  assert.equal(side.score, '—');
+  assert.equal(side.scored, false);
+  assert.equal(side.metricCount, 0);
+
+  // Both views still come back, so the strip keeps its two buttons.
+  assert.deepEqual(viewScoresFor(emptyScan).map((item) => item.key), ['front', 'side']);
+  assert.deepEqual(viewScoresFor(emptyScan).map((item) => item.scored), [false, false]);
+  assert.deepEqual(viewScoresFor(null).map((item) => item.score), ['—', '—']);
+});
+
+test('METRIC_VIEW still names the same photographs the server does', () => {
+  /**
+   * Read out of `reference_scoring.py` rather than copied, for the reason `faceMetrics.test.js`
+   * gives about the same file: a copy nothing verifies goes stale, and this one going stale means
+   * a measurement is scored server-side and then counted toward neither view score here. Most
+   * scans in the database predate per-view scoring and carry no `views` summary and no `view` on
+   * their metrics, so this table is the only thing giving them a front and a side figure at all.
+   */
+  const source = readFileSync(
+    fileURLToPath(new URL('../../../../backend/doodee/reference_scoring.py', import.meta.url)),
+    'utf8',
+  );
+  const head = source.indexOf('VIEW_OF = {');
+  assert.ok(head !== -1, 'VIEW_OF is gone from reference_scoring.py');
+  const body = source.slice(head, source.indexOf('}', head));
+  const declared = Object.fromEntries(
+    [...body.matchAll(/"([a-z0-9_]+)":\s*"(front|side)"/g)].map((match) => [match[1], match[2]]),
+  );
+  assert.ok(Object.keys(declared).length, 'VIEW_OF parsed empty');
+  assert.deepEqual(METRIC_VIEW, declared);
+});
+
+/** The cohort the reference tab in the ratio modal names. */
+const cohortScan = {
+  analysis_data: {
+    reference_scores: {
+      ...scan.analysis_data.reference_scores,
+      reference: {
+        profile: 'neutral', population: 'Thai adults', age_range: '18-35',
+        sample_size: 240, source: 'https://example.test/study', version: 'thai-photo-2019-v1',
+      },
+      cohort_match: 'within_reference_age_range',
+      population_match: 'within_reference_population',
+      reported_population: 'TH',
+    },
+  },
+};
+
+test('the reference cohort is read off the scan, never assumed', () => {
+  const cohort = referenceCohortFor(cohortScan);
+  assert.equal(cohort.known, true);
+  assert.equal(cohort.sampleSize, 240);
+  assert.equal(cohort.population, 'Thai adults');
+  assert.equal(cohort.ageRange, '18-35');
+  assert.equal(cohort.version, 'thai-photo-2019-v1');
+  assert.equal(cohort.outsideAgeRange, false);
+  assert.equal(cohort.outsidePopulation, false);
+
+  /**
+   * A scan with no reference block is not a scan compared against the current cohort — it is a
+   * scan whose cohort nobody recorded, and the modal has to say that rather than name a
+   * population this face may never have been scored against.
+   */
+  const unknown = referenceCohortFor(scan);
+  assert.equal(unknown.known, false);
+  assert.equal(unknown.population, null);
+  assert.equal(unknown.sampleSize, null);
+  assert.equal(referenceCohortFor(null).known, false);
+});
+
+test('a reader outside the cohort is told, and only when the server says so', () => {
+  const outside = {
+    analysis_data: {
+      reference_scores: {
+        ...cohortScan.analysis_data.reference_scores,
+        cohort_match: 'outside_reference_age_range',
+        population_match: 'outside_reference_population',
+        reported_population: 'JP',
+      },
+    },
+  };
+  const cohort = referenceCohortFor(outside);
+  assert.equal(cohort.outsideAgeRange, true);
+  assert.equal(cohort.outsidePopulation, true);
+  assert.equal(cohort.reportedPopulation, 'JP');
+
+  // Matched against the server's exact words, not by negating the "within" ones: an unrecognised
+  // value must not turn into a warning about a mismatch nobody established.
+  const unrecognised = {
+    analysis_data: {
+      reference_scores: { ...cohortScan.analysis_data.reference_scores, cohort_match: 'something_new' },
+    },
+  };
+  assert.equal(referenceCohortFor(unrecognised).outsideAgeRange, false);
+});
+
+test('METRIC_SIMULATION_REGION still matches the targets the simulator can aim at', () => {
+  /**
+   * Parsed out of `reference_scoring.py` for the same reason as `METRIC_VIEW`. A stale copy here
+   * means the ratio modal offers a Simulate tab that opens a studio which cannot aim at the
+   * measurement that was clicked — or, worse, hides the tab on a measurement that has just gained
+   * a target.
+   */
+  const source = readFileSync(
+    fileURLToPath(new URL('../../../../backend/doodee/reference_scoring.py', import.meta.url)),
+    'utf8',
+  );
+  const head = source.indexOf('REFERENCE_TARGETS = {');
+  assert.ok(head !== -1, 'REFERENCE_TARGETS is gone from reference_scoring.py');
+  const body = source.slice(head, source.indexOf('\n}', head));
+  const declared = {};
+  for (const [, region, keys] of body.matchAll(/"([a-z_]+)":\s*\{"keys":\s*\(([^)]*)\)/g)) {
+    for (const [, key] of keys.matchAll(/"([a-z0-9_]+)"/g)) declared[key] = region;
+  }
+  assert.ok(Object.keys(declared).length, 'REFERENCE_TARGETS parsed empty');
+  assert.deepEqual(METRIC_SIMULATION_REGION, declared);
 });
 
 test('catalog entries the backend cannot compute are reported unavailable, not filled in', () => {

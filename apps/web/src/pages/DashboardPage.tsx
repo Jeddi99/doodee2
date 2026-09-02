@@ -12,7 +12,7 @@ import {
 import { useNavigate } from "react-router-dom";
 import { useLocale } from "../useLocale";
 import { useQuery } from "@tanstack/react-query";
-import { getMetricCatalog, getPlans, getScan, getScans, getScoreCard, getSession } from "../lib/api";
+import { getMetricCatalog, getPlans, getScan, getScanAssessment, getScans, getSession } from "../lib/api";
 import { baht } from "../lib/referral";
 import { errorMessage } from "../lib/apiError";
 import { dashboardGate } from "../lib/dashboardGate";
@@ -27,8 +27,14 @@ import {
   overallScore,
   pillarsFor,
   ratioRows,
+  METRIC_SIMULATION_REGION,
+  type ReferenceCohort,
+  referenceCohortFor,
   strengthsFor,
+  type ViewScore,
+  viewScoresFor,
 } from "../lib/dashboardData";
+import { curvePath, type Distribution, scoreX } from "../lib/distributionCurve";
 import {
   AlertCircle,
   ArrowLeft,
@@ -51,7 +57,6 @@ import {
   Settings2,
   Share2,
   ShieldCheck,
-  SlidersHorizontal,
   Droplets,
   Sparkles,
   WandSparkles,
@@ -126,6 +131,8 @@ type ScanData = {
   strengths: ReturnType<typeof strengthsFor>;
   improvements: ReturnType<typeof improvementsFor>;
   overall: number | null;
+  views: ReturnType<typeof viewScoresFor>;
+  cohort: ReferenceCohort;
   availability: ReturnType<typeof catalogAvailability>;
 };
 
@@ -135,6 +142,8 @@ const emptyScanData: ScanData = {
   strengths: [],
   improvements: [],
   overall: null,
+  views: viewScoresFor(null),
+  cohort: referenceCohortFor(null),
   availability: catalogAvailability(null),
 };
 
@@ -369,36 +378,46 @@ function LockedNumber({
   );
 }
 
-/* The reference distribution, with the viewer's own position marked.
+/* Where this face's overall score sits among the scores this deployment holds.
  *
- * The bell itself is a fixed decorative path — it illustrates "most people sit in
- * the middle", not a plotted dataset. The marker is the part that must be real, so
- * it takes a percentile and maps it across the curve's drawn span. qijek's version
- * pinned the marker at x=488 with the label "YOU · 7.4" baked in; that is a picture
- * of one person's result, not anyone's.
+ * The shape is `distribution.curve` off `GET /scans/<id>/assessment/` — a kernel
+ * density estimate of one score per person, which is what the assessment screen
+ * plots from the same payload. It replaces a fixed decorative bell: that path was
+ * the same drawing for everybody, sitting under a card headed "Overall score" and
+ * flanked by a "Lower / Reference range / Higher" legend, which is a picture of a
+ * population rather than one. With two users the real curve is two bumps, and two
+ * bumps is what two users look like.
  *
- * With no percentile the curve renders without a marker rather than defaulting to
- * the middle, which would quietly tell every viewer they are average. */
-const CURVE_LEFT = 42;
-const CURVE_RIGHT = 718;
+ * The marker is the reader's own score on the same 0–100 axis the curve is drawn
+ * on. It used to be their *similarity percentile*, mapped across a curve of no
+ * particular axis at all; the two numbers answer different questions and cannot
+ * share a scale. With no score the curve draws unmarked rather than defaulting to
+ * the middle, which would quietly tell every viewer they are average.
+ *
+ * The box matches the old path's extents exactly so the card looks unchanged. */
+const CURVE_BOX = { left: 42, right: 718, baseline: 174, peak: 38 };
+const CURVE_FLOOR = 200;
 
 function ScoreCurve({
-  percentile,
+  distribution,
+  score,
   label,
 }: {
-  percentile: number | null;
+  distribution: Distribution | undefined;
+  score: number | null;
   label: string | null;
 }) {
-  const x =
-    percentile === null
-      ? null
-      : CURVE_LEFT + (Math.min(100, Math.max(0, percentile)) / 100) * (CURVE_RIGHT - CURVE_LEFT);
+  const path = curvePath(distribution?.curve, CURVE_BOX);
+  // Nothing measured, nothing drawn. An empty axis is honest; a bell with no sample
+  // behind it is the thing this card was showing before.
+  if (!path) return null;
+  const x = score === null ? null : scoreX(score, CURVE_BOX);
   return (
     <svg
       className="score-curve"
       viewBox="0 0 760 220"
       role="img"
-      aria-label={label ?? "Reference range"}
+      aria-label={label ?? "Score distribution"}
     >
       <defs>
         <linearGradient id="curveFill" x1="0" y1="0" x2="0" y2="1">
@@ -409,12 +428,9 @@ function ScoreCurve({
       <path className="score-curve__grid" d="M40 174H720M40 128H720M40 82H720" />
       <path
         className="score-curve__fill"
-        d="M42 174C158 174 195 167 249 140C308 111 322 44 380 38C438 44 452 111 511 140C565 167 602 174 718 174V200H42Z"
+        d={`${path}V${CURVE_FLOOR}H${CURVE_BOX.left}Z`}
       />
-      <path
-        className="score-curve__line"
-        d="M42 174C158 174 195 167 249 140C308 111 322 44 380 38C438 44 452 111 511 140C565 167 602 174 718 174"
-      />
+      <path className="score-curve__line" d={path} />
       {x !== null && (
         <>
           <line className="score-curve__marker" x1={x} y1="80" x2={x} y2="181" />
@@ -449,20 +465,37 @@ function Overview({
   // first pillar is locked does not get a headline with nothing under it.
   const current = pillars.find((item) => !item.locked) ?? pillars[0];
 
-  // The distribution's marker. Same endpoint ScoreCardPanel reads, so the two
-  // screens cannot disagree about where this face sits against the reference.
-  const card = useQuery({
-    queryKey: ["score-card", scanId],
-    queryFn: () => getScoreCard(scanId),
+  // The curve. Same query key AssessmentView uses, so opening the assessment
+  // costs nothing and the two screens draw one shape from one payload.
+  const assessment = useQuery({
+    queryKey: ["assessment", scanId],
+    queryFn: () => getScanAssessment(scanId),
     enabled: Boolean(scanId),
   });
-  const cardData = card.data as
-    | { similarity_percentile?: number | null; similarity_percentile_locked?: boolean }
+  const assessmentData = assessment.data as
+    | { overall_score?: number | null; distribution?: Distribution }
     | undefined;
-  // Two different absences that must not read the same: `locked` means the number
-  // exists and a paid plan reveals it; plain null means there is nothing to reveal.
-  const percentileLocked = cardData?.similarity_percentile_locked === true;
-  const percentile = percentileLocked ? null : cardData?.similarity_percentile ?? null;
+  const distribution = assessmentData?.distribution;
+  const overall = typeof assessmentData?.overall_score === "number" ? assessmentData.overall_score : null;
+  // The count travels with the shape, in the legend rather than a footnote: a curve
+  // that does not say how many people are in it looks identical whether it is six or
+  // six hundred. Below `reliable_at` the screen says so instead of implying a rank.
+  const drawn = distribution?.drawn_sample_size ?? 0;
+  const curveCaption = assessment.isPending
+    ? // Nothing yet, rather than "no scores to compare against": a request in flight is not an
+      // empty population, and for the second or so it takes they look identical on screen.
+      ""
+    : !distribution?.curve?.length
+    ? th
+      ? "ยังไม่มีคะแนนให้เทียบ"
+      : "No scores to compare against yet"
+    : distribution.reliable === false
+      ? th
+        ? `จาก ${drawn} คะแนน · ยังน้อยกว่า ${distribution.reliable_at} จึงเป็นการเทียบคร่าว ๆ`
+        : `${drawn} scores · fewer than ${distribution.reliable_at}, so a rough comparison`
+      : th
+        ? `จาก ${drawn} คะแนน`
+        : `${drawn} scores`;
 
   return (
     <div className="app-view app-overview">
@@ -519,7 +552,12 @@ function Overview({
       <GlassCard className="overall-card">
         <header>
           <div>
-            <span className="eyebrow">{th ? "คะแนนรวม" : "Overall score"}</span>
+            {/* The big number under this heading is `current.score` — one pillar's score, not
+                the overall one. It read "Overall score" while showing a pillar, which went
+                unnoticed while the chart beside it was decorative; now that the chart plots the
+                real overall and labels its marker with it, the card contradicted itself on
+                screen. The wording is the pillar grid's own aria-label. */}
+            <span className="eyebrow">{th ? "คะแนนรายมิติ" : "Pillar score"}</span>
             <h1>{current?.label}</h1>
           </div>
           <span className="overall-card__count">
@@ -548,30 +586,35 @@ function Overview({
             </div>
           </div>
           <div className="overall-distribution">
-            <div className={percentile === null ? "overall-distribution__blur" : undefined}>
+            <div>
               <ScoreCurve
-                percentile={percentile}
+                distribution={distribution}
+                score={overall}
                 label={
-                  percentile === null
+                  overall === null
                     ? null
                     : th
-                      ? `คุณ · ${current?.score}`
-                      : `YOU · ${current?.score}`
+                      ? `คุณ · ${(overall / 10).toFixed(1)}`
+                      : `YOU · ${(overall / 10).toFixed(1)}`
                 }
               />
+              {/* The axis is the 0–100 score the curve is drawn over, so its ends are
+                  labelled with the numbers they are. It used to read
+                  "Lower / Reference range / Higher", which described a published
+                  cohort that was never the thing being plotted. */}
               <div className="curve-legend">
-                <span>{th ? "ต่ำกว่า" : "Lower"}</span>
-                <span>{th ? "ช่วงอ้างอิง" : "Reference range"}</span>
-                <span>{th ? "สูงกว่า" : "Higher"}</span>
+                <span>0</span>
+                <span>{curveCaption}</span>
+                <span>100</span>
               </div>
             </div>
-            {/* Only offered when there is something behind the lock. A plain
-                missing percentile is not a thing a purchase reveals. */}
-            {percentileLocked && (
-              <button type="button" onClick={onUnlock}>
-                <LockKeyhole /> {th ? "ดูตำแหน่งของคุณ" : "See your reference position"}
-              </button>
-            )}
+            {/* The unlock button that used to sit here is gone with the bell it sat
+                on. It offered the reference-similarity percentile, which is real and
+                genuinely gated — but `_redact_assessment` does not withhold the
+                distribution, so a lock centred over this curve would say the chart is
+                paid for when it is not. The figure and its own CTA live on the score
+                card, which the sidebar links to; bring the button back here only if
+                something on this card actually becomes entitlement-gated. */}
           </div>
         </div>
       </GlassCard>
@@ -584,9 +627,35 @@ function Overview({
   );
 }
 
-/* The tab ids stay English so the active-tab comparison never depends on the locale;
-   only their labels are translated. */
-const RATIO_TABS = ["overview", "simulate", "celebrities", "edit"] as const;
+/* The tab strip, and what happened to the three tabs that used to render nothing.
+ *
+ * "Simulate", "Celebrities" and "Edit" each opened a card holding an icon, a heading and a
+ * sentence describing a feature — an illustrative before/after, a set of faces to compare the
+ * ratio range against, a control for correcting a mis-detected landmark. None of the three had
+ * any code behind it, and a tab whose only content is a description of itself is an
+ * advertisement inside a paid screen that the reader cannot tell from a feature which failed to
+ * load.
+ *
+ * "Celebrities" is now "Reference cohort". There is no celebrity facial-measurement data in
+ * either repository, so building that tab truthfully would have meant running photographs of
+ * named public figures through the pipeline ourselves — likeness and publicity-rights exposure
+ * on a product that charges money — and fabricating the numbers instead is the mock being
+ * removed. The published Thai cohort answers the question the reader actually has: how do my
+ * proportions sit against other people's? It is real, already computed on every scan, and
+ * legally clean. Renamed rather than left under the old label, because a tab called Celebrities
+ * that shows reference data is its own small lie.
+ *
+ * "Simulate" is a real link now, but only for the four measurements that feed a region the
+ * simulator can aim at (`reference_scoring.REFERENCE_TARGETS`, mirrored as
+ * `METRIC_SIMULATION_REGION`). For the other eight there is no published target to move toward,
+ * so the tab is absent rather than present-and-inert.
+ *
+ * "Edit" stays out. It is the landmark-correction screen, a separate port that has not started;
+ * bring the tab back when that screen exists and there is an endpoint that accepts a corrected
+ * landmark and rescores against it. Nothing supports it today — landmarks are re-detected on
+ * demand and never stored (views.py:1155) — so an Edit tab can only describe itself.
+ */
+const RATIO_TABS = ["overview", "reference", "simulate"] as const;
 type RatioTab = (typeof RATIO_TABS)[number];
 
 const RATIO_MODAL_COPY = {
@@ -597,16 +666,30 @@ const RATIO_MODAL_COPY = {
     score: "คะแนน",
     reference: "ค่าอ้างอิง",
     ideal: (value: string) => `ค่าอ้างอิง ${value}`,
-    tabs: { overview: "ภาพรวม", simulate: "จำลอง", celebrities: "ตัวอย่าง", edit: "แก้ไข" },
+    tabs: { overview: "ภาพรวม", reference: "กลุ่มอ้างอิง", simulate: "จำลอง" },
     about: "เกี่ยวกับสัดส่วนนี้",
     mayIndicate: "อาจบ่งบอกถึง",
     affected: "ค่าที่เกี่ยวข้อง",
-    simulateTitle: "ดูแนวทางที่เป็นไปได้",
-    simulateBody: "เปิดค่านี้ในสตูดิโอจำลอง เพื่อเทียบภาพตัวอย่างการเปลี่ยนแปลง",
-    celebritiesTitle: "ตัวอย่างอ้างอิง",
-    celebritiesBody: "ใช้เทียบช่วงของสัดส่วน ไม่ใช่เทียบหน้าตาโดยรวมของใคร",
-    editTitle: "แก้ไขจุดอ้างอิง",
-    editBody: "ปรับค่านี้ได้ถ้าจุดอ้างอิงที่จับมาคลาดเคลื่อน",
+    comparison: "ค่าของคุณเทียบเกณฑ์",
+    comparisonBody: (observed: string, reference: string) => `ค่าที่วัดได้ ${observed} · ค่าอ้างอิง ${reference}`,
+    deviation: (z: string) => `ห่างจากค่าเฉลี่ย ${z} SD`,
+    cohort: "กลุ่มอ้างอิง",
+    // The population name comes from the study and is English ("Thai adults"), so it is listed as
+    // a value rather than folded into the sentence — translating it here would be inventing a
+    // cohort name the source never used.
+    cohortBody: (count: number, population: string, ageRange: string) =>
+      `ค่าเฉลี่ยที่ตีพิมพ์จาก ${count} คน · ${population} · อายุ ${ageRange} ปี`,
+    cohortUnknown: "ผลสแกนนี้ไม่ได้บันทึกไว้ว่าใช้กลุ่มอ้างอิงใด จึงบอกไม่ได้ว่าเทียบกับใคร",
+    cohortSource: "ที่มาของค่าอ้างอิง",
+    reading: "อ่านค่านี้อย่างไร",
+    readingBody: "เป็นความใกล้เคียงกับค่าเฉลี่ยที่ตีพิมพ์ ไม่ใช่คะแนนความสวย และไม่ใช่การวินิจฉัย",
+    outsideAge: "คุณอยู่นอกช่วงอายุของกลุ่มอ้างอิง คะแนนไม่ได้ปรับตามอายุ",
+    outsidePopulation: "ค่าอ้างอิงมาจากประชากรไทย ไม่ได้ปรับตามประเทศที่คุณเลือก",
+    simulateTitle: "ดูค่านี้ในสตูดิโอจำลอง",
+    simulateBody: (region: string) =>
+      `ค่านี้เป็นหนึ่งในค่าที่ใช้คำนวณเป้าหมายของบริเวณ${region} เปิดโหมดเทียบค่าอ้างอิงเพื่อดูภาพจำลอง`,
+    simulateAction: "เปิดสตูดิโอจำลอง",
+    regions: { nose: "จมูก", lips: "ริมฝีปาก", chin: "คาง" },
   },
   en: {
     close: "Close",
@@ -615,18 +698,35 @@ const RATIO_MODAL_COPY = {
     score: "Score",
     reference: "Reference",
     ideal: (value: string) => `Ideal ${value}`,
-    tabs: { overview: "Overview", simulate: "Simulate", celebrities: "Celebrities", edit: "Edit" },
+    tabs: { overview: "Overview", reference: "Reference cohort", simulate: "Simulate" },
     about: "About this ratio",
     mayIndicate: "May indicate",
     affected: "Affected measurements",
-    simulateTitle: "See a direction.",
-    simulateBody: "Open this measurement in Simulate to compare an illustrative change.",
-    celebritiesTitle: "Reference examples.",
-    celebritiesBody: "Compare the ratio range, not a person's overall appearance.",
-    editTitle: "Correct the landmark.",
-    editBody: "Adjust this measurement if the captured landmark is inaccurate.",
+    comparison: "Your value against the reference",
+    comparisonBody: (observed: string, reference: string) => `Measured ${observed} · Reference ${reference}`,
+    deviation: (z: string) => `${z} SD from the mean`,
+    cohort: "Reference cohort",
+    cohortBody: (count: number, population: string, ageRange: string) =>
+      `Published means from ${count} ${population}, aged ${ageRange}`,
+    cohortUnknown: "This scan did not record which cohort it was scored against, so there is nobody to name.",
+    cohortSource: "Source",
+    reading: "How to read this",
+    readingBody: "Closeness to a published mean, not an attractiveness score and not a diagnosis.",
+    outsideAge: "You are outside the reference age range, and the score is not adjusted for that.",
+    outsidePopulation: "The reference values are Thai and are not adjusted for the country you selected.",
+    simulateTitle: "Open this in the simulation studio",
+    simulateBody: (region: string) =>
+      `This measurement is one of the values behind the ${region} reference target. Reference mode shows an illustrative render of it.`,
+    simulateAction: "Open the simulation studio",
+    regions: { nose: "nose", lips: "lips", chin: "chin" },
   },
 } as const;
+
+/** A signed z, printed the way the improvements card prints it, so the sign always shows. */
+const signedDeviation = (z: number) => {
+  const rounded = Math.round(z * 10) / 10;
+  return rounded > 0 ? `+${rounded}` : String(rounded);
+};
 
 function RatioModal({
   metric,
@@ -640,8 +740,22 @@ function RatioModal({
   onClose: () => void;
 }) {
   const { locale } = useLocale();
+  const navigate = useNavigate();
   const c = RATIO_MODAL_COPY[locale === "en" ? "en" : "th"];
+  const { cohort } = useScanData();
   const [tab, setTab] = useState<RatioTab>("overview");
+  // The measurement only gets a Simulate tab if it feeds a region the simulator has a published
+  // target for. Eight of the twelve do not, and for those the tab is not rendered at all.
+  const region = METRIC_SIMULATION_REGION[metric.id];
+  const tabs = RATIO_TABS.filter((item) => item !== "simulate" || region);
+  const openSimulation = () => {
+    // The scan being read, when the analysis screen was opened on a specific one — otherwise the
+    // studio would silently switch to the latest scan and simulate a different face.
+    const scanId = new URLSearchParams(window.location.search).get("scan_id");
+    const query = new URLSearchParams({ region, target: "reference" });
+    if (scanId) query.set("scan_id", scanId);
+    navigate(`${VIEW_ROUTES.simulate}?${query}`);
+  };
   return (
     <div
       className="app-modal"
@@ -688,8 +802,12 @@ function RatioModal({
             <p>{c.ideal(metric.ideal)}</p>
           </div>
         </div>
-        <nav>
-          {RATIO_TABS.map((item) => (
+        {/* The stylesheet lays this strip out as `repeat(4,1fr)`, from when there were four
+            tabs. There are two or three now depending on the measurement, and a fixed four
+            columns left the last one or two quarters as blank strip. Counted here rather than
+            pinned in CSS so the strip follows the tabs that actually render. */}
+        <nav style={{ gridTemplateColumns: `repeat(${tabs.length}, 1fr)` }}>
+          {tabs.map((item) => (
             <button
               className={tab === item ? "is-active" : ""}
               type="button"
@@ -719,23 +837,59 @@ function RatioModal({
               </div>
             </div>
           </div>
-        ) : tab === "simulate" ? (
-          <div className="ratio-modal__empty">
-            <WandSparkles />
-            <h3>{c.simulateTitle}</h3>
-            <p>{c.simulateBody}</p>
-          </div>
-        ) : tab === "celebrities" ? (
-          <div className="ratio-modal__empty">
-            <CircleUserRound />
-            <h3>{c.celebritiesTitle}</h3>
-            <p>{c.celebritiesBody}</p>
+        ) : tab === "reference" ? (
+          <div className="ratio-modal__content">
+            <div>
+              <span className="eyebrow">{c.comparison}</span>
+              <p>{c.comparisonBody(metric.value, metric.ideal)}</p>
+              <div className="ratio-chips">
+                <span>{c.deviation(signedDeviation(metric.normalizedDeviation))}</span>
+                <span>{metric.status}</span>
+              </div>
+            </div>
+            <div>
+              <span className="eyebrow">{c.cohort}</span>
+              {/* Named, never implied. "Compared against the reference" is not a comparison the
+                  reader can weigh until they can see which population, which age band and how
+                  many people — and a scan that did not record its cohort says so instead of
+                  borrowing the current one, which may not be what it was scored against. */}
+              <p>
+                {cohort.known
+                  ? c.cohortBody(cohort.sampleSize!, cohort.population!, cohort.ageRange ?? "—")
+                  : c.cohortUnknown}
+              </p>
+              {cohort.source && (
+                <div className="ratio-chips">
+                  {/* Inside a chip span so it picks up the chip's own size and padding rather
+                      than sitting at body size beside them. A citation nobody can follow is a
+                      weaker claim than one they can, so the link is the study itself. */}
+                  <span>
+                    <a href={cohort.source} target="_blank" rel="noreferrer">
+                      {c.cohortSource}
+                    </a>
+                  </span>
+                  {cohort.version && <span>{cohort.version}</span>}
+                </div>
+              )}
+            </div>
+            <div>
+              <span className="eyebrow">{c.reading}</span>
+              <p>{c.readingBody}</p>
+              {/* The score is never rescaled for either mismatch, so a reader outside the cohort
+                  has to be told the number was computed against people unlike them. Same two
+                  flags, and the same wording, AssessmentView shows above its findings. */}
+              {cohort.outsideAgeRange && <p><strong>{c.outsideAge}</strong></p>}
+              {cohort.outsidePopulation && <p><strong>{c.outsidePopulation}</strong></p>}
+            </div>
           </div>
         ) : (
           <div className="ratio-modal__empty">
-            <SlidersHorizontal />
-            <h3>{c.editTitle}</h3>
-            <p>{c.editBody}</p>
+            <WandSparkles />
+            <h3>{c.simulateTitle}</h3>
+            <p>{c.simulateBody(c.regions[region])}</p>
+            <button type="button" onClick={openSimulation}>
+              {c.simulateAction}
+            </button>
           </div>
         )}
       </section>
@@ -1098,6 +1252,18 @@ function UnlockModal({
   );
 }
 
+/**
+ * What backs one of the two figures in the Front/Side strip, on hover.
+ *
+ * Worth saying because the two are averaged over different numbers of measurements — nine on the
+ * front photograph and three angles on the profiles — and a side score that is missing because
+ * the profiles were never captured must not look like a side score of nothing.
+ */
+const viewScoreTitle = (view: ViewScore | undefined, name: FaceAngle) =>
+  view?.scored
+    ? `Average of ${view.metricCount} measurements read off the ${name} view`
+    : `This scan has no scored ${name} measurements`;
+
 function Analysis({
   onUnlock,
   openView,
@@ -1113,7 +1279,14 @@ function Analysis({
   const [selectedMetric, setSelectedMetric] = useState<RatioMetric | null>(
     null,
   );
-  const { pillars, rows, strengths, improvements } = useScanData();
+  const { pillars, rows, strengths, improvements, views } = useScanData();
+  // The two numbers beside the two photographs, averaged over the measurements read off
+  // each one. They belong to the scan, not to the pillar tab: the strip used to print one
+  // constant on the front button whenever the harmony tab was open and the word Locked
+  // otherwise, and a second constant on the side button — the same two strings for every
+  // customer, next to that customer's own face. `DashboardPage.test.js` keeps them out.
+  const frontView = views.find((item) => item.key === "front");
+  const sideView = views.find((item) => item.key === "side");
   const unlockedCount = pillars.filter((item) => !item.locked).length;
   const list = rows.filter((row) => pillarOf(row.category) === pillar);
   const visible = showAll ? list : list.slice(0, 7);
@@ -1123,7 +1296,6 @@ function Analysis({
     setShowAll(false);
     setActiveIndex(0);
   }, [pillar, angle]);
-  const photo = useContext(ScanPhotoContext);
   useEffect(() => {
     const close = (event: KeyboardEvent) => {
       if (event.key === "Escape") setSelectedMetric(null);
@@ -1176,7 +1348,10 @@ function Analysis({
           <ScanPhoto alt="Front view" />
           <span>
             <small>Front</small>
-            <strong>{pillar === "harmony" ? "7.4" : "Locked"}</strong>
+            {/* An em dash, never a zero, when the view was not scored: a front-only scan
+                has no side measurements at all, and 0.0 would read as a bad result
+                rather than as an absent one. */}
+            <strong title={viewScoreTitle(frontView, "front")}>{frontView?.score ?? "—"}</strong>
           </span>
         </button>
         <button
@@ -1187,7 +1362,7 @@ function Analysis({
           <ScanPhoto className="is-side" alt="Side view" />
           <span>
             <small>Side</small>
-            <strong>5.9</strong>
+            <strong title={viewScoreTitle(sideView, "side")}>{sideView?.score ?? "—"}</strong>
           </span>
         </button>
         <div>
@@ -1206,15 +1381,27 @@ function Analysis({
           className={`analysis-face-card analysis-face-card--${angle}`}
         >
           <ScanPhoto alt={`Your ${angle} facial analysis`} />
-          {/* The overlay only means something on top of a face. Drawn over the placeholder it
-              would read as landmarks measured on an empty box. */}
-          {photo.url ? (
-            <svg viewBox="0 0 600 760" aria-hidden="true">
-              <path d="M145 230H455M130 327H470M157 468H443M188 596H412M300 185V630" />
-              <circle cx="300" cy="327" r="5" />
-              <circle cx="300" cy="468" r="5" />
-            </svg>
-          ) : null}
+          {/* The proportion lines that used to sit here are gone.
+              They were a fixed decorative path — five rules and two dots at constant
+              coordinates in a 600x760 box — laid over the customer's own photograph in
+              the place measured landmarks belong. Nothing about them came from this
+              face, and on a photograph of any other shape they did not even land on it.
+
+              What it would take to draw them for real: landmark coordinates for this
+              scan, which no endpoint serves as this is written. `analysis_data` keeps the
+              ratios and the scores, never the points they were measured between, and
+              `GET /scans/<id>/mesh/<view>/` re-detects the landmarks server-side and
+              answers with a PNG precisely because the browser cannot rebuild the geometry
+              from what it has (urls.py:141, views.py:1155).
+
+              That gap is being closed elsewhere: landmark coordinates are being added to
+              the scan payload, and a component that draws the measured spans from them
+              will be wired in here once it lands. `src/data/faceMetrics.js` already holds
+              the other half — `REFERENCE_METRIC_SPANS` maps each scored key to its
+              MediaPipe landmark indices. So this space is waiting for that component and
+              for nothing else. Do not fill it with a placeholder in the meantime: a
+              decorative line over a real face is indistinguishable from a measurement,
+              which is how the last one reached a paying screen. */}
           <div className="analysis-face-overlay">
             <span>
               {angle} {pillars.find((item) => item.id === pillar)?.label}
@@ -1536,6 +1723,8 @@ export default function DashboardPage({ view }: { view: AppView }) {
       strengths: strengthsFor(scan, 3, locale),
       improvements: improvementsFor(scan, 3, locale),
       overall: overallScore(scan),
+      views: viewScoresFor(scan),
+      cohort: referenceCohortFor(scan),
       availability: catalogAvailability(scan),
     }),
     [scan, locale],

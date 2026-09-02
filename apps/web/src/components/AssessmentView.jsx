@@ -3,6 +3,7 @@ import { useQuery } from '@tanstack/react-query';
 import { Activity, ArrowLeft, Lock, ScanFace, Ticket } from 'lucide-react';
 import { getMeshLegend, getScan, getScanAssessment, getScanMesh, getScans } from '../lib/api';
 import { latestCraniofacialScan } from '../lib/latestScan';
+import { curvePath } from '../lib/distributionCurve';
 import '../assessment.css';
 
 const VIEW_NAMES = {
@@ -28,11 +29,11 @@ const SEVERITY_COLOUR = {
 function DistributionChart({ distribution, score, isTh }) {
   const { curve = [], histogram = [], sample_size: sampleSize, drawn_sample_size: drawn } = distribution || {};
   if (!curve.length && !histogram.length) return null;
-  const peak = Math.max(...curve.map((point) => point.density), 1e-9);
   const tallest = Math.max(...histogram.map((bucket) => bucket.count), 1);
-  const path = curve
-    .map((point, index) => `${index ? 'L' : 'M'}${point.score},${100 - (point.density / peak) * 92}`)
-    .join(' ');
+  // The same mapping the overview card's curve uses, so one payload cannot produce two
+  // different shapes on two screens. The box is this figure's own viewBox: 0-100 across, with
+  // zero density on the floor and the peak 92 units above it.
+  const path = curvePath(curve, { left: 0, right: 100, baseline: 100, peak: 8 });
   return (
     <figure className="assessment-chart">
       <svg viewBox="0 0 100 100" preserveAspectRatio="none" role="img"

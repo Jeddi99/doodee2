@@ -12,6 +12,8 @@
 
 export type PillarId = 'harmony' | 'angularity' | 'dimorphism' | 'features';
 export type MetricCategory = 'proportions' | 'eyes' | 'nose' | 'lips' | 'chin';
+/** The two photographs a measurement can be read off. `reference_scoring.SCORED_VIEWS`. */
+export type ScoredView = 'front' | 'side';
 
 /** One entry of reference_scores.metrics, as reference_scoring.py emits it. */
 export type ScoredMetric = {
@@ -22,12 +24,28 @@ export type ScoredMetric = {
   normalized_deviation: number;
   score: number;
   unit: 'ratio' | 'degree';
+  /** Which photograph it was read off. Absent on scans analysed before per-view scoring. */
+  view?: ScoredView;
 };
 
 export type ReferenceScores = {
   overall_score: number | null;
   categories: { key: MetricCategory; score: number; metric_count: number }[];
   metrics: ScoredMetric[];
+  /** Present only on scans analysed after per-view scoring landed; derived here when it is not. */
+  views?: { key: ScoredView; score: number; metric_count: number }[];
+  /** Who the published means were measured on. `reference_scoring.score_observations`. */
+  reference?: {
+    profile?: string;
+    population?: string;
+    age_range?: string;
+    sample_size?: number;
+    source?: string;
+    version?: string;
+  };
+  cohort_match?: string;
+  population_match?: string;
+  reported_population?: string;
 };
 
 export type Scan = {
@@ -336,6 +354,88 @@ export function pillarsFor(scan: Scan, locale: 'th' | 'en' = 'en'): Pillar[] {
 
 export const overallScore = (scan: Scan): number | null => toTenScale(referenceScores(scan)?.overall_score);
 
+/** The order the Front/Side strip renders them in. Mirrors `reference_scoring.SCORED_VIEWS`. */
+const SCORED_VIEWS: ScoredView[] = ['front', 'side'];
+
+/**
+ * Which photograph each scored measurement was read off.
+ *
+ * A mirror of `reference_scoring.VIEW_OF`, and needed here for the same reason the server keeps
+ * its own fallback: most scans in the database were analysed before per-view scoring existed and
+ * carry neither a `views` summary nor a `view` on each metric, only the twelve keys. Without this
+ * table those scans have no front or side score at all, which is what the two photographs were
+ * taken to produce. `dashboardData.test.js` reads `VIEW_OF` out of `reference_scoring.py` and
+ * fails if the two ever disagree, so a key added server-side cannot go quietly missing here.
+ */
+export const METRIC_VIEW: Record<string, ScoredView> = {
+  midface_height: 'front',
+  lower_face_height: 'front',
+  intercanthal: 'front',
+  eye_fissure: 'front',
+  alar_width: 'front',
+  upper_lip_length: 'front',
+  upper_vermillion: 'front',
+  lower_vermillion: 'front',
+  chin_height: 'front',
+  nasofrontal_angle: 'side',
+  nasolabial_angle: 'side',
+  facial_convexity_angle: 'side',
+};
+
+export type ViewScore = {
+  key: ScoredView;
+  /** The ten-point figure the strip prints, or an em dash when this view was never scored. */
+  score: string;
+  /** How many measurements the average is over, so the screen can say what backs the number. */
+  metricCount: number;
+  scored: boolean;
+};
+
+/**
+ * The Front and Side scores, from this scan's own measurements.
+ *
+ * Both views always come back, scored or not, because the strip has two buttons either way and a
+ * view with nothing behind it has to read as absent rather than as a low score. A front-only scan
+ * has no side measurements, so its side entry is unscored — not zero, and certainly not a number
+ * carried over from somebody else.
+ *
+ * Three sources, in the same order the server tries them (`reference_scoring.views_from_metrics`):
+ * the stored `views` summary, then the `view` written on each metric, then the key table above.
+ * The average is over the metrics of that view rather than over its categories, matching the
+ * server exactly — going through categories would weight the side score, three angles spread
+ * across two categories, quite differently.
+ */
+export function viewScoresFor(scan: Scan): ViewScore[] {
+  const scores = referenceScores(scan);
+  const summarised = new Map(
+    (scores?.views || []).map((item) => [item.key, { score: item.score, count: item.metric_count }]),
+  );
+  if (!summarised.size) {
+    const buckets = new Map<ScoredView, number[]>(SCORED_VIEWS.map((view) => [view, []]));
+    for (const metric of scores?.metrics || []) {
+      if (typeof metric.score !== 'number' || !Number.isFinite(metric.score)) continue;
+      buckets.get(metric.view || METRIC_VIEW[metric.key])?.push(metric.score);
+    }
+    for (const [view, found] of buckets) {
+      // Rounded to a whole score before the ten-point division, which is where the server rounds
+      // it too — otherwise a scan with a stored summary and one without would print different
+      // numbers for the same twelve measurements.
+      if (found.length) {
+        summarised.set(view, {
+          score: Math.round(found.reduce((total, score) => total + score, 0) / found.length),
+          count: found.length,
+        });
+      }
+    }
+  }
+  return SCORED_VIEWS.map((key) => {
+    const found = summarised.get(key);
+    const ten = toTenScale(found?.score);
+    if (!found || ten === null) return { key, score: '—', metricCount: 0, scored: false };
+    return { key, score: ten.toFixed(1), metricCount: found.count, scored: true };
+  });
+}
+
 const byScoreDescending = (a: RatioRow, b: RatioRow) => b.score - a.score;
 
 /** Highest-scoring measurements. Derived, never a stored literal. */
@@ -435,3 +535,70 @@ export function catalogAvailability(scan: Scan) {
 }
 
 export const UNSUPPORTED_CATEGORIES = ['brows', 'cheeks', 'jaw', 'smile', 'neck', 'skin'];
+
+/**
+ * Who the published means this scan was scored against were actually measured on.
+ *
+ * A measurement compared against "the reference" says nothing until the reader can see which
+ * reference: which population, which age band, and how many people are in it. All three are on
+ * the scan already — `score_observations` writes them into `reference_scores.reference` — so this
+ * only reshapes them, and reports the two mismatch flags the server sets when the person being
+ * scored falls outside the cohort their score was computed against.
+ */
+export type ReferenceCohort = {
+  /** e.g. "Thai adults". Null on a scan stored before the reference block existed. */
+  population: string | null;
+  /** e.g. "18-35". */
+  ageRange: string | null;
+  sampleSize: number | null;
+  /** Which set of means, e.g. "neutral". */
+  profile: string | null;
+  source: string | null;
+  version: string | null;
+  /** The score is never rescaled for either mismatch, so the screen has to be able to say so. */
+  outsideAgeRange: boolean;
+  outsidePopulation: boolean;
+  /** The country the user selected, which is what `outsidePopulation` is measured against. */
+  reportedPopulation: string | null;
+  /** False when this scan carries no cohort at all, in which case nothing above may be shown. */
+  known: boolean;
+};
+
+export function referenceCohortFor(scan: Scan): ReferenceCohort {
+  const scores = referenceScores(scan);
+  const reference = scores?.reference;
+  return {
+    population: reference?.population ?? null,
+    ageRange: reference?.age_range ?? null,
+    sampleSize: typeof reference?.sample_size === 'number' ? reference.sample_size : null,
+    profile: reference?.profile ?? null,
+    source: reference?.source ?? null,
+    version: reference?.version ?? null,
+    // Compared against the exact strings the server writes rather than by negating the "within"
+    // ones: an unrecognised value must not silently become a warning about a cohort mismatch
+    // nobody established.
+    outsideAgeRange: scores?.cohort_match === 'outside_reference_age_range',
+    outsidePopulation: scores?.population_match === 'outside_reference_population',
+    reportedPopulation: scores?.reported_population ?? null,
+    known: Boolean(reference?.population && reference?.sample_size),
+  };
+}
+
+/** The three regions with a published mean behind them, in the simulation screen's own vocabulary. */
+export type SimulationRegion = 'nose' | 'lips' | 'chin';
+
+/**
+ * Which simulation region a scored measurement feeds, for the measurements that feed one.
+ *
+ * A mirror of `reference_scoring.REFERENCE_TARGETS`, which is the only place a measured ratio and
+ * a warp the simulator can actually perform are connected. Four of the twelve scored keys appear
+ * here, and that is the point: for the other eight there is no target to move toward, so the
+ * modal must not offer to simulate them. `dashboardData.test.js` reads the table out of the Python
+ * so a region gaining or losing a key cannot leave a dead button behind.
+ */
+export const METRIC_SIMULATION_REGION: Record<string, SimulationRegion> = {
+  alar_width: 'nose',
+  upper_vermillion: 'lips',
+  lower_vermillion: 'lips',
+  chin_height: 'chin',
+};
