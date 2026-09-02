@@ -12,14 +12,16 @@ import {
 import { useNavigate } from "react-router-dom";
 import { useLocale } from "../useLocale";
 import { useQuery } from "@tanstack/react-query";
-import { getPlans, getScan, getScans, getScoreCard, getSession } from "../lib/api";
+import { getMetricCatalog, getPlans, getScan, getScans, getScoreCard, getSession } from "../lib/api";
 import { baht } from "../lib/referral";
 import { errorMessage } from "../lib/apiError";
 import { dashboardGate } from "../lib/dashboardGate";
 import { statusPollInterval } from "../lib/pollInterval.js";
 import type { RatioRow } from "../lib/dashboardData";
 import {
+  CATALOG_SIZE,
   catalogAvailability,
+  type CatalogEntry,
   improvementsFor,
   overallScore,
   pillarsFor,
@@ -56,14 +58,6 @@ import {
 } from "lucide-react";
 import Brand from "../Brand";
 import NotificationBell from "../components/NotificationBell";
-import {
-  analysisCatalog,
-  methodLabels,
-  metricGroups,
-  type AnalysisMetric,
-  type MetricGroup,
-  type MetricMethod,
-} from "../analysisCatalog";
 import { latestCraniofacialScan } from "../lib/latestScan";
 
 type AppView =
@@ -739,57 +733,81 @@ function RatioModal({
 
 function MeasurementLibrary({ onUnlock }: { onUnlock: () => void }) {
   const { availability } = useScanData();
+  const { locale } = useLocale();
+  const th = locale !== "en";
+  // Served, not hardcoded. This screen used to render a 102-entry list written into the client,
+  // of which exactly twelve could be filled in — matched by lowercasing the English display name
+  // against a lookup table. The server now serves the catalogue it actually measures against,
+  // and every row says what backs it and, when nothing does, why not.
+  const catalog = useQuery<{
+    items: CatalogEntry[];
+    groups: { key: string; name_th: string; name_en: string }[];
+    coverage: { measured: number; not_measured: number; with_reference: number; from_skin_scan: number };
+  }>({ queryKey: ["metric-catalog"], queryFn: getMetricCatalog });
   const [query, setQuery] = useState("");
-  const [group, setGroup] = useState<MetricGroup | "All">("All");
-  const [method, setMethod] = useState<MetricMethod | "All">("All");
-  const [selected, setSelected] = useState<AnalysisMetric>(analysisCatalog[0]);
+  const [group, setGroup] = useState<string>("All");
+  const [status, setStatus] = useState<"All" | "measured" | "not_measured">("All");
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+
+  const items: CatalogEntry[] = catalog.data?.items ?? [];
+  const groups: { key: string; name_th: string; name_en: string }[] = catalog.data?.groups ?? [];
+  const coverage = catalog.data?.coverage;
+  const groupName = (key: string) => {
+    const found = groups.find((item) => item.key === key);
+    return found ? (th ? found.name_th : found.name_en) : key;
+  };
+
   const filtered = useMemo(() => {
     const term = query.trim().toLowerCase();
-    return analysisCatalog.filter(
-      (metric) =>
-        (group === "All" || metric.group === group) &&
-        (method === "All" || metric.method === method) &&
+    return items.filter(
+      (item) =>
+        (group === "All" || item.group === group) &&
+        (status === "All" || item.status === status) &&
         (!term ||
-          metric.name.toLowerCase().includes(term) ||
-          metric.group.toLowerCase().includes(term)),
+          item.name_th.toLowerCase().includes(term) ||
+          item.name_en.toLowerCase().includes(term)),
     );
-  }, [group, method, query]);
-  const selectedRow = availability.rowForCatalogName(selected.name);
-  const counts = useMemo(
-    () =>
-      analysisCatalog.reduce(
-        (total, metric) => ({
-          ...total,
-          [metric.method]: total[metric.method] + 1,
-        }),
-        { landmark: 0, scale: 0, profile: 0 },
-      ),
-    [],
-  );
+  }, [items, group, status, query]);
+
+  const selected = items.find((item) => item.id === selectedId) ?? filtered[0] ?? items[0] ?? null;
+  const scoredRow = selected ? availability.scoredFor(selected) : null;
+  const measuredRow = selected && !scoredRow ? availability.measuredFor(selected) : null;
+
+  if (catalog.isPending) {
+    return (
+      <section className="metric-library" aria-label="Measurement library">
+        <GlassCard className="metric-library__head">
+          <div><p>{th ? "กำลังโหลดรายการที่วัดได้…" : "Loading the measurement catalogue…"}</p></div>
+        </GlassCard>
+      </section>
+    );
+  }
 
   return (
     <section className="metric-library" aria-label="Measurement library">
       <GlassCard className="metric-library__head">
         <div>
           <span className="eyebrow">Measurement library</span>
-          <h1>{analysisCatalog.length} analysis checks</h1>
-          <p>
-            {availability.availableCount} of {analysisCatalog.length} have a published reference
-            behind them today. Every result shows what the scan can measure and what it cannot.
-          </p>
+          <h1>{th ? `${items.length} ลักษณะที่พูดถึง` : `${items.length} characteristics`}</h1>
+          {/* Two different numbers, and conflating them is what the old screen did. `measured`
+              is what this product can read at all; `availableCount` is what *this scan* has a
+              published reference to be scored against. */}
+          <p>{th
+            ? `วัดได้ ${coverage?.measured ?? 0} รายการ · มีค่าอ้างอิงให้เทียบ ${coverage?.with_reference ?? 0} รายการ · สแกนนี้ให้คะแนนได้ ${availability.availableCount} ค่า`
+            : `${coverage?.measured ?? 0} can be measured · ${coverage?.with_reference ?? 0} have a published reference · this scan scored ${availability.availableCount}`}</p>
         </div>
         <dl>
           <div>
-            <dt>2D landmark</dt>
-            <dd>{counts.landmark}</dd>
+            <dt>{th ? "วัดได้" : "Measured"}</dt>
+            <dd>{coverage?.measured ?? 0}</dd>
           </div>
           <div>
-            <dt>Needs scale</dt>
-            <dd>{counts.scale}</dd>
+            <dt>{th ? "ยังวัดไม่ได้" : "Not measured"}</dt>
+            <dd>{coverage?.not_measured ?? 0}</dd>
           </div>
           <div>
-            <dt>Side profile</dt>
-            <dd>{counts.profile}</dd>
+            <dt>{th ? "ต้องสแกนผิว" : "Needs a skin scan"}</dt>
+            <dd>{coverage?.from_skin_scan ?? 0}</dd>
           </div>
         </dl>
       </GlassCard>
@@ -800,121 +818,136 @@ function MeasurementLibrary({ onUnlock }: { onUnlock: () => void }) {
             <input
               value={query}
               onChange={(event) => setQuery(event.target.value)}
-              placeholder="Search measurements"
+              placeholder={th ? "ค้นหา" : "Search measurements"}
               aria-label="Search measurements"
             />
           </label>
-          <div className="metric-methods" aria-label="Measurement method">
-            {(["All", "landmark", "scale", "profile"] as const).map(
-              (item) => (
-                <button
-                  className={method === item ? "is-active" : ""}
-                  type="button"
-                  onClick={() => setMethod(item)}
-                  key={item}
-                >
-                  {item === "All" ? "All methods" : methodLabels[item]}
-                </button>
-              ),
-            )}
+          {/* Was "landmark / needs scale / side profile" — three labels invented on the client
+              that nothing on the server ever agreed to. This filter is the server's own
+              `status`, which is derived from whether anything actually backs the row. */}
+          <div className="metric-methods" aria-label="Measurement status">
+            {(["All", "measured", "not_measured"] as const).map((item) => (
+              <button
+                className={status === item ? "is-active" : ""}
+                type="button"
+                onClick={() => setStatus(item)}
+                key={item}
+              >
+                {item === "All" ? (th ? "ทั้งหมด" : "All")
+                  : item === "measured" ? (th ? "วัดได้" : "Measured")
+                    : (th ? "ยังวัดไม่ได้" : "Not measured")}
+              </button>
+            ))}
           </div>
         </div>
         <div className="metric-groups" aria-label="Measurement categories">
-          {(["All", ...metricGroups] as const).map((item) => (
+          {["All", ...groups.map((item) => item.key)].map((item) => (
             <button
               className={group === item ? "is-active" : ""}
               type="button"
               onClick={() => setGroup(item)}
               key={item}
             >
-              {item}
+              {item === "All" ? (th ? "ทั้งหมด" : "All") : groupName(item)}
             </button>
           ))}
         </div>
         <div className="metric-library__body">
           <div className="metric-catalog">
-            {filtered.map((metric) => {
-              const number = analysisCatalog.indexOf(metric) + 1;
-              return (
-                <button
-                  className={selected.id === metric.id ? "is-active" : ""}
-                  type="button"
-                  onClick={() => setSelected(metric)}
-                  key={metric.id}
-                >
-                  <span>{String(number).padStart(3, "0")}</span>
-                  <div>
-                    <strong>{metric.name}</strong>
-                    <small>{metric.group}</small>
-                  </div>
-                  <em className={`metric-method metric-method--${metric.method}`}>
-                    {methodLabels[metric.method]}
-                  </em>
-                  <ChevronDown />
-                </button>
-              );
-            })}
+            {filtered.map((item) => (
+              <button
+                className={selected?.id === item.id ? "is-active" : ""}
+                type="button"
+                onClick={() => setSelectedId(item.id)}
+                key={item.id}
+              >
+                <span>{String(item.number).padStart(3, "0")}</span>
+                <div>
+                  <strong>{th ? item.name_th : item.name_en}</strong>
+                  <small>{groupName(item.group)}</small>
+                </div>
+                <em className={`metric-method metric-method--${item.status === "measured" ? "landmark" : "scale"}`}>
+                  {item.status === "measured" ? (th ? "วัดได้" : "Measured") : (th ? "ยังวัดไม่ได้" : "Not measured")}
+                </em>
+                <ChevronDown />
+              </button>
+            ))}
             {!filtered.length && (
               <div className="metric-catalog__empty">
                 <Search />
-                <strong>No matching measurement</strong>
+                <strong>{th ? "ไม่พบรายการที่ตรง" : "No matching measurement"}</strong>
                 <button
                   type="button"
                   onClick={() => {
                     setQuery("");
                     setGroup("All");
-                    setMethod("All");
+                    setStatus("All");
                   }}
                 >
-                  Clear filters
+                  {th ? "ล้างตัวกรอง" : "Clear filters"}
                 </button>
               </div>
             )}
           </div>
-          <aside className="metric-detail">
-            <span className={`metric-method metric-method--${selected.method}`}>
-              {methodLabels[selected.method]}
-            </span>
-            <h2>{selected.name}</h2>
-            <p>{selected.description}</p>
-            <dl>
-              <div>
-                <dt>Required capture</dt>
-                <dd>{selected.view}</dd>
-              </div>
-              <div>
-                <dt>Current result</dt>
-                {/* Only the twelve entries reference_scoring.py covers have a value; the rest
-                    say so rather than dangling an unlock behind a measurement that does not
-                    exist yet. */}
-                {selectedRow ? (
+          {selected && (
+            <aside className="metric-detail">
+              <span className={`metric-method metric-method--${selected.status === "measured" ? "landmark" : "scale"}`}>
+                {selected.status === "measured" ? (th ? "วัดได้" : "Measured") : (th ? "ยังวัดไม่ได้" : "Not measured")}
+              </span>
+              <h2>{th ? selected.name_th : selected.name_en}</h2>
+              <dl>
+                <div>
+                  <dt>{th ? "อ่านจาก" : "Read from"}</dt>
                   <dd>
-                    {selectedRow.value}
-                    <small> · reference {selectedRow.ideal}</small>
+                    {selected.metrics.length > 0 && (th ? "การวัดจากจุดบนใบหน้า" : "Landmark measurements")}
+                    {selected.reference.length > 0 && (th ? " · ค่าอ้างอิงที่ตีพิมพ์" : " · a published reference")}
+                    {selected.skin_signals.length > 0 && (th ? " · การสแกนผิว" : " · a skin scan")}
+                    {selected.status === "not_measured" && (th ? "—" : "—")}
                   </dd>
-                ) : (
-                  <dd className="is-locked">
-                    <LockKeyhole /> Not measured yet
-                  </dd>
-                )}
-              </div>
-            </dl>
-            <div className="metric-limit">
-              <CircleHelp />
-              <p>{selected.limitation}</p>
-            </div>
-            <button type="button" onClick={onUnlock}>
-              Unlock complete analysis <ArrowRight />
-            </button>
-          </aside>
+                </div>
+                <div>
+                  <dt>{th ? "ผลของสแกนนี้" : "Current result"}</dt>
+                  {/* Three states, not two. A row can be scored against a published mean, or
+                      measured with no norm to compare it to, or not measured at all — and the
+                      middle one used to be shown as "Not measured yet", which was false. */}
+                  {scoredRow ? (
+                    <dd>
+                      {scoredRow.value}
+                      <small> · {th ? "ค่าอ้างอิง" : "reference"} {scoredRow.ideal}</small>
+                    </dd>
+                  ) : measuredRow ? (
+                    <dd>
+                      {measuredRow.value}
+                      <small> · {th ? "วัดได้ แต่ยังไม่มีค่าอ้างอิงให้เทียบ" : "measured, with no published norm to compare against"}</small>
+                    </dd>
+                  ) : (
+                    <dd className="is-locked">
+                      <LockKeyhole /> {th ? "ยังวัดไม่ได้" : "Not measured"}
+                    </dd>
+                  )}
+                </div>
+              </dl>
+              {/* The server's own reason, in the server's own words. Telling someone "we do not
+                  measure your hairline" is the answer; inventing a hairline score is not. */}
+              {(th ? selected.note_th : selected.note_en) && (
+                <div className="metric-limit">
+                  <CircleHelp />
+                  <p>{th ? selected.note_th : selected.note_en}</p>
+                </div>
+              )}
+              <button type="button" onClick={onUnlock}>
+                {th ? "ปลดล็อกผลวิเคราะห์เต็ม" : "Unlock complete analysis"} <ArrowRight />
+              </button>
+            </aside>
+          )}
         </div>
       </GlassCard>
       <div className="measurement-policy">
-        <strong>Measurement rules</strong>
-        <span>No millimetres without scale calibration.</span>
-        <span>No projection score without a side view or 3D.</span>
-        <span>No skin diagnosis from a phone photo.</span>
-        <span>No universal beauty score.</span>
+        <strong>{th ? "กติกาการวัด" : "Measurement rules"}</strong>
+        <span>{th ? "ไม่บอกเป็นมิลลิเมตรถ้าไม่มีตัวอ้างอิงขนาด" : "No millimetres without scale calibration."}</span>
+        <span>{th ? "ไม่ให้คะแนนการยื่นถ้าไม่มีภาพด้านข้าง" : "No projection score without a side view."}</span>
+        <span>{th ? "ไม่วินิจฉัยผิวจากภาพถ่ายมือถือ" : "No skin diagnosis from a phone photo."}</span>
+        <span>{th ? "ไม่มีคะแนนความสวยสากล" : "No universal beauty score."}</span>
       </div>
     </section>
   );
@@ -980,7 +1013,7 @@ function UnlockModal({
             <div className="unlock-loading__copy">
               <span className="eyebrow">DOODEE Complete</span>
               <h2 id="unlock-title">Preparing your full analysis.</h2>
-              <p>Checking all {analysisCatalog.length} facial measurements.</p>
+              <p>Checking all {CATALOG_SIZE} facial characteristics.</p>
               <div className="unlock-loading__progress"><i /></div>
             </div>
           </div>
@@ -1013,7 +1046,7 @@ function UnlockModal({
             <ul>
               <li>
                 <Check />
-                All {analysisCatalog.length} analysis checks
+                All {CATALOG_SIZE} analysis checks
               </li>
               <li>
                 <Check />
@@ -1116,7 +1149,7 @@ function Analysis({
             setSelectedMetric(null);
           }}
         >
-          All {analysisCatalog.length}
+          All {CATALOG_SIZE}
         </button>
       </nav>
       <div
@@ -1146,7 +1179,7 @@ function Analysis({
           </span>
         </button>
         <div>
-          <span className="eyebrow">{analysisCatalog.length} analysis checks</span>
+          <span className="eyebrow">{CATALOG_SIZE} analysis checks</span>
           <strong>
             {pillars.find((item) => item.id === pillar)?.label} analysis
           </strong>

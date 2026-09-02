@@ -30,7 +30,9 @@ export type ReferenceScores = {
   metrics: ScoredMetric[];
 };
 
-export type Scan = { analysis_data?: { reference_scores?: ReferenceScores } } | null | undefined;
+export type Scan = {
+  analysis_data?: { reference_scores?: ReferenceScores; metrics?: unknown[] };
+} | null | undefined;
 
 export type RatioRow = {
   id: string;
@@ -359,38 +361,62 @@ export function improvementsFor(scan: Scan, limit = 3, locale: 'th' | 'en' = 'en
 }
 
 /**
- * The measurement library's 102 entries are qijek's catalog; only twelve have a backend metric
- * behind them. Catalog ids are positional (`eyes-3`), so entries are matched by name instead.
+ * How many characteristics this product claims to read.
+ *
+ * A constant rather than a query in the three places that only need the headline number —
+ * a loading spinner, a pricing bullet and a tab label. Pinned to `metric_catalog.CATALOG` by
+ * `faceMetrics.test.js`'s sibling check, so it cannot drift into a claim the server disagrees
+ * with the way the hardcoded 102-entry client list did.
  */
-const CATALOG_NAME_TO_METRIC: Record<string, string> = {
-  'midface ratio': 'midface_height',
-  'lower-face height': 'lower_face_height',
-  'intercanthal distance': 'intercanthal',
-  'palpebral fissure length': 'eye_fissure',
-  'alar width': 'alar_width',
-  'nasofrontal angle': 'nasofrontal_angle',
-  'nasolabial angle': 'nasolabial_angle',
-  'upper-lip height': 'upper_lip_length',
-  'vermilion height': 'upper_vermillion',
-  'lower-lip height': 'lower_vermillion',
-  'chin height': 'chin_height',
-  'facial convexity angle': 'facial_convexity_angle',
+export const CATALOG_SIZE = 85;
+
+/** One measured metric as `analysis_engine` emits it — the 51, not the 12 that get scored. */
+export type MeasuredMetric = { key: string; value: number; unit?: string; category?: string };
+
+/** A row of `metric_catalog`, as `GET /metric-catalog/` serves it. */
+export type CatalogEntry = {
+  number: number;
+  id: string;
+  group: string;
+  name_th: string;
+  name_en: string;
+  metrics: string[];
+  reference: string[];
+  skin_signals: string[];
+  status: 'measured' | 'not_measured';
+  note_th: string | null;
+  note_en: string | null;
 };
 
 /**
- * Catalog entries the backend can currently fill. Everything else is returned unavailable so the
- * measurement library can lock it instead of showing a number nobody computed.
+ * What this scan can fill in on a catalog entry.
+ *
+ * Joined on metric keys, which is what the two sides actually share. It used to be joined on the
+ * *display name* — a lowercased English string matched against a twelve-entry lookup table —
+ * because the library's catalog was a hardcoded list with positional ids that had nothing to do
+ * with what the server measures. The server serves the catalog now, and each entry names its own
+ * keys, so the guessing is gone.
+ *
+ * Two families, tried in order. `reference` keys are the twelve with a published mean, so they
+ * come with a value *and* something to compare it against. `metrics` keys are the fifty-one this
+ * face was measured on, which have a number but no norm — worth showing, but never as a score.
  */
 export function catalogAvailability(scan: Scan) {
-  const rows = new Map(ratioRows(scan).map((row) => [row.id, row]));
-  const rowForCatalogName = (name: string) =>
-    rows.get(CATALOG_NAME_TO_METRIC[name.trim().toLowerCase()] ?? '') ?? null;
+  const scored = new Map(ratioRows(scan).map((row) => [row.id, row]));
+  const measured = new Map(
+    ((scan?.analysis_data?.metrics as MeasuredMetric[] | undefined) || []).map((m) => [m.key, m]),
+  );
   return {
     /** Backend metric keys present on this scan — used by ratio rows and pillar tabs. */
-    isAvailable: (metricKey: string) => rows.has(metricKey),
-    /** The scored row behind a catalog entry, or null when nothing measures it. */
-    rowForCatalogName,
-    availableCount: rows.size,
+    isAvailable: (metricKey: string) => scored.has(metricKey),
+    /** The scored row behind a catalog entry, or null when nothing scores it. */
+    scoredFor: (entry: CatalogEntry) =>
+      entry.reference.map((key) => scored.get(key)).find(Boolean) ?? null,
+    /** The raw measurement behind a catalog entry, for the rows with no published norm. */
+    measuredFor: (entry: CatalogEntry) =>
+      entry.metrics.map((key) => measured.get(key)).find(Boolean) ?? null,
+    availableCount: scored.size,
+    measuredCount: measured.size,
   };
 }
 

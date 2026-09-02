@@ -4,6 +4,7 @@ import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 import { FACE_METRICS, METRIC_CATEGORIES, MERGED_INTO } from './faceMetrics.js';
+import { CATALOG_SIZE } from '../lib/dashboardData.ts';
 
 /**
  * The keys `analysis_engine.py` declares it can emit, read out of the file itself.
@@ -90,4 +91,20 @@ test('a merged metric points at one that exists', () => {
     assert.ok(keys.has(from), `${from} is merged away but is not in the catalog`);
     assert.ok(keys.has(into), `${from} merges into ${into}, which does not exist`);
   }
+});
+
+test('the headline catalogue count matches the catalogue the server serves', () => {
+  /**
+   * Three places on the dashboard advertise how many characteristics this product reads. They
+   * used to count a 102-entry list written into the client, of which twelve could actually be
+   * filled in — a claim the server never agreed to. `CATALOG_SIZE` replaced it, so it is pinned
+   * to `metric_catalog.py` here the same way the metric keys are pinned to `analysis_engine.py`.
+   */
+  const catalog = readFileSync(
+    fileURLToPath(new URL('../../../../backend/doodee/metric_catalog.py', import.meta.url)),
+    'utf8',
+  );
+  const rows = [...catalog.matchAll(/^\s*_item\(\s*\d+,/gm)].length;
+  assert.ok(rows > 0, 'no _item rows found in metric_catalog.py');
+  assert.equal(rows, CATALOG_SIZE, `metric_catalog.py has ${rows} rows, the client claims ${CATALOG_SIZE}`);
 });
