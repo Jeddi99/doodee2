@@ -63,6 +63,17 @@ def _send_email(notification):
         # the renewal reminders would stop working without anyone noticing.
         logger.warning("notification email failed", exc_info=True, extra={"notification": notification.pk})
         return
+    # Only when a real host took it. With `EMAIL_HOST` unset Django falls back to the console
+    # backend, `send_mail` succeeds, and stamping here would record a line printed to a
+    # container's stdout as a delivered message — the admin would show `emailed_at` set on a
+    # renewal reminder nobody ever received. Printing is fine in development; claiming it was
+    # sent is not.
+    if "console" in settings.EMAIL_BACKEND:
+        logger.warning(
+            "notification %s printed to stdout, not emailed: EMAIL_HOST is unset",
+            notification.pk,
+        )
+        return
     notification.emailed_at = timezone.now()
     notification.save(update_fields=("emailed_at",))
 

@@ -16,8 +16,8 @@ from django.db.models import F, Sum
 from django.utils import timezone
 
 from .models import (
-    Coupon, CouponGrant, CouponRedemption, CreditLedger, Order, Plan, Referral, SiteSetting,
-    Subscription,
+    Coupon, CouponGrant, CouponRedemption, CreditLedger, Notification, Order, Plan, Referral,
+    SiteSetting, Subscription,
 )
 
 
@@ -27,6 +27,7 @@ class CouponError(ValueError):
     def __init__(self, code):
         super().__init__(code)
         self.code = code
+
 
 
 def discount_for(coupon, subtotal_satang):
@@ -221,6 +222,25 @@ def activate(order, charge_id="", now=None):
         order.user.groups.add(group)
 
     vest_referral_reward(order, now)
+    # Tell them. `Notification.Kind.ORDER_PAID` has existed since the model was written and
+    # nothing ever sent it, so a customer who transferred money and waited for a human to confirm
+    # it was told nothing at all — they had to keep reopening the app to find out whether it had
+    # worked. On the manual-transfer path that wait is the entire product experience of paying.
+    #
+    # Deduped on the order, so a retried webhook or a double-clicked Confirm cannot send it twice.
+    # Imported here rather than at module scope, for the reason `vest_referral_reward` gives:
+    # `notifications` reaches back into this module.
+    from .notifications import notify
+
+    notify(
+        order.user,
+        kind=Notification.Kind.ORDER_PAID,
+        title="เปิดสิทธิ์เรียบร้อยแล้ว",
+        body=f"ยืนยันการชำระเงิน ฿{order.total_satang / 100:,.0f} แล้ว "
+             f"แพ็กเกจ {plan.name_th} ใช้ได้ถึง {subscription.current_period_end:%d/%m/%Y}",
+        dedupe_key=f"order:{order.pk}",
+        payload={"order_id": str(order.pk), "plan": plan.code},
+    )
     return subscription
 
 

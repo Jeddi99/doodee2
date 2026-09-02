@@ -660,7 +660,8 @@ class Order(models.Model):
     currency = models.CharField(max_length=3, default="THB", verbose_name="สกุลเงิน")
     status = models.CharField(
         max_length=10, choices=Status.choices, default=Status.PENDING, verbose_name="สถานะ",
-        help_text="อย่าแก้ช่องนี้มือเพื่อเปิดสิทธิ์ ให้ใช้ปุ่ม “ยืนยันการชำระเงิน” ด้านบนแทน มิฉะนั้นผู้ใช้จะไม่ได้สิทธิ์",
+        help_text="แก้ช่องนี้เองไม่ได้ · เปิดสิทธิ์โดยติ๊กคำสั่งซื้อในหน้ารายการ แล้วเลือก "
+                  "\"ยืนยันการชำระเงิน — เปิดสิทธิ์ให้ผู้ใช้\" จากเมนู Action",
     )
     provider = models.CharField(
         max_length=10, choices=Provider.choices, default=Provider.MANUAL, verbose_name="ช่องทางชำระเงิน",
@@ -1450,7 +1451,58 @@ class SiteSetting(models.Model):
         help_text="เหตุผลเดียวกับเพดานแชท · จำกัดว่าหนึ่งบัญชีกิน CPU ได้เท่าไรในหนึ่งชั่วโมง",
     )
 
+    # ---- การรับเงิน
+    #
+    # Where a customer sends money, and where they send the slip. Deliberately here rather than
+    # in code or in the client bundle: it is a business fact that changes without a deploy, and
+    # the same reasoning that put the referral reward here applies to it.
+    #
+    # Deliberately *not* encrypted, unlike `PayoutAccount`. That table holds a customer's own
+    # account and exists to be kept secret; this one is the company's and exists to be read by
+    # strangers. Encrypting it would only stop the people who need it.
+    #
+    # `create_order` refuses while `transfer_account_number` and `slip_contact` are blank. An
+    # order a customer has no way to pay is worse than no order: they believe they have bought
+    # something, and the first thing the product does to them is fail silently.
+    transfer_bank = models.CharField(
+        max_length=60, blank=True, verbose_name="ธนาคารที่รับโอน",
+        help_text="เช่น กสิกรไทย · เว้นว่างได้ถ้ารับเฉพาะพร้อมเพย์",
+    )
+    transfer_account_name = models.CharField(
+        max_length=120, blank=True, verbose_name="ชื่อบัญชีที่รับโอน",
+        help_text="ชื่อที่ลูกค้าจะเห็นตอนโอน ต้องตรงกับบัญชีจริง",
+    )
+    transfer_account_number = models.CharField(
+        max_length=40, blank=True, verbose_name="เลขบัญชี / พร้อมเพย์",
+        help_text="ลูกค้าเห็นเลขนี้เต็ม ๆ เพราะต้องโอนเข้ามา · ว่างอยู่ = ขายไม่ได้ ระบบจะปฏิเสธคำสั่งซื้อ",
+    )
+    slip_contact = models.CharField(
+        max_length=120, blank=True, verbose_name="ส่งสลิปมาที่",
+        help_text="เช่น LINE @doodee หรืออีเมล · ว่างอยู่ = ขายไม่ได้ เพราะลูกค้าไม่รู้จะส่งหลักฐานไปทางไหน",
+    )
+
     updated_at = models.DateTimeField(auto_now=True, verbose_name="แก้ไขล่าสุด")
+
+    @property
+    def can_accept_transfers(self):
+        """Whether a customer told to pay by transfer has both halves of the instruction.
+
+        Both, not either: an account number with nowhere to send the slip leaves the money
+        arrived and the order still pending, and a contact with no account number leaves them
+        asking where to send it.
+        """
+        return bool(self.transfer_account_number.strip() and self.slip_contact.strip())
+
+    def payment_instructions(self):
+        """What the checkout screen shows after an order is placed, or None when unsellable."""
+        if not self.can_accept_transfers:
+            return None
+        return {
+            "bank": self.transfer_bank,
+            "account_name": self.transfer_account_name,
+            "account_number": self.transfer_account_number,
+            "slip_contact": self.slip_contact,
+        }
 
     class Meta:
         verbose_name = "ตั้งค่าระบบสมาชิกและชวนเพื่อน"

@@ -15054,3 +15054,12 @@ body[data-locale="th"] .eyebrow {
   color: rgba(255, 255, 255, .62);
   border-color: rgba(255, 255, 255, .2);
 }
+
+/* Where the money goes, shown with the placed order. Two rows, monospaced number: an account
+   number a customer has to copy by hand is the one string on the page that must not be
+   ambiguous about 0 and O. */
+.pricing-transfer { margin: 10px 0; display: grid; gap: 6px; }
+.pricing-transfer > div { display: grid; gap: 2px; }
+.pricing-transfer dt { font-size: 0.68rem; font-weight: 700; opacity: 0.7; }
+.pricing-transfer dd { margin: 0; font-size: 0.8rem; }
+.pricing-transfer dd strong { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: 0.02em; }

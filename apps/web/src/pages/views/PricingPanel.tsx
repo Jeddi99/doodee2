@@ -51,8 +51,10 @@ const COPY = {
     discount: "ส่วนลด",
     total: "ยอดที่ต้องชำระ",
     ordered: "สร้างคำสั่งซื้อแล้ว",
-    orderedBody:
-      "โอนเงินตามยอดด้านบน แล้วส่งสลิปให้ทีมงาน สิทธิ์จะเปิดหลังทีมงานยืนยันการชำระเงิน",
+    orderedBody: "สิทธิ์จะเปิดหลังทีมงานยืนยันการชำระเงิน",
+    transferTo: "โอนเข้าบัญชี",
+    sendSlipTo: "ส่งสลิปมาที่",
+    closed: "ยังไม่เปิดขาย — ยังไม่ได้ตั้งบัญชีรับเงิน",
     note: "โควตาของแต่ละแผนแสดงอยู่บนการ์ด แผนฟรีดูผลวิเคราะห์ได้บางส่วนและยังไม่มีการจำลองใบหน้า",
     monthly: "รายเดือน",
     yearly: "รายปี",
@@ -88,8 +90,10 @@ const COPY = {
     discount: "Discount",
     total: "Amount due",
     ordered: "Order created",
-    orderedBody:
-      "Transfer the amount above and send us the slip. Access opens once we confirm the payment.",
+    orderedBody: "Access opens once we confirm the payment.",
+    transferTo: "Transfer to",
+    sendSlipTo: "Send the slip to",
+    closed: "Not on sale yet — no account has been set up to receive payment",
     note: "Each plan's allowances are on its card. The free tier shows part of the analysis and includes no simulations.",
     monthly: "Monthly",
     yearly: "Yearly",
@@ -134,6 +138,18 @@ export default function PricingPanel() {
   const session = useQuery({ queryKey: ["session"], queryFn: getSession });
   const plans = useQuery({ queryKey: ["plans"], queryFn: getPlans });
   const currentPlan = session.data?.plan;
+  /**
+   * Where a customer sends money, or null on a deployment where nobody has set that up.
+   *
+   * Null is the state in which `POST /orders/` answers 503, so the buy button is disabled rather
+   * than offering a purchase the server will refuse — and rather than the older behaviour, which
+   * created the order happily and then told the buyer to "transfer the amount and send us the
+   * slip" with no account number and nobody to send it to.
+   */
+  const payment = session.data?.payment_instructions as
+    | { bank: string; account_name: string; account_number: string; slip_contact: string }
+    | null
+    | undefined;
 
   // Whatever the caller asked for. The profile's ใช้สิทธิ์ button lands here with the benefit
   // named in the URL, so it can be applied before the user does anything.
@@ -335,6 +351,25 @@ export default function PricingPanel() {
                   <strong>
                     {copy.ordered} · {copy.total} {baht(placed?.total ?? 0)}
                   </strong>
+                  {/* Where the money goes, and where the slip goes. Without both, "transfer and
+                      send us the slip" is an instruction the customer cannot follow — they
+                      believe they have bought something and the purchase quietly dies here. */}
+                  {payment ? (
+                    <dl className="pricing-transfer">
+                      <div>
+                        <dt>{copy.transferTo}</dt>
+                        <dd>
+                          <strong>{payment.account_number}</strong>
+                          {payment.bank ? ` · ${payment.bank}` : ""}
+                          {payment.account_name ? ` · ${payment.account_name}` : ""}
+                        </dd>
+                      </div>
+                      <div>
+                        <dt>{copy.sendSlipTo}</dt>
+                        <dd><strong>{payment.slip_contact}</strong></dd>
+                      </div>
+                    </dl>
+                  ) : null}
                   <p>{copy.orderedBody}</p>
                 </div>
               ) : (
@@ -368,10 +403,17 @@ export default function PricingPanel() {
                     className="pricing-order"
                     type="button"
                     onClick={() => order.mutate({ plan: plan.code })}
-                    disabled={order.isPending}
+                    // `payment === null` means the server has no account to receive money and
+                    // will answer 503. Better a plain "not on sale yet" than a button that
+                    // creates an order the buyer has no way to pay.
+                    disabled={order.isPending || payment === null}
+                    title={payment === null ? copy.closed : undefined}
                   >
                     {copy.order} · {baht(priced ? priced.total_satang : plan.price_satang)}
                   </button>
+                  {payment === null ? (
+                    <small className="pricing-coupon-error" role="status">{copy.closed}</small>
+                  ) : null}
                   {order.error ? (
                     <small className="pricing-coupon-error" role="alert">
                       {errorMessage(order.error)}

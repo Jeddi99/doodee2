@@ -141,7 +141,12 @@ CORS_ALLOW_HEADERS = (*default_headers, "idempotency-key")
 SIMULATION_ENABLED = os.getenv("SIMULATION_ENABLED", "true").lower() == "true"
 # Promo codes grant paid entitlement for free and may be redeemed without limit, so anyone who
 # learns a code keeps renewing. Turn this off in any environment real users can reach.
-REDEEM_CODES_ENABLED = os.getenv("REDEEM_CODES_ENABLED", "true").lower() == "true"
+# Default off. It used to default on, and `docs/DEPLOY.md` and `docs/SETUP.md` both tell you to
+# turn it off for production — which makes it opt-out, and an opt-out switch that hands out the
+# top tier for free is one forgotten line away from a leaked code renewing forever. There is no
+# way to revoke a grant already issued, either: `entitlement.promo_expires_at` reads
+# `PromoRedemption` and never joins back to `PromoCode.is_active`.
+REDEEM_CODES_ENABLED = os.getenv("REDEEM_CODES_ENABLED", "false").lower() == "true"
 # Chat bills a third party per turn, so it stays off unless switched on deliberately — and it
 # reports itself unavailable anyway without ANTHROPIC_API_KEY (see doodee/chat.py).
 CHAT_ENABLED = os.getenv("CHAT_ENABLED", "true").lower() == "true"
@@ -362,6 +367,12 @@ def require_production_services():
         missing.append(
             "REDIS_CACHE_URL is unset, so the cache would be per-process: every rate limit "
             "multiplies by the worker count and cache.add() stops working as a mutex"
+        )
+    if "console" in EMAIL_BACKEND:
+        missing.append(
+            "EMAIL_HOST is unset, so every notification would be printed to this container's "
+            "stdout instead of sent — renewal reminders and the message telling a customer "
+            "their payment was confirmed both go nowhere, and nothing raises"
         )
     if missing:
         raise ImproperlyConfigured(

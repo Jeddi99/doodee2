@@ -1106,6 +1106,153 @@ class RetentionScheduleTest(TestCase):
         self.assertEqual(fresh.status, Scan.Status.COMPLETED, "an unexpired scan is left alone")
 
 
+class ManualOrderConfirmTest(TestCase):
+    """Confirming a bank transfer in the admin — the only operation in the product that turns
+    money into entitlement, and the one the day-one business runs on.
+
+    It had no test at all. `grep mark_paid` found only the withdrawal payout of the same name.
+    """
+
+    def setUp(self):
+        self.admin = User.objects.create_superuser("shopkeeper", "shop@example.com", "x")
+        self.staff = User.objects.create_user("clerk", "clerk@example.com", "x", is_staff=True)
+        self.buyer = User.objects.create_user("buyer", "buyer@example.com")
+        self.plan = Plan.objects.get(code="plus")
+        setting = SiteSetting.current()
+        setting.transfer_account_number = "123-4-56789-0"
+        setting.slip_contact = "LINE @doodee"
+        setting.save()
+        self.order = create_order(self.buyer, self.plan)
+
+    def confirm(self, user=None, order=None):
+        from django.contrib.admin.sites import site
+        from django.test import RequestFactory
+        from django.contrib.messages.storage.fallback import FallbackStorage
+
+        request = RequestFactory().post("/admin/doodee/order/")
+        request.user = user or self.admin
+        request.session = {}
+        request._messages = FallbackStorage(request)
+        admin_class = site._registry[Order]
+        admin_class.mark_paid(request, Order.objects.filter(pk=(order or self.order).pk))
+
+    def test_confirming_a_transfer_grants_the_plan(self):
+        self.confirm()
+        self.order.refresh_from_db()
+        self.assertEqual(self.order.status, Order.Status.PAID)
+        self.assertIsNotNone(self.order.paid_at)
+        self.assertEqual(entitlement.plan_code(self.buyer), "plus")
+        self.assertTrue(Subscription.objects.filter(user=self.buyer, plan=self.plan).exists())
+        self.assertTrue(self.buyer.groups.filter(name=self.plan.grants_group).exists())
+
+    def test_the_buyer_is_told_it_worked(self):
+        """On the manual path the wait between transferring and being let in is the whole
+        experience of paying. `Notification.Kind.ORDER_PAID` existed and nothing ever sent it."""
+        self.confirm()
+        notification = Notification.objects.get(user=self.buyer, kind=Notification.Kind.ORDER_PAID)
+        self.assertIn("499", notification.body)
+        self.assertEqual(notification.payload["order_id"], str(self.order.pk))
+
+    def test_confirming_twice_does_not_grant_twice(self):
+        """A superuser can double-click, and a provider can retry a webhook."""
+        self.confirm()
+        end = Subscription.objects.get(user=self.buyer).current_period_end
+        self.confirm()
+        self.assertEqual(Subscription.objects.filter(user=self.buyer).count(), 1)
+        self.assertEqual(Subscription.objects.get(user=self.buyer).current_period_end, end)
+        self.assertEqual(
+            Notification.objects.filter(user=self.buyer, kind=Notification.Kind.ORDER_PAID).count(), 1)
+
+    def test_staff_who_are_not_superusers_cannot_grant_entitlement(self):
+        from django.core.exceptions import PermissionDenied
+
+        with self.assertRaises(PermissionDenied):
+            self.confirm(user=self.staff)
+        self.order.refresh_from_db()
+        self.assertEqual(self.order.status, Order.Status.PENDING)
+        self.assertEqual(entitlement.plan_code(self.buyer), "free")
+
+    def test_the_status_field_cannot_be_edited_by_hand(self):
+        """The trap this is guarding.
+
+        `status` used to be editable, and the field's own help text told the operator to press a
+        confirm button that has never existed — so the instruction led straight to the dropdown
+        beside it. Setting it to `paid` by hand marks the order paid and grants nothing, and it
+        is then unrecoverable through the UI: `activate` returns early on an order already marked
+        paid, so the confirm action reports "already paid" and does nothing.
+        """
+        from django.contrib.admin.sites import site
+
+        readonly = site._registry[Order].readonly_fields
+        self.assertIn("status", readonly)
+
+    def test_an_order_marked_paid_behind_the_engines_back_grants_nothing(self):
+        """Proving the trap is real, so the guard above is not cargo cult."""
+        Order.objects.filter(pk=self.order.pk).update(status=Order.Status.PAID)
+        self.confirm()
+        self.assertEqual(entitlement.plan_code(self.buyer), "free")
+        self.assertFalse(Subscription.objects.filter(user=self.buyer).exists())
+
+
+class NotificationDeliveryTest(TestCase):
+    """A notification that was printed to stdout must not be recorded as delivered.
+
+    With `EMAIL_HOST` unset Django falls back to the console backend and `send_mail` succeeds,
+    so the stamp went on regardless. The admin then showed `emailed_at` set on a renewal reminder
+    nobody received — a paper trail saying the opposite of what happened.
+    """
+
+    def setUp(self):
+        self.user = User.objects.create_user("mailed", "mailed@example.com")
+
+    def test_the_console_backend_does_not_count_as_delivery(self):
+        from .notifications import notify
+
+        with self.settings(EMAIL_BACKEND="django.core.mail.backends.console.EmailBackend"):
+            notification = notify(self.user, kind="renewal_due", title="t", body="b", push=False)
+        notification.refresh_from_db()
+        self.assertIsNone(notification.emailed_at, "printing is not sending")
+
+    def test_a_real_backend_does(self):
+        from .notifications import notify
+
+        with self.settings(EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend"):
+            notification = notify(self.user, kind="renewal_due", title="t", body="b", push=False)
+        notification.refresh_from_db()
+        self.assertIsNotNone(notification.emailed_at)
+
+    def test_production_refuses_to_boot_with_nowhere_to_send_mail(self):
+        """The same reasoning as the SQLite and LocMem guards beside it: the failure is silent,
+        and the thing that goes missing is the message telling a customer their payment worked."""
+        from django.core.exceptions import ImproperlyConfigured
+
+        from config import settings as config_settings
+
+        with patch.object(config_settings, "DEBUG", False), \
+             patch.object(config_settings, "USING_SQLITE_FALLBACK", False), \
+             patch.object(config_settings, "USING_LOCMEM_CACHE", False), \
+             patch.object(config_settings, "EMAIL_BACKEND",
+                          "django.core.mail.backends.console.EmailBackend"):
+            with self.assertRaisesRegex(ImproperlyConfigured, "EMAIL_HOST"):
+                config_settings.require_production_services()
+
+    def test_promo_codes_are_off_unless_switched_on(self):
+        """They hand out the top tier for free, without limit, and a grant already issued cannot
+        be revoked. An opt-out switch for that is one forgotten line from a leaked code."""
+        import os
+
+        from importlib import reload
+
+        self.assertFalse(
+            os.getenv("REDEEM_CODES_ENABLED", "false").lower() == "true"
+            and "REDEEM_CODES_ENABLED" not in os.environ,
+            "the default must be off",
+        )
+        source = Path(__file__).resolve().parent.parent / "config" / "settings.py"
+        self.assertIn('os.getenv("REDEEM_CODES_ENABLED", "false")', source.read_text())
+        del reload
+
+
 class ProcedureNamesEnTest(TestCase):
     """Every row carries an English name, and the table names nothing that does not exist.
 
@@ -4200,7 +4347,17 @@ class RenewalReminderTest(TestCase):
         )
 
     def kinds(self):
-        return list(Notification.objects.filter(user=self.user).values_list("kind", flat=True))
+        """The renewal notifications only.
+
+        Setting up a subscription goes through `activate`, which now tells the customer their
+        payment was confirmed — a message this suite is not about. Filtered rather than
+        broadened, so an unrelated notification appearing here would still be caught by the
+        tests that own it.
+        """
+        return list(
+            Notification.objects.filter(user=self.user, kind__startswith="renewal_")
+            .values_list("kind", flat=True)
+        )
 
     def test_a_reminder_goes_out_a_week_before_expiry(self):
         self.ends_in(7)
@@ -4212,7 +4369,7 @@ class RenewalReminderTest(TestCase):
         self.ends_in(3)
         self.assertEqual(send_renewal_reminders(), 1)
         self.assertEqual(send_renewal_reminders(), 0)
-        self.assertEqual(Notification.objects.filter(user=self.user).count(), 1)
+        self.assertEqual(len(self.kinds()), 1)
 
     def test_each_step_of_the_schedule_is_its_own_message(self):
         for days in (7, 3, 1, 0):
@@ -4250,8 +4407,9 @@ class RenewalReminderTest(TestCase):
 
     def test_the_email_is_a_delivery_of_the_row_not_a_separate_thing(self):
         self.ends_in(1)
+        mail.outbox.clear()
         send_renewal_reminders()
-        notification = Notification.objects.get(user=self.user)
+        notification = Notification.objects.get(user=self.user, kind__startswith="renewal_")
         self.assertIsNotNone(notification.emailed_at)
         self.assertEqual(len(mail.outbox), 1)
         self.assertEqual(mail.outbox[0].to, ["renewer@example.com"])
@@ -4259,8 +4417,9 @@ class RenewalReminderTest(TestCase):
     def test_an_account_with_no_address_still_gets_the_in_app_notification(self):
         User.objects.filter(pk=self.user.pk).update(email="")
         self.ends_in(1)
+        mail.outbox.clear()
         send_renewal_reminders()
-        self.assertEqual(Notification.objects.filter(user=self.user).count(), 1)
+        self.assertEqual(len(self.kinds()), 1)
         self.assertEqual(len(mail.outbox), 0)
 
 
@@ -5541,7 +5700,18 @@ class BillingApiTest(TestCase):
         self.assertEqual(response.status_code, 400)
         self.assertEqual(response.data["plan"], "unknown_plan")
 
+    def open_the_shop(self):
+        """Fill in where money goes. Without it the shop refuses to sell, on purpose."""
+        setting = SiteSetting.current()
+        setting.transfer_bank = "กสิกรไทย"
+        setting.transfer_account_name = "DOODEE"
+        setting.transfer_account_number = "123-4-56789-0"
+        setting.slip_contact = "LINE @doodee"
+        setting.save()
+        return setting
+
     def test_creating_an_order_prices_it_and_leaves_it_pending(self):
+        self.open_the_shop()
         Coupon.objects.create(code="TWENTY", discount_value=20)
         response = self.client.post("/api/v1/orders/", {"plan": "plus", "coupon": "TWENTY"}, format="json")
         self.assertEqual(response.status_code, 201)
@@ -5549,6 +5719,41 @@ class BillingApiTest(TestCase):
         self.assertEqual(response.data["status"], "pending")
         # Nothing is granted until the money is confirmed.
         self.assertEqual(self.client.get("/api/v1/session/").data["plan"], "free")
+
+    def test_the_order_says_where_to_send_the_money_and_the_slip(self):
+        """It used to answer the string "manual_transfer" — a customer told to transfer and send
+        a slip, with no account number and no contact, cannot complete the purchase, and believes
+        they have made one."""
+        self.open_the_shop()
+        response = self.client.post("/api/v1/orders/", {"plan": "plus"}, format="json")
+        instructions = response.data["payment_instructions"]
+        self.assertEqual(instructions["account_number"], "123-4-56789-0")
+        self.assertEqual(instructions["slip_contact"], "LINE @doodee")
+        self.assertEqual(instructions["bank"], "กสิกรไทย")
+        # And on the session, so the price list can show it before the buy button rather than
+        # only after an order exists.
+        self.assertEqual(self.client.get("/api/v1/session/").data["payment_instructions"], instructions)
+
+    def test_a_shop_with_nowhere_to_receive_money_refuses_to_sell(self):
+        """Better a refusal than an order nobody can pay: the customer would believe they had
+        bought something, and the first thing the product does to them is fail silently."""
+        response = self.client.post("/api/v1/orders/", {"plan": "plus"}, format="json")
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.data["detail"], "payment_instructions_missing")
+        self.assertEqual(Order.objects.count(), 0)
+        self.assertIsNone(self.client.get("/api/v1/session/").data["payment_instructions"])
+
+    def test_half_an_instruction_is_not_an_instruction(self):
+        """An account number with nowhere to send the slip leaves the money arrived and the order
+        still pending; a contact with no account number leaves them asking where to send it."""
+        setting = SiteSetting.current()
+        setting.transfer_account_number = "123-4-56789-0"
+        setting.save()
+        self.assertEqual(self.client.post("/api/v1/orders/", {"plan": "plus"}, format="json").status_code, 503)
+        setting.transfer_account_number = ""
+        setting.slip_contact = "LINE @doodee"
+        setting.save()
+        self.assertEqual(self.client.post("/api/v1/orders/", {"plan": "plus"}, format="json").status_code, 503)
 
     def test_the_free_plan_cannot_be_ordered(self):
         response = self.client.post("/api/v1/orders/", {"plan": "free"}, format="json")
@@ -6885,7 +7090,11 @@ class ProductionConfigGuardTests(SimpleTestCase):
     the two cases where it must stay out of the way: DEBUG, and the Dockerfile's collectstatic.
     """
 
-    def _call(self, *, debug, sqlite, locmem):
+    #: A mail host, so these cases exercise the database and cache guards rather than tripping
+    #: over the email one. The email guard has its own test in `NotificationDeliveryTest`.
+    SMTP = "django.core.mail.backends.smtp.EmailBackend"
+
+    def _call(self, *, debug, sqlite, locmem, email=SMTP):
         from config.settings import require_production_services
 
         with patch.multiple(
@@ -6893,6 +7102,7 @@ class ProductionConfigGuardTests(SimpleTestCase):
             DEBUG=debug,
             USING_SQLITE_FALLBACK=sqlite,
             USING_LOCMEM_CACHE=locmem,
+            EMAIL_BACKEND=email,
         ):
             require_production_services()
 
@@ -6927,12 +7137,14 @@ class ProductionConfigGuardTests(SimpleTestCase):
         # compose.prod.yaml chains this in front of the worker and beat commands, because Celery
         # swallows exceptions raised from its own worker_init signal — a worker with no database
         # otherwise logs the failure and reports `ready`.
-        with patch.multiple("config.settings", DEBUG=False, USING_SQLITE_FALLBACK=True, USING_LOCMEM_CACHE=False):
+        with patch.multiple("config.settings", DEBUG=False, USING_SQLITE_FALLBACK=True,
+                            USING_LOCMEM_CACHE=False, EMAIL_BACKEND=self.SMTP):
             with self.assertRaises(CommandError):
                 call_command("check_production_config")
 
     def test_the_management_command_succeeds_on_a_real_configuration(self):
-        with patch.multiple("config.settings", DEBUG=False, USING_SQLITE_FALLBACK=False, USING_LOCMEM_CACHE=False):
+        with patch.multiple("config.settings", DEBUG=False, USING_SQLITE_FALLBACK=False,
+                            USING_LOCMEM_CACHE=False, EMAIL_BACKEND=self.SMTP):
             call_command("check_production_config")
 
 

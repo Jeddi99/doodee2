@@ -727,9 +727,19 @@ class OrderAdmin(ExportCsvMixin, ConfirmingModelAdmin):
     list_filter = ("status", "provider", "plan")
     search_fields = ("id", "user__email", "provider_charge_id", "coupon__code")
     autocomplete_fields = ("user",)
+    # `status` is read-only, and that is the whole point of this admin.
+    #
+    # It used to be editable, and it was the one control an operator could reach: the field help
+    # text told them to press a "ยืนยันการชำระเงิน" button that has never existed, so the
+    # instruction led straight to the dropdown beside it. Setting it to `จ่ายแล้ว` by hand marks
+    # the order paid and grants *nothing* — no subscription, no group, no coupon count, no credit
+    # spend, no referral vesting — and the customer sees "จ่ายแล้ว" on their profile beside a free
+    # plan. It is not recoverable through the UI either: `activate` returns early on an order
+    # already marked paid, so the confirm action then reports it as "already paid" and does
+    # nothing. Only the action below grants anything, so only the action below can set this.
     readonly_fields = (
         "subtotal_satang", "discount_satang", "credit_satang", "total_satang", "coupon",
-        "provider_charge_id", "created_at", "paid_at",
+        "provider_charge_id", "created_at", "paid_at", "status",
     )
     actions = ("mark_paid", "mark_cancelled", "export_csv")
     csv_filename = "doodee-orders.csv"
@@ -756,7 +766,7 @@ class OrderAdmin(ExportCsvMixin, ConfirmingModelAdmin):
     def has_delete_permission(self, request, obj=None):
         return False
 
-    @admin.action(description="ยืนยันว่าได้รับเงินแล้ว และเปิดสิทธิ์ให้ผู้ใช้")
+    @admin.action(description="ยืนยันการชำระเงิน — เปิดสิทธิ์ให้ผู้ใช้")
     def mark_paid(self, request, queryset):
         if not request.user.is_superuser:
             # This hands out paid entitlement. Staff who can edit users should not also be

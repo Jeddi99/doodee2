@@ -174,6 +174,11 @@ def session(request):
         "preview_remaining": entitlement.remaining(request.user, PREVIEWS, tier),
         "saved_remaining": entitlement.remaining(request.user, SAVES, tier),
         "referral_enabled": SiteSetting.current().referral_enabled,
+        # Where money goes, so the pricing screen can show it before the buy button rather than
+        # only after an order exists — and so it can say "not on sale yet" instead of offering a
+        # button that answers `payment_instructions_missing`. Null on a deployment with nothing
+        # configured, which is also the state in which `create_order` refuses.
+        "payment_instructions": SiteSetting.current().payment_instructions(),
         # Credit is money the user already holds, so it belongs on the same payload the header
         # reads rather than behind a second request the checkout page has to remember to make.
         "credit_balance_satang": referral.credit_balance(request.user),
@@ -1684,12 +1689,32 @@ class OrderViewSet(viewsets.GenericViewSet, mixins.ListModelMixin, mixins.Retrie
             # Nothing to charge for, and an order for ฿0 would create a payment record that
             # never settles and a subscription nobody bought.
             return Response({"detail": "plan_is_free"}, status=status.HTTP_400_BAD_REQUEST)
+        # A shop with nowhere to receive money must not take an order. Checked here rather than
+        # inside `create_order`, because refusing to sell is a property of the shop and not of
+        # the billing primitive — and refused rather than merely hidden on the client, because an
+        # order placed against blank instructions leaves a customer believing they have bought
+        # something, with no account to pay into and nobody to send the slip to.
+        if not SiteSetting.current().can_accept_transfers:
+            return Response({"detail": "payment_instructions_missing"},
+                            status=status.HTTP_503_SERVICE_UNAVAILABLE)
         try:
-            order = create_order(request.user, plan, request.data.get("coupon"))
+            # `use_credit` was accepted by the client, sent on every order, and read by nobody —
+            # so a user who ticked "ใช้เครดิต ฿30" was quoted the discount on screen and then
+            # charged the full price, with `credit_satang = 0`. Their credit was not spent, which
+            # is the smaller half of the problem: the amount they were told to transfer was wrong.
+            order = create_order(
+                request.user, plan, request.data.get("coupon"),
+                use_credit=bool(request.data.get("use_credit")),
+            )
         except CouponError as exc:
             return Response({"detail": exc.code}, status=status.HTTP_400_BAD_REQUEST)
+        # The actual account and the actual place to send the slip, not the string
+        # "manual_transfer" this used to answer with. A customer told to transfer and send a
+        # slip, with neither an account number nor a contact, cannot complete the purchase —
+        # and believes they have made one.
         return Response(
-            {**OrderSerializer(order).data, "payment_instructions": "manual_transfer"},
+            {**OrderSerializer(order).data,
+             "payment_instructions": SiteSetting.current().payment_instructions()},
             status=status.HTTP_201_CREATED,
         )
 
