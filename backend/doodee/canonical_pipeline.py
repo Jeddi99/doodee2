@@ -1283,6 +1283,39 @@ def _region_indices(region):
     return tuple(index for island in REGION_GROUPS.get(region, ()) for index in island)
 
 
+#: The views this engine will fuse and render, front first.
+#:
+#: `front_smile` and `basal` are captured by the `full` scan and deliberately left out. A smile is
+#: a different facial expression, not a different angle onto the same shape, so fusing it would
+#: blur the model every photograph is then warped by; a basal shot is steep enough that the mesh
+#: on it is not reliable enough to align against.
+FUSED_VIEWS = ("front", "left_profile", "right_profile", "left_oblique", "right_oblique")
+
+
+def watermark(image):
+    """Mark a rendered image as a simulation, in place.
+
+    Every simulated photograph carries this. It is a photograph of a real person's face that has
+    been altered, and the one thing it must never do is circulate as if it were a photograph —
+    the whole product rests on the difference between "here is a proportion you could discuss
+    with a doctor" and "here is what you will look like".
+
+    It moved here when the single-image renderer was deleted. That renderer drew it and this one
+    did not, so removing it would have quietly stripped the mark from every simulation the
+    product makes.
+    """
+    height, width = image.shape[:2]
+    label = "EDUCATIONAL SIMULATION"
+    scale = max(.45, width / 1800)
+    thickness = max(1, round(scale * 2))
+    (text_width, text_height), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, scale, thickness)
+    x, y = max(12, width - text_width - 18), height - 18
+    cv2.rectangle(image, (x - 8, y - text_height - 8), (width - 10, y + 7), (0, 0, 0), -1)
+    cv2.putText(image, label, (x, y), cv2.FONT_HERSHEY_SIMPLEX, scale, (255, 255, 255), thickness,
+                cv2.LINE_AA)
+    return image
+
+
 def simulate_scan_views(scan, sliders, download_fn, *, selections=None, presets=None,
                         reference_target=None, amplify=1., engine="tps", max_side=1280,
                         output_format=".webp", step=8, refine=True):
@@ -1299,16 +1332,25 @@ def simulate_scan_views(scan, sliders, download_fn, *, selections=None, presets=
         raise ValueError("invalid_warp_engine")
 
     prepared = []
-    required_views = ("front", "left_profile", "right_profile")
-    missing = [name for name in required_views if not (scan.image_objects or {}).get(name)]
-    if missing:
-        raise ValueError("required_views_missing:" + ",".join(missing))
-    # The three photographs are fetched together. Each is a network round trip that waits on
-    # nothing, so downloading them one after another put two idle transfers in front of a preview
-    # a person is sitting and watching. Decode and landmark detection stay in order below: the
-    # detector is one shared instance and is not safe to call from several threads.
-    raws = _download_views(download_fn, [scan.image_objects[name] for name in required_views])
-    for name, raw in zip(required_views, raws):
+    # Whatever this scan actually holds, front first. The front photograph is genuinely required
+    # — it is the reference frame every other view is aligned onto, and the view a measurement is
+    # read from — but the two profiles were not: `fuse_views` works from rotations and landmark
+    # correspondences and has always handled one view or two. Requiring all three meant a `fast`
+    # scan, which captures obliques rather than profiles, could not use this engine at all, and
+    # that is the only reason the single-image renderer stayed alive beside it.
+    #
+    # Fewer angles means a weaker depth estimate, not a broken one: `view_visibility` already
+    # weights each landmark by how squarely a view sees it, and `depth_is_plausible` still has
+    # the last word on whether MediaPipe's own z can be trusted.
+    available = [name for name in FUSED_VIEWS if (scan.image_objects or {}).get(name)]
+    if "front" not in available:
+        raise ValueError("required_views_missing:front")
+    # The photographs are fetched together. Each is a network round trip that waits on nothing,
+    # so downloading them one after another put idle transfers in front of a preview a person is
+    # sitting and watching. Decode and landmark detection stay in order below: the detector is
+    # one shared instance and is not safe to call from several threads.
+    raws = _download_views(download_fn, [scan.image_objects[name] for name in available])
+    for name, raw in zip(available, raws):
         object_name = scan.image_objects[name]
         image = cv2.imdecode(np.frombuffer(raw, np.uint8), cv2.IMREAD_COLOR)
         if image is None:
@@ -1375,6 +1417,9 @@ def simulate_scan_views(scan, sliders, download_fn, *, selections=None, presets=
         difference = np.abs(after.astype(np.int16) - view["image"].astype(np.int16)).max(axis=2)
         changed = bool(difference.any())
         visible = float((difference > VISIBLE_DELTA).mean())
+        # After the comparison, never before: the mark is drawn on every render, so counting it
+        # would report a change on a view where nothing moved.
+        after = watermark(after)
         ok_before, encoded_before = cv2.imencode(output_format, view["image"])
         ok_after, encoded_after = cv2.imencode(output_format, after)
         if not ok_before or not ok_after:

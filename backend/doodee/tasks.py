@@ -11,8 +11,7 @@ from . import ai_budget, consent, skin_vision
 from .analysis_engine import analyze_images
 from .models import ConsentEvent, Scan, Simulation, SimulationPreviewUsage
 from .simulation_engine import (
-    engine_for_selections, has_profile_images, related_union, simulate, simulate_canonical,
-    source_for_scan, validate_selections,
+    has_profile_images, related_union, simulate_canonical, validate_selections,
 )
 from .storage import delete_image, download_image, upload_image
 
@@ -207,17 +206,12 @@ def process_simulation(simulation_id):
         base = f"users/{simulation.scan.user_id}/simulations/{simulation.id}"
         extra = None
 
-        if engine_for_selections(simulation.scan, selections) == "canonical":
-            output, measurements, _focus, extra = simulate_canonical(
-                simulation.scan, selections, download_image, output_format=output_format,
-                view=(simulation.parameters or {}).get("view"),
-            )
-            source, source_view = extra["before_encoded"], extra["legacy_view"]
-            source_type, source_extension = f"image/{after_extension}", after_extension
-        else:
-            source, _source_object, source_view = source_for_scan(simulation.scan, presets[0], download_image)
-            source_type, source_extension = _image_type(source)
-            output, measurements, _focus = simulate(source, presets, output_format=output_format)
+        output, measurements, _focus, extra = simulate_canonical(
+            simulation.scan, selections, download_image, output_format=output_format,
+            view=(simulation.parameters or {}).get("view"),
+        )
+        source, source_view = extra["before_encoded"], extra["legacy_view"]
+        source_type, source_extension = f"image/{after_extension}", after_extension
 
         before_object = f"{base}/before.{source_extension}"
         after_object = f"{base}/after.{after_extension}"

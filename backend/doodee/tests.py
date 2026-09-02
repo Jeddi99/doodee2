@@ -65,7 +65,6 @@ from .analysis_engine import (
     POSE_TARGETS, SCAN_VIEW_MODES, _distance, _isotropic, _validate_pose_set, analyze_images,
     measured_views, pose_from_matrix,
 )
-from .procedures import PROCEDURES, get_preset
 from .reference_scoring import (
     CATEGORIES,
     MAX_REFERENCE_SHIFT, REFERENCE_TARGETS, metric_score, reference_for, reference_target, score_observations,
@@ -73,7 +72,7 @@ from .reference_scoring import (
 from .serializers import ScanSerializer
 from .tasks import purge_scan_images
 from .simulation_engine import (
-    DEFAULT_MAX_SHIFT, _movement, measurement_for, merge_movements, resolve_preset, simulate, validate_preset,
+    resolve_preset,
 )
 from .storage import _headers
 from .views import SCAN_VIEWS
@@ -1107,9 +1106,19 @@ class ProcedureSelectionTest(TestCase):
         # Reference targets belong to the legacy catalog; nothing here computes one.
         self.assertEqual(targets, [None, None])
 
-    def test_the_fused_renderer_is_required_and_its_absence_is_said_out_loud(self):
+    def test_a_scan_with_no_photograph_at_all_is_said_out_loud(self):
+        """`canonical_required` used to mean "no profiles". It means "no front photograph" now:
+        `fuse_views` works from one view as readily as three, so a `fast` scan — obliques rather
+        than profiles — reaches this engine instead of having no renderer at all."""
+        from .simulation_engine import canonical_available
+
+        self.assertTrue(canonical_available(self.fast_scan))
+        empty = Scan.objects.create(
+            user=self.user, age_band="adult", scan_mode="fast", status="completed",
+            image_objects={}, expires_at=timezone.now() + timedelta(days=1),
+        )
         with self.assertRaisesRegex(ValueError, "canonical_required"):
-            self.resolve([{"procedure_id": "1.1"}], scan=self.fast_scan)
+            self.resolve([{"procedure_id": "1.1"}], scan=empty)
 
     def test_that_stack_always_routes_to_the_canonical_engine(self):
         from doodee.simulation_engine import engine_for_selections
@@ -1232,14 +1241,16 @@ class ProcedureSelectionTest(TestCase):
             simulate_canonical(self.scan, [{"procedure_id": "99.9"}], lambda name: b"")
         render.assert_not_called()
 
-    def test_the_legacy_stack_still_writes_the_columns_it_always_did(self):
+    def test_a_retired_preset_id_still_writes_the_columns_it_always_did(self):
+        """Nothing offers the twenty-four geometric ids any more, but rows saved before the
+        catalogue landed carry them, and the worker has to be able to re-render those."""
         from doodee.simulation_engine import simulation_columns
 
         selections = [{"region": "jaw", "preset_id": "jaw-narrow"}]
         presets, _targets = self.resolve(selections)
         columns = simulation_columns(selections, presets)
         self.assertEqual((columns["region"], columns["preset_id"]), ("jaw", "jaw-narrow"))
-        self.assertEqual(columns["parameters"]["delta"], -.05)
+        self.assertEqual(columns["parameters"]["presets"][0]["slider"], "jawBotox")
 
 
 class ProcedureFocusBoxTest(SimpleTestCase):
@@ -1477,7 +1488,7 @@ class ProcedureSimulationApiTest(TestCase):
     def test_a_stack_the_fused_renderer_cannot_run_is_refused_before_any_quota_is_spent(self):
         fast = Scan.objects.create(
             user=self.user, age_band="adult", scan_mode="fast", status="completed",
-            image_objects={"front": "private/front"}, expires_at=timezone.now() + timedelta(days=1),
+            image_objects={}, expires_at=timezone.now() + timedelta(days=1),
         )
         response = self.client.post(
             "/api/v1/simulations/preview/",
@@ -1532,93 +1543,103 @@ class SimulationPolishSwitchTest(TestCase):
         urlopen.assert_not_called()
 
 
-class SimulationSafetyTest(TestCase):
-    def test_presets_are_closed_bounded_and_region_matched(self):
-        self.assertEqual(validate_preset("nose", "nose-narrow")["delta"], -.04)
-        self.assertEqual(len(PROCEDURES), 24)
-        self.assertTrue(all(sum(preset["region"] == region for preset in PROCEDURES) == 4 for region in ("eyes", "nose", "lips", "cheeks", "jaw", "chin")))
-        self.assertTrue(all(abs(preset["delta"]) <= .05 for preset in PROCEDURES))
-        with self.assertRaisesRegex(ValueError, "preset_region_mismatch"):
-            validate_preset("chin", "nose-narrow")
-        with self.assertRaisesRegex(ValueError, "preset_region_mismatch"):
-            validate_preset("cheeks", "hifu")
+class SimulationSafetyTest(SimpleTestCase):
+    """The bounds every rendered image is held inside, on the one renderer that is left.
 
-    @patch("doodee.simulation_engine._landmarks")
-    def test_generated_pixels_are_clipped_to_region_and_watermarked(self, landmarks):
-        points = np.full((478, 3), 0.5, dtype=np.float64)
-        for index, xy in {10: (.5, .1), 152: (.5, .9), 234: (.2, .5), 454: (.8, .5), 168: (.48, .3), 193: (.42, .42), 417: (.58, .42), 98: (.4, .58), 327: (.6, .58), 2: (.5, .62), 1: (.5, .5)}.items():
-            points[index, :2] = xy
-        landmarks.return_value = points, {"yaw": 0, "pitch": 0, "roll": 0}
-        original = np.full((300, 300, 3), 128, dtype=np.uint8)
-        cv2.line(original, (105, 175), (195, 175), (255, 255, 255), 5)
-        _, original_bytes = cv2.imencode(".png", original)
-        output, measurements, focus_boxes = simulate(original_bytes.tobytes(), [get_preset("nose-narrow")])
-        measurement, focus_box = measurements[0], focus_boxes["nose"]
-        decoded = cv2.imdecode(np.frombuffer(output, np.uint8), cv2.IMREAD_COLOR)
-        self.assertTrue(np.array_equal(decoded[10, 10], original[10, 10]))
-        self.assertEqual(measurement["target_ratio"], round(measurement["before_ratio"] * .96, 5))
-        self.assertEqual(measurement["region"], "nose")
-        self.assertLess(decoded[-20, -20].mean(), 40)
-
-        # The viewer zooms on this box, and it must mean the same thing on the untouched upload
-        # as on this render, so it is fractions of the image and never pixels.
-        self.assertTrue(all(0 <= focus_box[edge] <= 1 for edge in ("x0", "y0", "x1", "y1")))
-        self.assertLess(focus_box["x0"], focus_box["x1"])
-        self.assertLess(focus_box["y0"], focus_box["y1"])
-        # Every nose landmark the warp moves has to sit inside it, or the zoom would crop the
-        # very change it exists to show.
-        for index in (98, 327, 168, 1):
-            self.assertTrue(focus_box["x0"] <= points[index, 0] <= focus_box["x1"], index)
-            self.assertTrue(focus_box["y0"] <= points[index, 1] <= focus_box["y1"], index)
-
-    def test_control_point_motion_never_exceeds_three_percent(self):
-        points = np.zeros((478, 3))
-        movement = _movement(points, get_preset("jaw-narrow"), 1000, 800)
-        self.assertLessEqual(max(abs(value) for delta in movement.values() for value in delta), 30)
-
-
-class StackedMovementTest(SimpleTestCase):
-    """Stacked regions add at any control point they share, then clamp once.
-
-    Letting the last region win at a shared point would silently undo one the user had locked.
-    The two profile presets are the pair that really overlaps: nose projection and chin
-    projection both move points 1 and 152.
+    This used to test `simulation_engine.simulate` — the single-image renderer, deleted when the
+    fused engine learned to run on a scan that has only a front photograph. What it was really
+    protecting survives that: a warp that can move a face arbitrarily far is a warp that can
+    produce a picture of somebody else, and an unmarked one is a photograph.
     """
 
-    def setUp(self):
-        self.pixels = np.zeros((478, 2))
-        self.face_width, self.face_height = 1000, 800
+    def test_the_warp_ceiling_is_a_fraction_of_the_face_not_a_pixel_count(self):
+        """A ceiling in pixels would mean something different on every photograph."""
+        from .canonical_pipeline import MAX_SHIFT
 
-    def merged(self, *preset_ids):
-        return merge_movements(self.pixels, [get_preset(i) for i in preset_ids], self.face_width, self.face_height)
+        self.assertLess(0, MAX_SHIFT)
+        self.assertLessEqual(MAX_SHIFT, .15, "past this the remap visibly bends the background")
 
-    def test_a_single_selection_moves_exactly_as_it_did_before_stacking(self):
-        """Existing users must not see their image change because stacking was added."""
-        for preset_id in ("jaw-narrow", "nose-narrow", "eyes-open", "chin-long", "chin-projection"):
-            preset = get_preset(preset_id)
-            merged, _capped = self.merged(preset_id)
-            before = _movement(self.pixels, preset, self.face_width, self.face_height)
-            self.assertEqual(merged, {index: tuple(offset) for index, offset in before.items()}, preset_id)
+    def test_texture_may_not_be_squeezed_past_the_point_it_reads_as_plastic(self):
+        from .canonical_pipeline import FOLD_FLOOR
 
-    def test_shared_points_add_and_are_clamped_once(self):
-        merged, capped = self.merged("nose-tip-projection", "chin-projection")
-        nose = _movement(self.pixels, get_preset("nose-tip-projection"), self.face_width, self.face_height)
-        chin = _movement(self.pixels, get_preset("chin-projection"), self.face_width, self.face_height)
-        # Point 152 sums under the ceiling and is left alone; point 1 sums over it and is cut.
-        self.assertEqual(merged[152], (nose[152][0] + chin[152][0], 0))
-        self.assertGreater(nose[1][0] + chin[1][0], self.face_width * DEFAULT_MAX_SHIFT)
-        self.assertEqual(merged[1], (self.face_width * DEFAULT_MAX_SHIFT, 0))
-        for dx, dy in merged.values():
-            self.assertLessEqual(abs(dx), self.face_width * DEFAULT_MAX_SHIFT + 1e-9)
-            self.assertLessEqual(abs(dy), self.face_height * DEFAULT_MAX_SHIFT + 1e-9)
-        # Both regions asked for the point that was cut, so both are reported, not the stack.
-        self.assertEqual(capped, {"nose": True, "chin": True})
+        self.assertLess(0, FOLD_FLOOR)
+        self.assertLess(FOLD_FLOOR, 1)
 
-    def test_regions_that_share_no_control_point_are_never_capped(self):
-        """A jaw and a chin selection touch different points, so neither loses anything."""
-        merged, capped = self.merged("jaw-narrow", "chin-long")
-        self.assertEqual(sorted(merged), [152, 172, 397])
-        self.assertEqual(capped, {"jaw": False, "chin": False})
+    def test_every_control_a_procedure_can_drive_is_a_known_one(self):
+        """A slider the renderer does not know is a movement nobody bounded."""
+        from .geometry_controls import CONTROLS
+        from .procedure_catalog import PROCEDURES, compile_warp_sliders
+
+        for spec in PROCEDURES:
+            if not spec.supported:
+                continue
+            unknown = set(compile_warp_sliders([spec], [5])) - set(CONTROLS)
+            self.assertEqual(unknown, set(), f"{spec.source_ref} drives {unknown}")
+
+    def test_the_strongest_stack_the_api_accepts_still_lands_inside_the_controls(self):
+        from .geometry_controls import CONTROLS
+        from .procedure_catalog import PROCEDURES, compile_warp_sliders
+        from .simulation_engine import MAX_SELECTIONS
+
+        supported = [spec for spec in PROCEDURES if spec.supported][:MAX_SELECTIONS]
+        sliders = compile_warp_sliders(supported, [5] * len(supported))
+        self.assertTrue(set(sliders) <= set(CONTROLS))
+
+    def test_a_stack_sums_at_a_control_two_procedures_share(self):
+        """Letting the last one win would silently undo a procedure the user had locked."""
+        from .procedure_catalog import compile_warp_sliders, resolve_procedure
+
+        hifu, thread = resolve_procedure("1.1"), resolve_procedure("1.5")
+        alone = compile_warp_sliders([hifu], [3])["hifuLifting"]
+        with_thread = compile_warp_sliders([hifu, thread], [3, 3])["hifuLifting"]
+        self.assertGreater(with_thread, alone)
+        self.assertAlmostEqual(with_thread,
+                               alone + compile_warp_sliders([thread], [3])["hifuLifting"])
+
+    def test_a_normalised_slider_never_leaves_the_range_the_renderer_accepts(self):
+        """The clamp is what stands between a summed stack and an unbounded warp.
+
+        A control with no published reverse direction floors at zero rather than at the negative
+        ceiling: running it backwards is not a milder version of anything, it is a movement no
+        procedure performs.
+        """
+        from . import evidence
+        from .canonical_pipeline import normalise_sliders
+
+        for value in (5000, -5000, 1e9):
+            for control in ("hifuLifting", "cheekFiller"):
+                setting = normalise_sliders({control: value})[control]
+                floor = -evidence.SETTING_MAX if evidence.bidirectional(control) else 0.
+                self.assertLessEqual(setting, evidence.SETTING_MAX)
+                self.assertGreaterEqual(setting, floor)
+        self.assertEqual(normalise_sliders({"cheekFiller": -50})["cheekFiller"], 0.,
+                         "no procedure removes midface volume, so the control does not go there")
+
+    def test_every_rendered_image_is_marked_as_a_simulation(self):
+        """It is a photograph of a real person's face that has been altered, and the one thing it
+        must never do is circulate as if it were a photograph. The single-image renderer drew
+        this and the fused one did not, so deleting that renderer would have stripped the mark
+        from every simulation the product makes."""
+        from .canonical_pipeline import watermark
+
+        blank = np.zeros((400, 600, 3), dtype=np.uint8) + 128
+        marked = watermark(blank.copy())
+        self.assertFalse(np.array_equal(blank, marked))
+        # Bottom-right, where the label is drawn, and nowhere near the face.
+        self.assertTrue((marked[-45:, 300:] != 128).any())
+        self.assertTrue(np.array_equal(blank[:300, :250], marked[:300, :250]))
+
+
+def canonical_render(measurements=(), views=("front", "left_profile", "right_profile"), legacy_view="front"):
+    """What a patched `simulate_canonical` hands back: bytes, measurements, focus boxes, extra."""
+    return (
+        b"\x89PNG after", list(measurements), {"nose": FOCUS_BOX},
+        {"model_version": "canonical-3d-fusion-lab-v1", "legacy_view": legacy_view,
+         "related_procedures": [],
+         "views": {name: {"changed": True, "visible_percent": 2.5} for name in views},
+         "before_encoded": b"\x89PNG before",
+         "encoded_views": {name: f"after-{name}".encode() for name in views}},
+    )
 
 
 def reference_scores_fixture(**overrides):
@@ -1639,80 +1660,54 @@ def reference_scores_fixture(**overrides):
     }
 
 
-class ReferenceTargetTest(SimpleTestCase):
-    def test_target_points_toward_the_published_mean(self):
-        target = reference_target(reference_scores_fixture(), "nose")
-        # Observed sits above the mean, so the face must come in, not out.
-        self.assertLess(target["delta"], 0)
-        self.assertAlmostEqual(target["delta"], (.348 - .380) / .380, places=5)
-        self.assertEqual(target["observed_ratio"], .38)
-        self.assertEqual(target["reference_ratio"], .348)
-        self.assertFalse(target["already_near_reference"])
-
-    def test_lip_target_sums_the_two_vermillion_bands(self):
-        target = reference_target(reference_scores_fixture(), "lips")
-        self.assertEqual(target["observed_ratio"], round(.070 + .090, 5))
-        self.assertEqual(target["reference_ratio"], round(.065 + .086, 5))
-        # No pooled z: the study does not publish the covariance between the two bands.
-        self.assertNotIn("normalized_deviation", target)
-        self.assertEqual([item["key"] for item in target["per_key_deviation"]], ["upper_vermillion", "lower_vermillion"])
-
-    def test_a_face_already_at_the_mean_is_not_worth_an_image(self):
-        self.assertTrue(reference_target(reference_scores_fixture(), "chin")["already_near_reference"])
-        near = reference_scores_fixture(chin_height={"observed": .3735})
-        self.assertTrue(reference_target(near, "chin")["already_near_reference"])
-
-    def test_regions_without_published_data_are_refused(self):
-        for region in ("eyes", "cheeks", "jaw"):
-            self.assertNotIn(region, REFERENCE_TARGETS)
-            with self.assertRaisesRegex(ValueError, "region_without_reference_data"):
-                reference_target(reference_scores_fixture(), region)
-
-    def test_a_scan_without_reference_scores_cannot_be_targeted(self):
-        with self.assertRaisesRegex(ValueError, "scan_has_no_reference_scores"):
-            reference_target({"status": "minor_not_scored"}, "nose")
-        with self.assertRaisesRegex(ValueError, "scan_is_missing_reference_metrics"):
-            reference_target({"status": "experimental_reference_similarity", "metrics": []}, "nose")
-
-    def test_no_field_reports_a_millimetre(self):
-        """2D photos carry no scale, so any millimetre here would be invented."""
-        target = reference_target(reference_scores_fixture(), "nose")
-        self.assertEqual(target["unit"], "ratio")
-        self.assertNotIn("mm", json.dumps(target))
-
-
 class ReferenceMovementTest(SimpleTestCase):
+    """What a reference target is measured against, now that it is solved rather than stepped.
+
+    The single-image renderer sized its step off the measured span rather than the face width,
+    because a step sized off the face overshoots a small feature badly. The fused engine does not
+    step at all — it searches for the setting whose morphed landmarks land on the mean — so what
+    has to stay true is the measurement the search is judged by, and the ceiling it cannot pass.
+    """
+
     def points(self):
-        pixels = np.zeros((478, 2))
-        pixels[98], pixels[327] = (400, 500), (600, 500)  # 200px alar span
-        pixels[0], pixels[17] = (500, 600), (500, 700)  # 100px lip height
-        pixels[13], pixels[14], pixels[152] = (500, 640), (500, 660), (500, 900)
+        pixels = np.zeros((478, 3))
+        pixels[98, :2], pixels[327, :2] = (400, 500), (600, 500)   # 200px alar span
+        pixels[168, :2], pixels[152, :2] = (500, 400), (500, 900)  # 500px nasion-gnathion
         return pixels
 
-    def test_the_warp_moves_the_measured_span_not_the_face_width(self):
-        """A preset sizes its step off face width, which overshoots a small feature badly."""
-        preset = {"exact": True, "delta": -.10, "movement": "width", "region": "nose"}
-        movement = _movement(self.points(), preset, 1000, 1200, MAX_REFERENCE_SHIFT)
-        # 10% of a 200px span is 20px total, so each side moves 10px inward.
-        self.assertEqual(movement[98], (10.0, 0))
-        self.assertEqual(movement[327], (-10.0, 0))
+    def test_the_span_is_measured_against_nasion_gnathion_not_the_face_width(self):
+        """The published means share that denominator; dividing by anything else compares this
+        face against a number the study never reported."""
+        from .canonical_pipeline import reference_observation
 
-    def test_the_ceiling_clamps_an_extreme_gap(self):
-        preset = {"exact": True, "delta": -3.0, "movement": "width", "region": "nose"}
-        movement = _movement(self.points(), preset, 1000, 1200, MAX_REFERENCE_SHIFT)
-        self.assertEqual(abs(movement[98][0]), 1000 * MAX_REFERENCE_SHIFT)
+        self.assertAlmostEqual(reference_observation(self.points(), ("alar_width",)), 200 / 500)
 
-    def test_presets_keep_the_original_three_percent_ceiling(self):
-        """Regression: raising the ceiling for reference targets must not loosen presets.
+    def test_a_span_of_zero_is_refused_rather_than_divided_by(self):
+        from .canonical_pipeline import reference_observation
 
-        Called without an explicit ceiling, the default must still clamp at 3% — checked with
-        a delta far past any catalog value, since every real preset stays under the cap.
-        """
-        runaway = {"delta": 1.0, "movement": "width", "region": "jaw"}
-        movement = _movement(np.zeros((478, 2)), runaway, 1000, 800)
-        self.assertEqual(max(abs(value) for delta in movement.values() for value in delta), 1000 * .03)
-        catalog = _movement(np.zeros((478, 2)), get_preset("jaw-narrow"), 1000, 800)
-        self.assertLessEqual(max(abs(value) for delta in catalog.values() for value in delta), 1000 * .03)
+        flat = np.zeros((478, 3))
+        with self.assertRaisesRegex(ValueError, "invalid_face_dimensions"):
+            reference_observation(flat, ("alar_width",))
+
+    def test_the_search_cannot_return_a_setting_the_renderer_would_never_be_given(self):
+        """The ceiling that replaced `MAX_REFERENCE_SHIFT`: a solve for an unreachable target
+        clamps to the strongest setting any procedure asks for, and says where it got to."""
+        from doodee import canonical_pipeline
+
+        views = [{"name": "front"}]
+
+        def morph(fused, sliders, given, amplify=1.):
+            setting = next(iter(sliders.values()), 0)
+            points = np.zeros((478, 3))
+            points[168, :2], points[152, :2] = (0, 0), (0, 1)
+            points[98, :2], points[327, :2] = (0, 0), (0.30 + setting * 0.0001, 0)
+            return None, [points]
+
+        with patch.object(canonical_pipeline, "morph_fused", morph):
+            sliders, reached = canonical_pipeline.solve_reference_sliders(
+                None, views, {"region": "nose", "keys": ("alar_width",), "reference_ratio": 9.0})
+        self.assertEqual(sliders["noseWingSlim"], canonical_pipeline.REFERENCE_SETTING_LIMIT)
+        self.assertLess(reached, 9.0)
 
 
 class ThaiReferenceScoreTest(SimpleTestCase):
@@ -1982,9 +1977,9 @@ class StackedSimulationTest(TestCase):
             self.assertEqual(response.status_code, 400, selections)
             self.assertIn(code, json.dumps(response.data), selections)
 
-    @patch("doodee.views.simulate")
-    def test_a_stack_that_cannot_be_rendered_is_never_partly_rendered(self, render):
-        """A missing profile photo must stop the whole request before anything is warped.
+    @patch("doodee.views.process_simulation.delay")
+    def test_a_stack_that_cannot_be_rendered_is_never_partly_rendered(self, delay):
+        """A missing profile photo must stop the whole request before anything is queued.
 
         Rendering the regions that happen to resolve would return an image quietly missing one
         the user asked for, and they would have no way to tell.
@@ -1994,7 +1989,8 @@ class StackedSimulationTest(TestCase):
         ])
         self.assertEqual(response.status_code, 400)
         self.assertIn("profile_photos_required:chin", json.dumps(response.data))
-        render.assert_not_called()
+        delay.assert_not_called()
+        self.assertEqual(Simulation.objects.count(), 0)
 
     @patch("doodee.views.process_simulation.delay")
     def test_saving_a_stack_keeps_the_old_columns_populated(self, delay):
@@ -2004,7 +2000,11 @@ class StackedSimulationTest(TestCase):
         simulation = Simulation.objects.get()
         self.assertEqual(simulation.selections, self.STACK)
         self.assertEqual((simulation.region, simulation.preset_id), ("jaw", "jaw-narrow"))
-        self.assertEqual([d["preset_id"] for d in simulation.parameters["deltas"]], ["jaw-narrow", "chin-long"])
+        # A geometric preset has no `delta` of its own — it compiles to a slider — so the row
+        # records that rather than a number nothing computed.
+        self.assertEqual([item["preset_id"] for item in simulation.parameters["presets"]],
+                         ["jaw-narrow", "chin-long"])
+        self.assertNotIn("delta", simulation.parameters)
 
 
 @override_settings(SIMULATION_ENABLED=True, REDEEM_CODES_ENABLED=True)
@@ -2039,9 +2039,7 @@ class SimulationLockTest(TestCase):
         self.assertIs(self.client.get("/api/v1/session/").data["simulation_locked"], True)
 
     @patch("doodee.views.signed_url", return_value="https://signed.test/front")
-    @patch("doodee.views.simulate", return_value=rendered({"key": "alar_width_ratio"}))
-    @patch("doodee.views.source_for_scan", return_value=(b"source", "private/front", "front"))
-    def test_redeeming_a_code_unlocks_it_and_expiry_locks_it_again(self, source, simulate_preview, signed):
+    def test_redeeming_a_code_unlocks_it_and_expiry_locks_it_again(self, signed):
         code = PromoCode.objects.create(code="UNLOCKME1", days=7)
         self.client.post("/api/v1/redeem/", {"code": code.code}, format="json")
         self.assertIs(self.client.get("/api/v1/session/").data["simulation_locked"], False)
@@ -2077,9 +2075,9 @@ class SavedSimulationWorkerTest(TestCase):
         )
 
     @patch("doodee.tasks.upload_image")
-    @patch("doodee.tasks.simulate", return_value=(b"\x89PNG after", [{"key": "alar_width_ratio", "region": "nose"}], {"nose": FOCUS_BOX}))
-    @patch("doodee.tasks.source_for_scan", return_value=(b"\x89PNG source", "private/front", "front"))
-    def test_the_worker_stores_a_simulation_from_what_simulate_returns(self, source, render, upload):
+    @patch("doodee.tasks.simulate_canonical",
+           return_value=canonical_render([{"key": "alar_width_ratio", "region": "nose"}]))
+    def test_the_worker_stores_a_simulation_from_what_the_renderer_returns(self, render, upload):
         from .tasks import process_simulation
 
         process_simulation(str(self.simulation.id))
@@ -2087,17 +2085,20 @@ class SavedSimulationWorkerTest(TestCase):
         self.assertEqual(self.simulation.status, Simulation.Status.COMPLETED, self.simulation.error_message)
         self.assertEqual(self.simulation.measurements, [{"key": "alar_width_ratio", "region": "nose"}])
         self.assertEqual(self.simulation.source_view, "front")
-        self.assertEqual(upload.call_count, 2)
+        # Before, after, and the two other views the fused model rendered at the same cost. It
+        # used to be two, because the single-image renderer only ever made one view.
+        self.assertEqual(upload.call_count, 4)
+        self.assertEqual(sorted(self.simulation.view_objects),
+                         ["front", "left_profile", "right_profile"])
 
     @patch("doodee.tasks.upload_image")
-    @patch("doodee.tasks.simulate")
-    @patch("doodee.tasks.source_for_scan", return_value=(b"\x89PNG source", "private/front", "front"))
-    def test_the_worker_renders_a_whole_stack_in_one_pass(self, source, render, upload):
-        render.return_value = (b"\x89PNG after",
-                               [{"key": "jaw_width_ratio", "region": "jaw"}, {"key": "chin_height_ratio", "region": "chin"}],
-                               {"jaw": FOCUS_BOX, "chin": FOCUS_BOX})
-        self.simulation.selections = [{"region": "jaw", "preset_id": "jaw-narrow"}, {"region": "chin", "preset_id": "chin-long"}]
-        self.simulation.region, self.simulation.preset_id = "jaw", "jaw-narrow"
+    @patch("doodee.tasks.simulate_canonical")
+    def test_the_worker_renders_a_whole_stack_in_one_pass(self, render, upload):
+        render.return_value = canonical_render(
+            [{"key": "jaw_width_ratio", "region": "jaw"}, {"key": "chin_height_ratio", "region": "chin"}])
+        stack = [{"procedure_id": "1.1"}, {"procedure_id": "4.1"}]
+        self.simulation.selections = stack
+        self.simulation.region, self.simulation.preset_id = "jaw", "1.1"
         self.simulation.save()
         from .tasks import process_simulation
 
@@ -2105,28 +2106,30 @@ class SavedSimulationWorkerTest(TestCase):
         self.simulation.refresh_from_db()
         self.assertEqual(self.simulation.status, Simulation.Status.COMPLETED, self.simulation.error_message)
         self.assertEqual([m["region"] for m in self.simulation.measurements], ["jaw", "chin"])
-        # Both presets reach simulate() together, so one render holds both regions.
-        self.assertEqual([p["id"] for p in render.call_args.args[1]], ["jaw-narrow", "chin-long"])
-        expected = get_preset("jaw-narrow")["related_procedures"] + get_preset("chin-long")["related_procedures"]
-        self.assertEqual(self.simulation.related_procedures, list(dict.fromkeys(expected)))
+        # The whole stack reaches the renderer together, so one render holds both procedures.
+        self.assertEqual(render.call_args.args[1], stack)
 
     @patch("doodee.tasks.upload_image")
-    @patch("doodee.tasks.simulate", return_value=(b"\x89PNG after", [{"key": "alar_width_ratio", "region": "nose"}], {"nose": FOCUS_BOX}))
-    @patch("doodee.tasks.source_for_scan", return_value=(b"\x89PNG source", "private/front", "front"))
-    def test_a_row_saved_before_stacking_still_renders(self, source, render, upload):
-        """Rows written before `selections` existed hold an empty list, not a one-item stack."""
+    @patch("doodee.tasks.simulate_canonical",
+           return_value=canonical_render([{"key": "alar_width_ratio", "region": "nose"}]))
+    def test_a_row_saved_before_stacking_still_renders(self, render, upload):
+        """Rows written before `selections` existed hold an empty list, not a one-item stack.
+
+        Their `preset_id` is one of the twenty-four retired geometric ids, which is why those
+        are still accepted as input: a stored row the worker can no longer re-render is a row
+        that quietly stops existing.
+        """
         self.assertEqual(self.simulation.selections, [])
         from .tasks import process_simulation
 
         process_simulation(str(self.simulation.id))
         self.simulation.refresh_from_db()
         self.assertEqual(self.simulation.status, Simulation.Status.COMPLETED, self.simulation.error_message)
-        self.assertEqual([p["id"] for p in render.call_args.args[1]], ["nose-narrow"])
+        self.assertEqual(render.call_args.args[1], [{"region": "nose", "preset_id": "nose-narrow"}])
 
     @patch("doodee.tasks.upload_image")
-    @patch("doodee.tasks.simulate")
     @patch("doodee.tasks.simulate_canonical")
-    def test_a_three_view_scan_renders_through_the_canonical_engine(self, canonical, legacy, upload):
+    def test_a_three_view_scan_renders_through_the_canonical_engine(self, canonical, upload):
         """The fused engine is chosen, and the views it renders beyond the pair are kept.
 
         `after_object` is only whichever view the request asked for. The other two are rendered
@@ -2155,7 +2158,6 @@ class SavedSimulationWorkerTest(TestCase):
         process_simulation(str(self.simulation.id))
         self.simulation.refresh_from_db()
         self.assertEqual(self.simulation.status, Simulation.Status.COMPLETED, self.simulation.error_message)
-        self.assertFalse(legacy.called, "a three-view scan must not fall back to the single-image engine")
         self.assertEqual(self.simulation.model_version, "canonical-3d-fusion-lab-v1")
         self.assertEqual(
             sorted(self.simulation.view_objects), ["front", "left_profile", "right_profile"],
@@ -2215,13 +2217,17 @@ class SavedSimulationWorkerTest(TestCase):
             "front": "private/front", "left_profile": "private/left", "right_profile": "private/right",
         })
         front_only = Scan(image_objects={"front": "private/front"})
+        no_images = Scan(image_objects={})
         catalog = [{"region": "eyes", "preset_id": "eyes-open"}]
         reference = [{"region": "nose", "preset_id": "reference:nose"}]
 
-        self.assertEqual(engine_for_selections(three_views, catalog), "canonical")
-        self.assertEqual(engine_for_selections(three_views, reference), "canonical")
-        self.assertEqual(engine_for_selections(front_only, catalog), "legacy")
-        self.assertEqual(engine_for_selections(front_only, reference), "legacy")
+        for scan in (three_views, front_only):
+            self.assertEqual(engine_for_selections(scan, catalog), "canonical")
+            self.assertEqual(engine_for_selections(scan, reference), "canonical")
+        # Nothing renders a scan with no photograph. "legacy" is what that answers now that the
+        # single-image renderer is gone, and `validate_selections` refuses the stack before the
+        # worker ever gets to act on it.
+        self.assertEqual(engine_for_selections(no_images, catalog), "legacy")
 
 
 class PoseQualityTest(TestCase):

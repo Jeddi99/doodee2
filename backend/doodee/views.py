@@ -58,8 +58,7 @@ from .reference_scoring import REFERENCE_POPULATIONS
 from .percentile import score_card as build_score_card
 from .development_plan import build as build_development_plan
 from .simulation_engine import (
-    CANONICAL_VIEWS, has_profile_images, related_union, simulate, simulation_columns,
-    source_for_scan, validate_selections,
+    CANONICAL_VIEWS, has_profile_images, related_union, simulation_columns, validate_selections,
 )
 from .storage import delete_image, download_image, signed_upload_url, signed_url, upload_image
 from .tasks import cleanup_scan, process_scan, process_simulation, request_scan_deletion

@@ -144,16 +144,18 @@ class SimulationSerializer(serializers.ModelSerializer):
     def get_preset(self, obj):
         """Whichever catalog this row's `preset_id` came from.
 
-        The column holds a legacy preset slug on older rows and a catalog source ref like "1.1"
-        on new ones. Looking in only one place would answer `null` for half the rows, and the
-        client uses this to name what it is showing.
+        The column holds a geometric preset slug on older rows and a catalog source ref like
+        "1.1" on new ones. Looking in only one place would answer `null` for half the rows, and
+        the client uses this to name what it is showing. The slug table outlived the renderer it
+        was written for: those ids still compile to sliders, so a row saved before the catalog
+        landed still renders and still has a name.
         """
         from . import procedure_catalog
-        from .procedures import get_preset
+        from .geometry_controls import get_preset, present_preset
 
         preset = get_preset(obj.preset_id)
         if preset:
-            return preset
+            return present_preset(preset)
         procedure = procedure_catalog.resolve_procedure(obj.preset_id)
         return procedure.public() if procedure else None
 
