@@ -16,6 +16,7 @@ import { getMetricCatalog, getPlans, getScan, getScans, getScoreCard, getSession
 import { baht } from "../lib/referral";
 import { errorMessage } from "../lib/apiError";
 import { dashboardGate } from "../lib/dashboardGate";
+import { describeScanFailure } from "../lib/scanFailure";
 import { statusPollInterval } from "../lib/pollInterval.js";
 import type { RatioRow } from "../lib/dashboardData";
 import {
@@ -1742,10 +1743,13 @@ export default function DashboardPage({ view }: { view: AppView }) {
     return (
       <main className="doodee-app doodee-app--handoff">
         <div className="app-load-error" role="alert">
-          <strong>This scan could not be analysed.</strong>
-          <p>{scan.error_message || "Capture three angles again in good, even light."}</p>
+          <strong>{th ? "สแกนนี้วิเคราะห์ไม่สำเร็จ" : "This scan could not be analysed."}</strong>
+          {/* `error_message` is one fixed English sentence ending "Retake the indicated images",
+              and nothing indicated them. The view and the correction are both in `error_code`,
+              which the server already wrote down — `describeScanFailure` says them out loud. */}
+          <p>{describeScanFailure(scan.error_code, th).text}</p>
           <button type="button" onClick={() => navigate("/scan")}>
-            <RefreshCw size={16} /> New scan
+            <RefreshCw size={16} /> {th ? "สแกนใหม่" : "New scan"}
           </button>
         </div>
       </main>
