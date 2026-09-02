@@ -25,6 +25,60 @@ class FirebaseIdentity(models.Model):
         return self.firebase_uid
 
 
+class FirebaseAlias(models.Model):
+    """A second (third, fourth) Firebase uid that signs in to an account that already has one.
+
+    Firebase mints a new uid per sign-in provider, so one person with one email address arrives
+    as two different uids the moment they use the Google button once and email/password once.
+    Before this existed, `FirebaseAuthentication` created a brand new Django user for the second
+    uid, and every scan, subscription and paid entitlement stayed on the first — a customer could
+    pay on one account, sign in the other way, and find the purchase gone.
+
+    Why a second table rather than turning `FirebaseIdentity.user` into a ForeignKey, which is the
+    obvious move and the one a reader will want to make:
+
+    * Migration risk. `CreateModel` touches no existing row and can be dropped again.
+      `AlterField` from OneToOne to FK drops the unique index on `user_id`, and the *reverse*
+      migration then fails permanently the moment any account holds two uids — which is the whole
+      point of the change. A one-way door on a table that authenticates every request is not
+      worth the tidiness.
+    * `doodee/admin.py` reads `firebase_identity` as a single row in four places. Two of them
+      break loudly (`select_related("firebase_identity")` raises FieldError, so the user
+      changelist 500s) and two break quietly — `real_users()` filters
+      `firebase_identity__isnull=False`, which under a FK returns one row *per uid* and silently
+      inflates every analytics count in the admin. Quiet is the dangerous half.
+
+    `FirebaseIdentity` therefore keeps its meaning — the uid the account was created with, the one
+    the admin shows — and this table holds the sign-in methods added afterwards.
+    """
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="firebase_aliases",
+        verbose_name="ผู้ใช้",
+    )
+    firebase_uid = models.CharField(
+        max_length=128, unique=True, verbose_name="รหัสผู้ใช้ Firebase",
+        help_text="รหัสจากการล็อกอินอีกช่องทางของคนเดิม เช่น สมัครด้วยอีเมลแล้วมาล็อกอินด้วย Google",
+    )
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name="ผูกเมื่อ")
+
+    class Meta:
+        ordering = ("-created_at",)
+        verbose_name = "บัญชี Firebase ที่ผูกเพิ่ม"
+        verbose_name_plural = "บัญชี Firebase ที่ผูกเพิ่ม"
+
+    def save(self, *args, **kwargs):
+        # A uid has to mean one account, and the unique constraint on each table cannot see the
+        # other one. Postgres has no cross-table unique index, so this is the only place the
+        # invariant can be enforced rather than merely intended.
+        if FirebaseIdentity.objects.filter(firebase_uid=self.firebase_uid).exists():
+            raise ValueError(f"{self.firebase_uid} is already a FirebaseIdentity")
+        return super().save(*args, **kwargs)
+
+    def __str__(self):
+        return self.firebase_uid
+
+
 class ConsentEvent(models.Model):
     class Purpose(models.TextChoices):
         ANALYSIS = "analysis", "วิเคราะห์ใบหน้า"
@@ -674,7 +728,10 @@ class Order(models.Model):
     )
     note = models.CharField(
         max_length=200, blank=True, verbose_name="บันทึกช่วยจำ",
-        help_text="เช่น เลขที่สลิปโอนเงิน หรือเหตุผลที่ยกเลิก",
+        help_text="เช่น เลขที่สลิปโอนเงิน หรือเหตุผลที่ยกเลิก · "
+                  "กรอกจากหน้ารายการได้เลย แต่ต้องกด Save ก่อน "
+                  "แล้วค่อยติ๊กเลือกแล้วสั่ง \"ยืนยันการชำระเงิน\" "
+                  "— ถ้าสั่ง Action ก่อน สิ่งที่พิมพ์ค้างไว้จะหาย",
     )
     created_at = models.DateTimeField(auto_now_add=True, verbose_name="สั่งซื้อเมื่อ")
     paid_at = models.DateTimeField(null=True, blank=True, verbose_name="จ่ายเมื่อ")

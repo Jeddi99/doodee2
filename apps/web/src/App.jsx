@@ -2,7 +2,7 @@ import React, { lazy, Suspense, useEffect, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { onAuthStateChanged } from 'firebase/auth';
 import { useLocation, useNavigate } from 'react-router-dom';
-import { authRedirect } from './lib/authRouting';
+import { authRedirect, DASHBOARD_VIEWS, ROUTE_PATHS } from './lib/authRouting';
 import { referralCodeFromQuery, rememberReferralCode } from './lib/referral';
 import {
   localDay, readAttribution, rememberAttribution, sendVisit, shouldSendVisit, utmFromQuery,
@@ -32,27 +32,8 @@ function WorkspaceFallback({ locale }) {
   return <div className="workspace-loading" role="status">{locale === 'th' ? 'กำลังเปิดหน้า…' : 'Opening…'}</div>;
 }
 
-const ROUTE_PATHS = { landing: '/', login: '/login', onboarding: '/onboarding', terms: '/terms', privacy: '/privacy', home: '/home', analysis: '/analysis', plan: '/plan', 'doodee-gpt': '/doodee-gpt', 'face-scan': '/scan', 'skin-scan': '/skin-scan', simulation: '/simulation', skin: '/skin', tryon: '/try-on', history: '/history', pricing: '/pricing', settings: '/settings', scorecard: '/score-card', assessment: '/assessment', referral: '/referral', profile: '/profile' };
-
 // Which document `/terms` and `/privacy` render, the same way DASHBOARD_VIEWS maps a path to a view.
 const LEGAL_DOCUMENTS = { terms: 'terms', privacy: 'privacy' };
-
-// Every signed-in route lives inside DashboardPage's shell; the path picks the view.
-const DASHBOARD_VIEWS = {
-  home: 'overview',
-  analysis: 'analysis',
-  plan: 'plan',
-  simulation: 'simulate',
-  skin: 'skin',
-  'doodee-gpt': 'doodeegpt',
-  tryon: 'tryon',
-  history: 'history',
-  pricing: 'pricing',
-  settings: 'settings',
-  scorecard: 'scorecard',
-  referral: 'referral',
-  profile: 'profile',
-};
 
 export default function App() {
   const location = useLocation();

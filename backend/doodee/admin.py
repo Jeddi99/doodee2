@@ -654,6 +654,47 @@ def satang(value):
     return f"฿{value / 100:,.2f}"
 
 
+# Thai month abbreviations, indexed 1-12 by a leading placeholder. Django's built-in `th`
+# locale is Gregorian and there is no Buddhist-era formatter anywhere in the project, so an
+# operator reading this admin was converting years in their head while every other surface the
+# product shows them — the terms, the privacy policy, the price page — is in พ.ศ.
+THAI_MONTH_ABBR = (
+    "", "ม.ค.", "ก.พ.", "มี.ค.", "เม.ย.", "พ.ค.", "มิ.ย.",
+    "ก.ค.", "ส.ค.", "ก.ย.", "ต.ค.", "พ.ย.", "ธ.ค.",
+)
+
+
+def thai_datetime(value):
+    """A stored UTC datetime as Bangkok local time in พ.ศ. Display only.
+
+    Deliberately a module-level function beside `satang` rather than a template filter or a
+    project-wide `FORMAT_MODULE_PATH`: changing the date format for the whole site would move
+    every date in every admin at once, including ones an operator may be comparing against an
+    external system that speaks ค.ศ.
+    """
+    if value is None:
+        return "—"
+    local = timezone.localtime(value)
+    return f"{local.day} {THAI_MONTH_ABBR[local.month]} {local.year + 543} {local:%H:%M}"
+
+
+def waited_for(since, until=None):
+    """How long something has been waiting, in the coarsest unit that is still honest.
+
+    Days once it has been a day, because "9 วัน" is the number that makes someone act and
+    "9 วัน 11 ชั่วโมง 23 นาที" is the number they skim past.
+    """
+    delta = (until or timezone.now()) - since
+    seconds = int(delta.total_seconds())
+    if seconds < 0:
+        return "—"
+    if seconds >= 86400:
+        return f"{seconds // 86400} วัน"
+    if seconds >= 3600:
+        return f"{seconds // 3600} ชม."
+    return f"{max(seconds // 60, 1)} น."
+
+
 @admin.register(Plan)
 class PlanAdmin(ConfirmingModelAdmin):
     list_display = (
@@ -723,10 +764,37 @@ class OrderAdmin(ExportCsvMixin, ConfirmingModelAdmin):
     the subscription period are identical either way, and both are idempotent.
     """
 
-    list_display = ("id", "user", "plan", "total", "discount", "credit_used", "coupon", "status", "provider", "created_at", "paid_at")
+    # Eight columns, not eleven, because this table is read while holding a bank slip.
+    #
+    # `discount`, `credit_used`, `coupon`, `provider` and `paid_at` came off: on the pending
+    # filter — the one an operator actually works in — the first three are empty on every row,
+    # `paid_at` is empty by construction, and `provider` is identical on every row and already
+    # has a sidebar filter. Together they pushed the table into horizontal scroll and carried
+    # `created_at`, the column that says how long a customer has been waiting, off screen.
+    # All five remain on the change form and in the CSV, which is where they are read.
+    list_display = ("id", "buyer", "plan", "total", "waiting", "created_th", "status", "note")
+    # The slip number is typed here rather than on the change form because the operator has it
+    # in front of them at the moment they identify the row. Django requires the edited field to
+    # be outside `list_display_links`, which defaults to the first column (`id`) — so this is
+    # safe as long as `id` stays first.
+    #
+    # It is a separate button from the actions: type the slip numbers, press Save, and only
+    # then tick the rows and run "ยืนยันการชำระเงิน". Running the action first discards
+    # whatever is typed in the inputs.
+    list_editable = ("note",)
     list_filter = ("status", "provider", "plan")
     search_fields = ("id", "user__email", "provider_charge_id", "coupon__code")
     autocomplete_fields = ("user",)
+    # `ExportCsvMixin` falls back to `list_display` when this is unset, so trimming the columns
+    # above would have silently trimmed the export that the after-the-fact money checks rely on.
+    # Pinned explicitly: the CSV is a different job from the screen and should not follow it.
+    # `user_email` and `status_display` exist so the file carries an address and a Thai word
+    # rather than a Firebase uid and a raw status code.
+    csv_fields = (
+        "id", "user_email", "plan", "subtotal_satang", "discount_satang", "credit_satang",
+        "total_satang", "coupon", "status_display", "provider", "provider_charge_id",
+        "note", "created_at", "paid_at",
+    )
     # `status` is read-only, and that is the whole point of this admin.
     #
     # It used to be editable, and it was the one control an operator could reach: the field help
@@ -743,6 +811,51 @@ class OrderAdmin(ExportCsvMixin, ConfirmingModelAdmin):
     )
     actions = ("mark_paid", "mark_cancelled", "export_csv")
     csv_filename = "doodee-orders.csv"
+
+    def get_queryset(self, request):
+        """`user` and `plan` are read on every row, so fetch them with the page.
+
+        Without this the changelist ran two extra queries per order — invisible on three rows
+        and not invisible on a page of a hundred.
+        """
+        return super().get_queryset(request).select_related("user", "plan")
+
+    @admin.display(ordering="user__email", description="ผู้ซื้อ")
+    def buyer(self, obj):
+        """The buyer as an address, linked to their account.
+
+        This column used to be the bare `user`, which printed the Firebase uid and made the
+        page unusable for its one job. The link is here because the next question after
+        "who is this" is always "what else do they have".
+        """
+        from django.urls import reverse
+        from django.utils.html import format_html
+
+        label = obj.user.email or obj.user.get_username()
+        return format_html('<a href="{}">{}</a>', reverse("admin:auth_user_change", args=(obj.user_id,)), label)
+
+    @admin.display(ordering="created_at", description="รอมา")
+    def waiting(self, obj):
+        """How long this order has gone unpaid. Blank once it is paid.
+
+        Sorts by `created_at` rather than by the rendered string, so clicking the header
+        orders by real age instead of alphabetically by Thai unit.
+        """
+        if obj.paid_at or obj.status != Order.Status.PENDING:
+            return "—"
+        return waited_for(obj.created_at)
+
+    @admin.display(ordering="created_at", description="สั่งซื้อเมื่อ")
+    def created_th(self, obj):
+        return thai_datetime(obj.created_at)
+
+    def user_email(self, obj):
+        """CSV only. Never in `list_display` — `buyer` is the on-screen version."""
+        return obj.user.email or obj.user.get_username()
+
+    def status_display(self, obj):
+        """CSV only. `status` exports the stored code; this exports the word a person reads."""
+        return obj.get_status_display()
 
     @admin.display(ordering="credit_satang", description="ใช้เครดิต")
     def credit_used(self, obj):

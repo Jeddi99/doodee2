@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { authRedirect } from './authRouting.js';
+import {
+  authRedirect, DASHBOARD_VIEWS, ROUTE_PATHS, routesWithNoScreen,
+} from './authRouting.js';
 
 test('authenticated users with a scan never return to landing', () => {
   assert.equal(authRedirect(true, true, 'landing', true), 'home');
@@ -44,4 +46,28 @@ test('landing does not bounce while the scan list is still unknown', () => {
   // strand a user who does have a scan. Null means "ask again when the answer arrives".
   assert.equal(authRedirect(true, true, 'landing', null), null);
   assert.equal(authRedirect(true, true, 'landing'), null);
+});
+
+test('/assessment is reachable when signed in and draws a real screen', () => {
+  // Both halves matter, and only the second one was ever broken. The path existed and this
+  // function already let a signed-in user through — so the route "worked" by every check the app
+  // made — but App.jsx had no view for it and rendered an empty shell. A user who typed the URL
+  // or followed a link got a blank page with no error anywhere.
+  assert.equal(authRedirect(true, true, 'assessment'), null);
+  assert.equal(authRedirect(true, true, 'assessment', true), null);
+  assert.equal(ROUTE_PATHS.assessment, '/assessment');
+  assert.equal(DASHBOARD_VIEWS.assessment, 'assessment');
+});
+
+test('/assessment still refuses a signed-out visitor', () => {
+  // It reads one person's facial measurements. Adding it to the render table must not have
+  // widened who can open it.
+  assert.equal(authRedirect(true, false, 'assessment'), 'landing');
+});
+
+test('every route renders something', () => {
+  // The general form of the assessment bug: a path added to ROUTE_PATHS with no matching screen
+  // resolves, passes the auth gate, and paints nothing. Nothing else in the app can notice that,
+  // so this is the only place it gets caught.
+  assert.deepEqual(routesWithNoScreen(), []);
 });
