@@ -64,12 +64,26 @@ REFERENCE_POPULATIONS = ("TH", "LA", "KH", "MM", "VN", "MY", "SG", "ID", "PH", "
 # in analysis_engine's `observations`, which already use the same nasion-gnathion denominator
 # as REFERENCE, so observed and reference are directly comparable without re-deriving anything.
 #
-# Deliberately absent, because no usable soft-tissue reference was found: cheeks (zy-zy),
-# jaw (go-go), mouth width (ch-ch), eye aperture, nose tip projection and chin projection.
-# Published figures for those either measure bone on radiographs or disagree between studies
-# by more than a factor of two. Farkas, Katic & Forrest 2005 (J Craniofac Surg 16:615-646)
-# includes a Thai sample and reports zy-zy, go-go and ch-ch; adding those means and SDs to
-# REFERENCE and an entry here is all that is needed to switch those regions on.
+# Deliberately absent: cheeks (zy-zy), jaw (go-go), mouth width (ch-ch), eye aperture, nose tip
+# projection and chin projection. The first framing of this comment said only that no usable
+# reference had been *found*, and pointed at Farkas, Katic & Forrest 2005 (J Craniofac Surg
+# 16:615-646) as a Thai sample that would switch them on once someone typed its means in. Both
+# halves of that were wrong, and the second half was the dangerous one — it read as a work
+# instruction, so the next person to open this file would have shipped a reference nobody had
+# checked. That paper's abstract names no country and lists no Thai-affiliated investigator, and
+# the claim could not be verified without buying the PDF.
+#
+# The real reason is stronger than "not found", and it is anatomical rather than bibliographic.
+# `zy-zy` and `go-go` are measured with spreading calipers on palpated bone. That is how they are
+# collected even in the field's flagship three-dimensional database — Kesterke et al. 2016 lists
+# both as caliper measurements inside a corpus built from 3-D photogrammetry (PMC4841054). A
+# landmark this pipeline reads off a photograph is a point on skin, near the widest visible
+# outline; it is not zygion and it is not gonion, and calling it one would put a published mean
+# for bone next to a number measured on a cheek.
+#
+# So these regions are not waiting on a citation. Turning them on requires a reference measured
+# the way this product measures, on a population it serves — not a number transcribed from a
+# study that palpated skulls.
 #
 # `eyes` is absent for a different reason, and it is worth stating because the row looks obvious
 # and is wrong. The study does report `eye_fissure`, and it is scored on every scan — so an
