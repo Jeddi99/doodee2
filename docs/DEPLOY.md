@@ -274,9 +274,21 @@ curl -I https://api.doodee.app/api/v1/session/      # → HTTP/2 403
 ```sh
 # ชั้น 4 — chat เข้าพอร์ตแยกจริงไหม
 docker compose -f compose.yaml -f compose.prod.yaml logs chat-api --tail 20
+
+# ชั้น 5 — beat ยิงงานลบภาพหมดอายุจริงไหม
+# `cleanup-expired-data` ต้องโผล่ในตารางตอน beat บูต และต้องยิงจริงทุกต้นชั่วโมง
+docker compose -f compose.yaml -f compose.prod.yaml logs beat | grep cleanup-expired-data
+docker compose -f compose.yaml -f compose.prod.yaml logs maintenance-worker | grep cleanup_expired_data
 ```
 
-**ชั้น 5 — จากเบราว์เซอร์จริง**
+> **ข้อนี้สำคัญกว่าที่หน้าตามันดู** — `Scan.expires_at` คือคำสัญญาที่ผลิตภัณฑ์ให้ไว้ว่า
+> ภาพใบหน้าจะถูกเก็บ 30 วัน (ผู้ใหญ่) และ 24 ชั่วโมง (ผู้เยาว์) และ**ไม่มีอย่างอื่นบังคับมันเลย**
+> ถ้า beat ไม่ยิงงานนี้ ภาพจะอยู่ตลอดไปโดยไม่มีอะไรฟ้อง
+>
+> เคยเป็นแบบนั้นมาแล้ว: คำสั่ง `cleanup_expired_data` เขียนไว้ครบและมีเทสต์ แต่ไม่มีอะไรตั้งเวลาให้เลย
+> จนกระทั่งเพิ่มเข้า `CELERY_BEAT_SCHEDULE` — จึงต้องตรวจข้อนี้ทุกครั้งที่ deploy ใหม่
+
+**ชั้น 6 — จากเบราว์เซอร์จริง**
 
 1. `https://doodee.app` โหลดขึ้น มีกุญแจ
 2. Sign in with Google → เข้า dashboard ได้
@@ -285,10 +297,17 @@ docker compose -f compose.yaml -f compose.prod.yaml logs chat-api --tail 20
 5. Chat พิมพ์คำถาม → ได้คำตอบ
 6. `https://api.doodee.app/admin` → login ได้ **และมี CSS ครบ** (ไม่มี CSS = whitenoise/collectstatic พัง)
 7. Sentry เห็น event แรก
+8. `/assessment` ขึ้น findings + กราฟการกระจาย + mesh
+9. จำลองหัตถการหนึ่งรายการ → ภาพที่ได้**มีลายน้ำ "EDUCATIONAL SIMULATION"** มุมขวาล่าง
 
 > `Cannot reach the API` บนหน้าเว็บมีสองสาเหตุที่หน้าตาเหมือนกันเป๊ะ: **CORS block** กับ **เซิร์ฟเวอร์ตาย**
 > แยกได้ที่ Network tab เท่านั้น — CORS จะเห็น request ที่ status `(failed)` พร้อม error CORS ใน console
 > ส่วนเซิร์ฟเวอร์ตายจะไม่มี response เลย
+
+---
+
+> **ตรวจอีกครั้งหลังผ่านไป 24 ชั่วโมง** — สแกนของผู้เยาว์ที่หมดอายุต้องหายจาก Supabase Storage จริง
+> นี่คือข้อเดียวที่ทดสอบก่อน deploy ไม่ได้ และเป็นข้อที่ผิดแล้วเสียหายที่สุด
 
 ---
 

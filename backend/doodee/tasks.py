@@ -312,6 +312,27 @@ def _delete_objects(objects):
         delete_image(object_name)
 
 
+@shared_task
+def cleanup_expired_data():
+    """The retention sweep: expired face photographs and the sessions that carried them.
+
+    A task rather than only a management command because beat can schedule a task and cannot
+    schedule a command, and until this existed nothing scheduled the sweep at all — not
+    `CELERY_BEAT_SCHEDULE`, not compose, not a cron in the deploy runbook. The command was
+    written, tested, and then never run anywhere but by hand.
+
+    That is a broken promise rather than a storage bill: this product tells people their face
+    photographs expire — thirty days for an adult, twenty-four hours for a minor — and on a
+    deployment where this never fires, they simply do not.
+
+    Thin on purpose. The command holds the logic and its own tests; duplicating it here would
+    put a deletion rule in two places, which is the last rule that should ever be duplicated.
+    """
+    from django.core.management import call_command
+
+    call_command("cleanup_expired_data")
+
+
 @shared_task(autoretry_for=(Exception,), retry_backoff=True, retry_kwargs={"max_retries": 8})
 def cleanup_scan(scan_id):
     scan = Scan.objects.select_related("user").filter(pk=scan_id).first()

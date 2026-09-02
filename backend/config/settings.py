@@ -284,6 +284,9 @@ CELERY_TASK_ROUTES = {
     # a vision-provider outage ever shows up as scan latency.
     "doodee.tasks.process_skin_vision": {"queue": "cv"},
     "doodee.tasks.reconcile_heavy_jobs": {"queue": "maintenance"},
+    # Not `cv`. The retention sweep must not queue behind a face render, and the cv worker runs
+    # with `--max-tasks-per-child=50` for mediapipe's sake — a sweep is nothing like that work.
+    "doodee.tasks.cleanup_expired_data": {"queue": "maintenance"},
 }
 # Renewal reminders. Plain Celery beat rather than django-celery-beat: one daily job does not
 # need a database-backed scheduler and an admin screen to edit it.
@@ -302,6 +305,18 @@ CELERY_BEAT_SCHEDULE = {
     "renewal-reminders": {
         "task": "doodee.tasks.send_renewal_reminders",
         "schedule": crontab(hour=2, minute=0),
+    },
+    # Hourly, and unlike the two above this one is not a convenience. `Scan.expires_at` is the
+    # promise the product makes about how long a face photograph is kept — thirty days for an
+    # adult, twenty-four hours for a minor — and nothing else enforces it. `sync_entitlement`
+    # can expire access on read because access is checked on read; a stored image is not read
+    # before it is kept.
+    #
+    # Hourly rather than daily because the minor window is twenty-four hours: a daily sweep at a
+    # fixed time would keep a minor's photographs for up to forty-eight.
+    "cleanup-expired-data": {
+        "task": "doodee.tasks.cleanup_expired_data",
+        "schedule": crontab(minute=0),
     },
 }
 

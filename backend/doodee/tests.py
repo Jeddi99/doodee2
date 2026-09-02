@@ -1029,6 +1029,83 @@ class MeshEndpointTest(TestCase):
         self.assertEqual(first["colour"], [red, green, blue])
 
 
+class RetentionScheduleTest(TestCase):
+    """The sweep that deletes expired face photographs is actually scheduled, and reachable.
+
+    `cleanup_expired_data` was written, tested and then scheduled by nothing — not
+    `CELERY_BEAT_SCHEDULE`, not compose, not a cron in the runbook. On a deployment it would
+    never have run, and this product tells people their photographs expire: thirty days for an
+    adult, twenty-four hours for a minor. Nothing else enforces that. `sync_entitlement` can
+    expire access on read because access is checked on read; a stored image is not.
+
+    Three separate ways it could silently stop working, so three assertions: it leaves the
+    schedule, it is routed to a queue no worker subscribes to, or the task stops calling the
+    command that holds the rule.
+    """
+
+    TASK = "doodee.tasks.cleanup_expired_data"
+
+    def test_the_sweep_is_on_the_schedule(self):
+        entry = settings.CELERY_BEAT_SCHEDULE.get("cleanup-expired-data")
+        self.assertIsNotNone(entry, "nothing schedules the retention sweep")
+        self.assertEqual(entry["task"], self.TASK)
+
+    def test_it_runs_at_least_hourly_because_the_minor_window_is_a_day(self):
+        """A daily sweep at a fixed hour would keep a minor's photographs for up to 48 hours."""
+        from celery.schedules import crontab
+
+        schedule = settings.CELERY_BEAT_SCHEDULE["cleanup-expired-data"]["schedule"]
+        if isinstance(schedule, crontab):
+            self.assertEqual(schedule.hour, set(range(24)), "must not be pinned to one hour")
+        else:
+            self.assertLessEqual(float(schedule), 3600)
+
+    def test_it_shares_a_queue_with_a_task_known_to_be_consumed(self):
+        """A queue nobody listens on is the same as no schedule at all, and quieter.
+
+        Pinned against `reconcile_heavy_jobs` rather than against the compose file, which is
+        outside the image the tests run in. That task is demonstrably consumed in this
+        deployment — it is what re-enqueued a scan stuck at `queued` when the worker was
+        subscribed to the wrong queues — so sharing its queue is a real guarantee, not a
+        restatement of the routing table.
+        """
+        routes = settings.CELERY_TASK_ROUTES
+        self.assertEqual(routes[self.TASK]["queue"],
+                         routes["doodee.tasks.reconcile_heavy_jobs"]["queue"])
+        self.assertNotEqual(routes[self.TASK]["queue"], routes["doodee.tasks.process_scan"]["queue"],
+                            "the sweep must not queue behind a face render")
+
+    def test_the_task_runs_the_command_that_holds_the_rule(self):
+        """Thin on purpose: a deletion rule implemented twice is one that will disagree."""
+        from .tasks import cleanup_expired_data
+
+        with patch("django.core.management.call_command") as ran:
+            cleanup_expired_data()
+        ran.assert_called_once_with("cleanup_expired_data")
+
+    def test_the_sweep_deletes_a_minor_scan_the_moment_it_expires(self):
+        """The end-to-end promise, at the shortest window the product offers."""
+        user = User.objects.create_user("minor-retention")
+        expired = Scan.objects.create(
+            user=user, age_band=Scan.AgeBand.MINOR, status=Scan.Status.COMPLETED,
+            image_objects={"front": "m/front.jpg"},
+            expires_at=timezone.now() - timedelta(minutes=1),
+        )
+        fresh = Scan.objects.create(
+            user=user, age_band=Scan.AgeBand.MINOR, status=Scan.Status.COMPLETED,
+            image_objects={"front": "m/fresh.jpg"},
+            expires_at=timezone.now() + timedelta(hours=23),
+        )
+        with patch("doodee.management.commands.cleanup_expired_data.cleanup_scan.delay") as cleanup, \
+             patch("doodee.management.commands.cleanup_expired_data.purge_scan_images.delay"), \
+             patch("doodee.management.commands.cleanup_expired_data.cleanup_simulation.delay"):
+            call_command("cleanup_expired_data")
+        expired.refresh_from_db()
+        fresh.refresh_from_db()
+        self.assertEqual(expired.status, Scan.Status.DELETION_PENDING)
+        self.assertEqual(fresh.status, Scan.Status.COMPLETED, "an unexpired scan is left alone")
+
+
 class ProcedureNamesEnTest(TestCase):
     """Every row carries an English name, and the table names nothing that does not exist.
 
