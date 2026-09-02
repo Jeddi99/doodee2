@@ -1825,9 +1825,9 @@ class UnchangedViewTest(TestCase):
             b"after-front", [], {},
             {"model_version": "canonical-3d-fusion-lab-v1", "legacy_view": "front",
              "related_procedures": [],
-             "views": {"front": {"changed": True, "visible_percent": 0.115},
-                       "left_profile": {"changed": True, "visible_percent": 0.091},
-                       "right_profile": {"changed": True, "visible_percent": 0.051}},
+             "views": {"front": {"changed": True, "visible_percent": 0.115, "peak_delta": 13},
+                       "left_profile": {"changed": True, "visible_percent": 0.091, "peak_delta": 9},
+                       "right_profile": {"changed": True, "visible_percent": 0.051, "peak_delta": 7}},
              "before_encoded": b"before-front",
              "encoded_views": {"front": b"after-front", "left_profile": b"after-left",
                                "right_profile": b"after-right"}},
@@ -1837,9 +1837,17 @@ class UnchangedViewTest(TestCase):
 
         process_simulation(str(self.simulation.id))
         self.simulation.refresh_from_db()
-        self.assertEqual(self.simulation.parameters["visibility"],
-                         {"front": 0.115, "left_profile": 0.091, "right_profile": 0.051})
-        self.assertEqual(SimulationSerializer(self.simulation).data["visibility"]["front"], 0.115)
+        # Both numbers, per view. The percentage alone was the whole record until it turned out
+        # to answer the wrong question for anything local: a hairline transplant rewrites 0.39% of
+        # the frame with a peak of 137 and was being reported to the user as barely visible.
+        self.assertEqual(
+            self.simulation.parameters["visibility"],
+            {"front": {"percent": 0.115, "peak": 13},
+             "left_profile": {"percent": 0.091, "peak": 9},
+             "right_profile": {"percent": 0.051, "peak": 7}},
+        )
+        self.assertEqual(SimulationSerializer(self.simulation).data["visibility"]["front"],
+                         {"percent": 0.115, "peak": 13})
 
     def test_a_row_that_never_measured_it_makes_no_claim(self):
         """Absent is not zero: `{}` under a perfectly good legacy render must not read as
@@ -4936,6 +4944,43 @@ class SiteSettingTest(TestCase):
         self.assertEqual(self.config.subscription_grace_days, 3)
         self.assertEqual(self.config.chat_hourly_ceiling, 60)
         self.assertEqual(self.config.preview_hourly_ceiling, 120)
+
+    def test_the_hard_throttle_stays_above_the_ceiling_an_operator_can_move(self):
+        """Two ceilings sit on the same endpoints, and the tunable one has to be the lower.
+
+        `SiteSetting.*_hourly_ceiling` exists so an operator can change what a customer is allowed
+        without a deploy, and it answers with a code this product has translated copy for. The DRF
+        rate under it is the script backstop. When the backstop is the *lower* of the two, the
+        tunable ceiling is unreachable, the setting on the admin page does nothing, and the limit
+        a customer actually hits arrives as an English framework sentence.
+
+        That is what had happened to previews: 20/hour against a ceiling of 120, on a screen where
+        ticking a procedure renders. This is the assertion that would have caught it.
+        """
+        from django.conf import settings as django_settings
+
+        rates = django_settings.REST_FRAMEWORK["DEFAULT_THROTTLE_RATES"]
+
+        def per_hour(scope):
+            count, _, period = rates[scope].partition("/")
+            self.assertEqual(period, "hour", f"{scope} is no longer per hour; compare like for like")
+            return int(count)
+
+        self.assertGreater(
+            per_hour("preview"), self.config.preview_hourly_ceiling,
+            "the preview backstop is at or below the ceiling an operator is meant to control, so "
+            "SiteSetting.preview_hourly_ceiling can never be what stops anyone",
+        )
+
+        # Chat has the same inversion — 30/hour under a 60/hour ceiling — and it is recorded here
+        # rather than fixed, because raising it would loosen a path that spends money on a third
+        # party and that is the owner's call, not a side effect of a simulation fix. Written as an
+        # assertion so it cannot rot: whoever raises the chat rate will be sent here to delete
+        # these lines and fold `chat` into the check above.
+        self.assertLessEqual(
+            per_hour("chat"), self.config.chat_hourly_ceiling,
+            "chat's backstop now clears its ceiling — good; move it into the assertion above",
+        )
 
     def test_changing_the_reward_changes_the_next_payout_and_rewrites_no_old_one(self):
         inviter, plan = User.objects.create_user("payer"), Plan.objects.get(code="plus")

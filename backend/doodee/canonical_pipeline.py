@@ -1403,6 +1403,21 @@ VISIBLE_DELTA = 3
 #: fell below half a percent and the ones they could all sat above one and a half.
 FAINT_FRACTION = .005
 
+#: How far a single channel has to move for the change to be legible where it happened.
+#:
+#: `FAINT_FRACTION` alone answers "how much of the picture moved", which is the wrong question for
+#: anything that changes a small part of a face very visibly. A hairline transplant rewrites 0.39%
+#: of the frame with a peak channel delta of 137 — over half the range — and was being called
+#: invisible, while a facial peel that lifts the whole face by 6 levels covers 15% and was called
+#: clear. Mole removal (peak 78) and cosmetic tattooing (peak 64) sat in the invisible bucket too.
+#:
+#: So the two are recorded together and read together. This number is the same kind of judgement
+#: as the one above: `VISIBLE_DELTA = 3` is where a pixel has moved at all, and this is roughly
+#: where a change stops needing to be pointed out to be noticed. The rows it rescues all peak
+#: above 35; the ones it leaves faint — an eyelid crease at 12, a tear trough at 7 — are the ones
+#: a viewer really does have to be told about.
+STRONG_DELTA = 25
+
 
 def _region_indices(region):
     """The landmarks a focus box is drawn around, from whichever table names this region.
@@ -1595,6 +1610,9 @@ def simulate_scan_views(scan, sliders, download_fn, *, selections=None, presets=
         difference = np.abs(after.astype(np.int16) - view["image"].astype(np.int16)).max(axis=2)
         changed = bool(difference.any())
         visible = float((difference > VISIBLE_DELTA).mean())
+        # How hard the strongest-hit pixel was hit, alongside how many were. See STRONG_DELTA:
+        # area on its own cannot tell a drawn hairline from a render that did nothing.
+        peak = int(difference.max())
         # After the comparison, never before: the mark is drawn on every render, so counting it
         # would report a change on a view where nothing moved.
         after = watermark(after)
@@ -1618,6 +1636,8 @@ def simulate_scan_views(scan, sliders, download_fn, *, selections=None, presets=
             # And how much, as a percentage of the frame. Rounded to three places because the
             # interesting range is a fraction of one percent.
             "visible_percent": round(visible * 100, 3),
+            # The other half of the answer: the largest single-channel move anywhere in the frame.
+            "peak_delta": peak,
             "focus_boxes": {
                 region: _focus_box(view["points"], indices, view["image"].shape)
                 for region, indices in ((name, _region_indices(name)) for name in regions)

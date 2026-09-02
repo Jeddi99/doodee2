@@ -147,7 +147,11 @@ class SimulationSerializer(serializers.ModelSerializer):
         return links
 
     def get_visibility(self, obj):
-        """How much of each rendered frame actually moved, as a percentage, per view.
+        """How much of each rendered frame moved and how hard, per view.
+
+        `{view: {"percent": float, "peak": int}}` — or a bare percentage on rows written before
+        the peak was recorded, which the client normalises. Both numbers are needed: area alone
+        called a drawn hairline invisible and a whole-face tone wash clear.
 
         Sent because a correct render and a broken one look identical to someone whose face the
         procedure barely touches. The client says so in words rather than the catalog's

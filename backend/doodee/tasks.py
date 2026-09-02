@@ -267,12 +267,18 @@ def process_simulation(simulation_id):
         )
         if extra:
             simulation.model_version = extra["model_version"]
-            # How much of each frame moved. Kept beside the render rather than recomputed on
-            # read: the two source images it was measured between are not both stored, so this
-            # is the only moment the number can be taken.
+            # How much of each frame moved, and how hard. Kept beside the render rather than
+            # recomputed on read: the two source images it was measured between are not both
+            # stored, so this is the only moment the numbers can be taken.
+            #
+            # An object per view rather than the bare percentage it used to be. Area alone called
+            # a drawn hairline invisible and a whole-face tone wash clear; `peak` is what tells
+            # those apart. Rows written before this change hold a bare number and the client
+            # still reads them — see `describeVisibility`.
             simulation.parameters = {
                 **(simulation.parameters or {}),
-                "visibility": {name: view["visible_percent"]
+                "visibility": {name: {"percent": view["visible_percent"],
+                                      "peak": view.get("peak_delta")}
                                for name, view in extra["views"].items()
                                if "visible_percent" in view},
                 # What the stack asked for and the renderer would not draw. Stored beside the

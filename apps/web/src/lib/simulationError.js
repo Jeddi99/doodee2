@@ -138,6 +138,22 @@ for (const code of CLIENT_FAULT) {
 const CODE = /^([a-z_]+)(?::([a-z0-9_.]+))?$/;
 
 /**
+ * DRF's own throttle sentence, which is not a code and never reached the table above.
+ *
+ * The rate limiter on `POST /simulations/preview/` answers with a plain English sentence rather
+ * than one of this file's codes, so it fell through to the fallback and a Thai user was shown
+ * "สร้างภาพจำลองไม่สำเร็จ ลองใหม่อีกครั้ง (Request was throttled. Expected available in 2812
+ * seconds.)" — a generic apology with an untranslated framework string stapled to it, and the one
+ * fact that matters, when they may try again, buried in English at the end.
+ *
+ * Matched rather than mapped because the seconds are in the sentence and belong in the answer.
+ */
+const THROTTLED = /^Request was throttled\. Expected available in (\d+) seconds?\.?$/;
+
+/** Whole minutes, rounded up, because "in 47 minutes" is actionable and "in 2812 seconds" is not. */
+const waitMinutes = (seconds) => Math.max(1, Math.ceil(Number(seconds) / 60));
+
+/**
  * @param message  the raw string thrown by the API layer
  * @param isTh     render Thai rather than English
  * @param regionLabel  maps a region id to its display name
@@ -145,6 +161,17 @@ const CODE = /^([a-z_]+)(?::([a-z0-9_.]+))?$/;
  */
 export function describeSimulationError(message, isTh, regionLabel = (id) => id) {
   if (!message || typeof message !== 'string') return { code: null, region: null, text: '' };
+  const throttled = THROTTLED.exec(message.trim());
+  if (throttled) {
+    const minutes = waitMinutes(throttled[1]);
+    return {
+      code: 'preview_rate_limited',
+      region: null,
+      text: isTh
+        ? `สร้างภาพถี่เกินไป ระบบจำกัดไว้ชั่วคราว ลองใหม่ได้ในอีกประมาณ ${minutes} นาที`
+        : `Too many renders in a short time. You can try again in about ${minutes} minute${minutes === 1 ? '' : 's'}.`,
+    };
+  }
   const match = CODE.exec(message.trim());
   const [, code, region] = match || [];
   const entry = code ? MESSAGES[code] : null;

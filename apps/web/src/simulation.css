@@ -598,7 +598,10 @@
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  max-width: 11ch;
+  /* Wide enough for the longest label the chip now carries — "รูปทรง + ผิว" / "Shape + surface".
+     11ch fitted the build-stage names it used to print ("Hybrid", "test", "dd2") and clipped the
+     first real word of the replacements. Still bounded, so a longer one cannot break the row. */
+  max-width: 16ch;
 }
 .simulation-preset-grid button .simulation-procedure-chip {
   display: block;

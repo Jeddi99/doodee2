@@ -94,3 +94,22 @@ test('the catalog refusals each say what to do about them', () => {
     assert.match(result.text, thai, code);
   }
 });
+
+test('the rate limiter answers in the reader’s language, with the wait in minutes', () => {
+  /**
+   * DRF answers a throttled preview with its own English sentence, not one of this file's codes.
+   * It used to fall through to the generic fallback, so a Thai user got an apology with
+   * "(Request was throttled. Expected available in 2812 seconds.)" appended — the only useful
+   * fact in the message, and it was in the wrong language and the wrong unit.
+   */
+  const th = describeSimulationError('Request was throttled. Expected available in 2812 seconds.', true, label);
+  assert.equal(th.code, 'preview_rate_limited');
+  assert.match(th.text, /47 นาที/);
+  assert.ok(!th.text.includes('throttled'), 'the English sentence is still being shown to a Thai reader');
+
+  const en = describeSimulationError('Request was throttled. Expected available in 90 seconds.', false, label);
+  assert.match(en.text, /about 2 minutes/);
+  // Never "0 minutes": a wait the user is being told to sit through is at least one.
+  assert.match(describeSimulationError('Request was throttled. Expected available in 5 seconds.', false, label).text,
+    /about 1 minute\b/);
+});

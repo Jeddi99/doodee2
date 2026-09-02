@@ -43,10 +43,14 @@ export const PROCEDURES_TOTAL = 92;
 /**
  * Procedures with a render pipeline, so a preview can actually be drawn for them.
  *
- * The other 20 are body or systemic treatments with no visible effect on a face photograph. They
+ * The other 22 are body or systemic treatments with no visible effect on a face photograph. They
  * stay in the catalogue with a reason attached rather than being deleted to flatter the count.
+ *
+ * It was 72 until an IV vitamin drip and a herbal skin tonic were retired: both asked for a
+ * sub-one-unit shift in L, which cleared no pixel on either face they were measured against, so
+ * they were selling a render that handed the photograph back. Two fewer rows is the honest count.
  */
-export const PROCEDURES_RENDERABLE = 72;
+export const PROCEDURES_RENDERABLE = 70;
 
 /** Published cohort behind every reference score: `reference_scoring.py`'s REFERENCE table. */
 export const REFERENCE_SAMPLE = 240;

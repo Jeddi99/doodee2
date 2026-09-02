@@ -398,8 +398,14 @@ def simulate_canonical(scan, selections, download_fn, output_format=".png", max_
             name: {"yaw": view["yaw"], "max_shift_px": view["max_shift_px"],
                    "held_back": view["held_back"], "source_object": view["source_object"],
                    # Read by the worker, which does not store a view nothing moved in, and
-                   # records the rest so the screen can say how much this actually did.
-                   "changed": view["changed"], "visible_percent": view["visible_percent"]}
+                   # records the rest so the screen can say how much this actually did. Both
+                   # measurements travel: `visible_percent` is how much of the frame moved and
+                   # `peak_delta` how far the furthest pixel went, and the verdict needs both.
+                   # `.get` for the same reason `dose_notes` below uses it: a stand-in renderer
+                   # driven from a fixture is a legitimate caller and does not measure a peak. An
+                   # absent peak reaches the client as "no claim", never as zero.
+                   "changed": view["changed"], "visible_percent": view["visible_percent"],
+                   "peak_delta": view.get("peak_delta")}
             for name, view in result["views"].items()
         },
         "encoded_views": {name: view["encoded"] for name, view in result["views"].items()},

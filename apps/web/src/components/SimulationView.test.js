@@ -45,12 +45,24 @@ test('renderNow refuses to spend a render the cache already holds', () => {
   // again, and the free tier is given three a month.
   const body = between('const renderNow = ', '\n\n  /**');
   assert.match(body, /if \(renderFor\(renders, stackFingerprint\(next\), view\)\) return;/);
+  // The consent gate is a parameter defaulting to the state, so `acceptConsent` can render in the
+  // same tick it grants consent without the guard reading the value it is about to replace.
+  assert.match(body, /const renderNow = \(next, view, allowed = consented\)/);
+  assert.match(body, /if \(!allowed \|\| procedureCount\(next\) === 0\) return;/);
 });
 
-test('ticking consent does not render anything on its own either', () => {
+test('ticking consent renders whatever was already chosen', () => {
+  /**
+   * This test used to assert the opposite, and it was right to when there was a Create button for
+   * consent to enable. Once that button went, "consent only unlocks it" left the most ordinary
+   * path through this screen — choose a procedure, then tick the box the note says you can tick
+   * afterwards — showing the untouched photograph with no control anywhere that would change it.
+   *
+   * `true` rather than the state variable: `setConsented` has not landed when this runs.
+   */
   const consent = between('const acceptConsent = ', '\n\n  //');
-  assert.ok(!consent.includes('requestPreview('), 'giving consent enables the button, it does not press it');
-  assert.ok(!consent.includes('renderNow('));
+  assert.match(consent, /renderNow\(stack, activeView, true\)/, 'consenting must catch the stack up');
+  assert.ok(!consent.includes('requestPreview('), 'and must still go through the cache check');
 });
 
 test('every path to a render goes through renderNow', () => {
@@ -64,7 +76,7 @@ test('every path to a render goes through renderNow', () => {
     .map(([, name]) => name);
   assert.deepEqual(
     callers.sort(),
-    ['changeAngle', 'changeStack', 'chooseReferenceTarget', 'renderCurrent', 'renderNow'].sort(),
+    ['acceptConsent', 'changeAngle', 'changeStack', 'chooseReferenceTarget', 'renderCurrent', 'renderNow'].sort(),
     'a new function is asking for a render; make sure it goes through renderNow, then say why here',
   );
 });
@@ -124,9 +136,39 @@ test('the dose notes are rendered, and their absence is handled where it is read
   assert.match(component, /if \(notes\.length === 0\) return null;/, 'an empty box is worse than no box');
 });
 
-test('the screen no longer promises that picking a procedure renders it', () => {
-  // Three sentences said so out loud, and they were true until this change.
-  assert.ok(!source.includes('No generate button needed.'), 'the placeholder still promises no button');
-  assert.ok(!source.includes('renders it immediately'), 'the consent note still promises an instant render');
-  assert.ok(!source.includes('เห็นผลทันที'), 'the Thai placeholder still promises an instant render');
+test('an angle with no picture asks for one, whatever the other angles hold', () => {
+  /**
+   * `changeAngle` used to return early unless the stack had already been rendered at some other
+   * angle. That was the "only after you press Create" rule under another name, and once the press
+   * was gone it only had one effect left: switching angle while the first render was in flight
+   * left that angle permanently empty, because nothing re-runs when the render lands.
+   */
+  const angle = between('const changeAngle = ', 'const acceptConsent = ');
+  assert.ok(!angle.includes('stackRendered('), 'the Create-era guard is back, and it strands an angle');
+  assert.match(angle, /renderNow\(stack, view\)/, 'choosing an angle is the request to see it');
+});
+
+test('a picture of the current stack does not mark its own rows as missing from it', () => {
+  /**
+   * `rowStandings(showingOtherStack ? shown.entry : null, stack)` handed an empty map whenever the
+   * picture *was* the selection, and an empty map marks every row `added` — so each chosen row
+   * carried "ยังไม่อยู่ในภาพ" beside the image it was in. The badge is the screen's way of saying a
+   * render is owed; printing it permanently is how a working render reads as a broken one.
+   */
+  assert.match(source, /const standings = rowStandings\(shown\.entry, stack\);/);
+  assert.ok(!source.includes('rowStandings(showingOtherStack ? shown.entry : null'),
+    'the inverted default is back');
+});
+
+test('no copy names a Create button, because there is not one', () => {
+  /**
+   * The inverse of the test that used to stand here. Selecting renders again, so the promises that
+   * test forbade are now true — and what is forbidden instead is the leftover instruction to press
+   * a control this screen no longer draws. Two of the three sentences below were still on screen,
+   * one of them in the empty frame a user lands in, telling them to press the thing that would
+   * have fixed it.
+   */
+  assert.ok(!source.includes('กดปุ่มสร้างภาพ'), 'the Thai copy still sends the user to a removed button');
+  assert.ok(!source.includes('press create'), 'the English copy still does');
+  assert.ok(!source.includes('the create button is off'), 'the consent note still names it');
 });

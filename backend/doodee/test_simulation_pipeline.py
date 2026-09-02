@@ -60,7 +60,7 @@ class ProcedureCatalogTests(SimpleTestCase):
         self.assertEqual(len(BY_SOURCE_REF), 92)
         self.assertEqual(len(CATEGORIES), 13)
         self.assertEqual(set(TECHNIQUE_BY_REF), set(BY_SOURCE_REF))
-        self.assertEqual(sum(item["available"] for item in public_catalog()), 72)
+        self.assertEqual(sum(item["available"] for item in public_catalog()), 70)
         # Category 13 (dental) is retired: no category, no rows, and 13 is never reissued.
         self.assertNotIn("dental", CATEGORIES)
         self.assertNotIn(13, set(CATEGORY_NUMBERS.values()))
@@ -81,7 +81,7 @@ class ProcedureCatalogTests(SimpleTestCase):
 
     def test_the_public_catalog_drops_every_row_the_renderer_would_refuse(self):
         served = public_catalog()
-        self.assertEqual(len(served), 72)
+        self.assertEqual(len(served), 70)
         self.assertTrue(all(item["available"] for item in served))
         # `breast` is the one category with nothing left, so it must not be offered at all.
         self.assertNotIn("breast", facial_categories())
@@ -90,7 +90,7 @@ class ProcedureCatalogTests(SimpleTestCase):
 
     def test_filtering_the_catalog_changes_nothing_a_simulation_depends_on(self):
         """source_ref, pipeline and intensity mode are the simulation's contract, not the list."""
-        for ref in ("1.1", "5.2", "6.1", "7.1", "12.3", "14.13"):
+        for ref in ("1.1", "5.2", "6.1", "7.1", "12.2", "14.13"):
             procedure = BY_SOURCE_REF[ref]
             self.assertEqual(procedure.source_ref, ref)
             self.assertTrue(procedure.pipeline)
@@ -116,12 +116,57 @@ class ProcedureCatalogTests(SimpleTestCase):
             self.assertEqual(catalog[ref]["intensity_mode"], "variable")
             self.assertEqual([level["scale"] for level in catalog[ref]["intensity_levels"]],
                              list(INTENSITY_SCALES.values()))
-        for ref in ("2.7", "6.1", "6.7", "12.3", "14.8"):
+        for ref in ("2.7", "5.4", "6.1", "6.7", "14.8"):
             self.assertEqual(catalog[ref]["intensity_mode"], "discrete")
             self.assertNotIn("intensity_levels", catalog[ref])
         self.assertNotIn("8.1", catalog)
         every = {item["id"]: item for item in public_catalog(include_unavailable=True)}
         self.assertEqual(every["8.1"]["intensity_mode"], "unavailable")
+
+    def test_a_row_that_cannot_be_seen_on_any_face_is_not_offered(self):
+        """Two rows asked for a tone shift below the threshold any eye can resolve.
+
+        `tone_op` scales its delta by the step strength, so 14.1 asked for .18 x 4 = 0.72 units of
+        L and 12.3 for .24 x 4 = 0.96, against a 3-step visibility floor. Rendered on two different
+        scans, 14.1 cleared zero pixels on both. They were on sale, they spent a preview, and they
+        returned the photograph -- which on screen is indistinguishable from a broken renderer.
+
+        Hidden rather than strengthened: nothing behind an IV vitamin drip or a herbal tonic says
+        by how much it lightens a face, so there is no honest number to raise them to.
+        """
+        catalog = {item["id"]: item for item in public_catalog()}
+        every = {item["id"]: item for item in public_catalog(include_unavailable=True)}
+        for ref in ("12.3", "14.1"):
+            self.assertNotIn(ref, catalog, f"{ref} is back on sale")
+            self.assertFalse(every[ref]["available"])
+            self.assertFalse(BY_SOURCE_REF[ref].pipeline, f"{ref} still renders")
+            self.assertEqual(every[ref]["unavailable_reason"],
+                             "ไม่มีผลที่เห็นได้ในภาพถ่ายใบหน้า จึงไม่จำลองให้")
+        # And a row retired for the other reason still says the other reason.
+        self.assertEqual(every["1.7"]["unavailable_reason"], "หัตถการนอกขอบเขตใบหน้า")
+
+    def test_render_kind_says_what_the_pipeline_does_and_agrees_with_the_source_label(self):
+        """The chip on a procedure card, and the reason it stopped printing `test`.
+
+        `technique` holds data.txt's own build-stage names -- `dd2`, `test`, `Hybrid` -- and those
+        were being rendered verbatim, so a customer choosing laser skin tightening saw a chip
+        reading "test". `render_kind` answers the same question from the pipeline instead. The
+        second half of this test is what makes that a rename and not a new claim: across every
+        renderable row the two agree exactly.
+        """
+        expected = {"dd2": "shape", "test": "surface", "Hybrid": "shape_surface"}
+        for item in public_catalog():
+            spec = BY_SOURCE_REF[item["id"]]
+            warps = any(step.type == OpType.WARP_OP for step in spec.pipeline)
+            draws = any(step.type != OpType.WARP_OP for step in spec.pipeline)
+            self.assertEqual(
+                item["render_kind"],
+                "shape_surface" if warps and draws else "shape" if warps else "surface",
+                item["id"])
+            self.assertEqual(item["render_kind"], expected[item["technique"]], item["id"])
+        # A row with no pipeline makes no claim about what it would draw.
+        every = {item["id"]: item for item in public_catalog(include_unavailable=True)}
+        self.assertIsNone(every["1.7"]["render_kind"])
 
     def test_quantity_notes_are_attached_to_relevant_variable_levels(self):
         catalog = {item["id"]: item for item in public_catalog()}
@@ -597,7 +642,7 @@ class ProcedureCatalogApiTests(TestCase):
     def test_default_endpoint_serves_the_facial_catalog(self):
         response = self.client.get("/api/v1/procedures/")
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(len(response.data), 72)
+        self.assertEqual(len(response.data), 70)
         self.assertEqual(response.data[0]["id"], "1.1")
         self.assertEqual(response.data[-1]["id"], "14.13")
 
@@ -622,7 +667,7 @@ class ProcedureCatalogApiTests(TestCase):
         self.assertEqual(self.client.get("/api/v1/procedures/6.1/").data["views"], ["front"])
         # Everything else moves on all three, and must not be narrowed by accident.
         every = {item["id"]: item["views"] for item in public_catalog()}
-        self.assertEqual(sum(1 for views in every.values() if len(views) == 3), 62)
+        self.assertEqual(sum(1 for views in every.values() if len(views) == 3), 60)
         self.assertTrue(all(views for views in every.values()))
 
     def test_endpoint_names_the_regions_a_procedure_touches(self):

@@ -15,7 +15,7 @@ import {
 } from '../lib/procedureStack';
 import {
   emptyRenders, noChanges, pendingChanges, renderFor, renderKey, rowStandings,
-  shownRender, stackFingerprint, stackRendered, storeRender,
+  shownRender, stackFingerprint, storeRender,
 } from '../lib/renderPlan';
 import { describeDoseNotes, doseNotesHeading } from '../lib/doseNotes';
 import { latestCraniofacialScan } from '../lib/latestScan';
@@ -41,6 +41,21 @@ const ANGLES = [
 ];
 
 const CONSENT_VERSION = SIMULATION_CONSENT_VERSION;
+/**
+ * What the renderer does to the photograph, for the chip on a procedure card.
+ *
+ * The chip used to print `row.technique` straight through, and those values are data.txt's own
+ * build-stage names: a customer looking at laser skin tightening was shown a chip reading `test`,
+ * and thread lifting one reading `dd2`. The server now sends `render_kind` — the same distinction
+ * read off the pipeline instead of the spreadsheet — and this is the only place it becomes words.
+ */
+const RENDER_KIND = {
+  shape: ['ปรับรูปทรง', 'Reshapes'],
+  surface: ['ปรับผิว', 'Resurfaces'],
+  shape_surface: ['รูปทรง + ผิว', 'Shape + surface'],
+};
+const renderKindName = (kind, isTh) => RENDER_KIND[kind]?.[isTh ? 0 : 1] ?? null;
+
 const regionName = (id, isTh) => REGIONS.find(([key]) => key === id)?.[isTh ? 1 : 2] ?? id;
 const angleName = (id, isTh) => ANGLES.find(([key]) => key === id)?.[isTh ? 1 : 2] ?? id;
 
@@ -244,7 +259,11 @@ export default function SimulationView({ lang = 'th', onNavigate }) {
   // is the state the explicit-render flow creates and the one the screen has to be loud about.
   const showingOtherStack = shown.stale;
   const changes = showingOtherStack ? pendingChanges(shown.entry.stack, stack) : noChanges();
-  const standings = rowStandings(showingOtherStack ? shown.entry : null, stack);
+  // The entry itself, always. Passing null when the picture is current made `rowStandings` read
+  // an empty map and mark every row `added` — so a stack rendered a second ago was labelled
+  // "not in the image" beside the image it was in. A null entry still means what it says: no
+  // picture has come back yet, and then the rows really are not in one.
+  const standings = rowStandings(shown.entry, stack);
   // Whether pressing Create would actually buy anything: it would not if this exact stack has
   // already been rendered into this exact angle.
   const unrendered = !nothingChosen && !renderFor(renders, fingerprint, activeView);
@@ -309,8 +328,8 @@ export default function SimulationView({ lang = 'th', onNavigate }) {
    * The stack is passed in rather than read from state because the callers know the stack they
    * mean and would otherwise read the previous value of a `useState` they have just written.
    */
-  const renderNow = (next, view) => {
-    if (!consented || procedureCount(next) === 0) return;
+  const renderNow = (next, view, allowed = consented) => {
+    if (!allowed || procedureCount(next) === 0) return;
     if (renderFor(renders, stackFingerprint(next), view)) return;
     requestPreview({
       view,
@@ -400,16 +419,18 @@ export default function SimulationView({ lang = 'th', onNavigate }) {
    * screen, choosing it *is* the request to see it, and there is no later press that could mean
    * anything more than this one already does.
    *
-   * It fires only for a stack the user has already pressed Create on. Before that, the angle tabs
-   * merely aim the pending render — the Create button names the angle it will spend itself on — so
-   * a person still choosing procedures can look around the tabs without buying anything.
+   * It used to fire only for a stack that had already been rendered at some other angle, which
+   * was the "only after Create" rule wearing a different name. With the press gone that guard had
+   * no flow left to protect and one failure mode of its own: switching angle while the first
+   * render was still in flight left this angle empty for good, because nothing re-runs when the
+   * render lands. The screen then showed an empty frame telling the user to press a button that
+   * does not exist.
    *
    * An angle already rendered for this stack costs nothing, because the map is keyed by both.
    */
   const changeAngle = (view) => {
     setViewAngle(view);
     if (isReference || !consented || procedureCount(stack) === 0) return;
-    if (renderFor(renders, fingerprint, view) || !stackRendered(renders, fingerprint)) return;
     renderNow(stack, view);
   };
 
@@ -422,7 +443,19 @@ export default function SimulationView({ lang = 'th', onNavigate }) {
   // consent only decides whether it is allowed to.
   const acceptConsent = (checked) => {
     setConsented(checked);
-    if (!checked) clearPreviews();
+    if (!checked) {
+      clearPreviews();
+      return;
+    }
+    // Ticking the box renders whatever is already chosen. It used to leave the stack sitting
+    // there, because the flow at the time ended in a Create press that was still to come — and
+    // when that button went away nothing replaced it, so choosing a procedure and *then*
+    // consenting (which the note beside this box invites: "choosing procedures still works")
+    // left the screen showing the untouched photograph with no control that would change it.
+    //
+    // `true` is passed rather than read, because `setConsented` has not landed yet and the
+    // closure still sees the old value.
+    renderNow(stack, activeView, true);
   };
 
   // Changing category keeps the stack. That is the feature: a jaw procedure has to survive a
@@ -762,10 +795,15 @@ export default function SimulationView({ lang = 'th', onNavigate }) {
                     {renderingView ? <Activity className="capture-spin" /> : <ScanFace />}
                     <strong>{renderingView ? (isTh ? 'กำลังสร้างภาพ…' : 'Rendering…')
                       : nothingChosen ? (isTh ? 'เลือกหัตถการที่ต้องการ' : 'Choose the procedures you want')
-                        : (isTh ? `พร้อมสร้างภาพ ${procedureCount(stack)} รายการ` : `Ready to render ${procedureCount(stack)} chosen`)}</strong>
+                        : (isTh ? `เลือกไว้ ${procedureCount(stack)} รายการ` : `${procedureCount(stack)} chosen`)}</strong>
+                    {/* No mention of a create button. There has not been one since ticking went
+                        back to rendering on its own, and copy naming a control the screen does not
+                        have is how a working feature reads as broken. */}
                     <span>{nothingChosen
-                      ? (isTh ? 'ติ๊กได้หลายรายการ แล้วกดปุ่มสร้างภาพครั้งเดียว' : 'Tick as many as you like, then press create once.')
-                      : (isTh ? 'กดปุ่มสร้างภาพเพื่อเห็นผลของสิ่งที่เลือกไว้' : 'Press create to see what you have chosen.')}</span>
+                      ? (isTh ? 'ติ๊กได้หลายรายการ ภาพจะสร้างให้เองทุกครั้งที่เลือก' : 'Tick as many as you like — each one renders as you choose it.')
+                      : !consented
+                        ? (isTh ? 'ติ๊กยินยอมด้านขวา แล้วภาพจะถูกสร้างให้ทันที' : 'Tick consent on the right and the picture is rendered straight away.')
+                        : (isTh ? 'กำลังเตรียมภาพของมุมนี้…' : 'Preparing this angle…')}</span>
                   </div>}
             {showingOtherStack && (
               <b className="simulation-stale-badge">{isTh ? 'ภาพของการเลือกชุดก่อน' : 'Previous selection'}</b>
@@ -818,7 +856,7 @@ export default function SimulationView({ lang = 'th', onNavigate }) {
           </div>
 
           <div className="simulation-consent"><ShieldCheck /><label><input type="checkbox" checked={consented} onChange={(event) => acceptConsent(event.target.checked)} />{isTh ? 'ยินยอมให้ประมวลผลภาพเพื่อสร้างภาพจำลองนี้' : 'I consent to processing for this simulation.'}</label></div>
-          {!consented && <p className="simulation-note">{isTh ? 'ติ๊กยินยอมก่อน จึงจะกดสร้างภาพได้ การเลือกหัตถการยังทำได้ตามปกติ' : 'Tick consent first; until then the create button is off. Choosing procedures still works.'}</p>}
+          {!consented && <p className="simulation-note">{isTh ? 'ติ๊กยินยอมก่อน จึงจะสร้างภาพได้ เลือกหัตถการไว้ก่อนได้ พอติ๊กยินยอมแล้วภาพจะถูกสร้างให้ทันที' : 'Consent first; nothing is rendered until you do. You can choose procedures beforehand — ticking consent renders them straight away.'}</p>}
 
           {/* Locking guards a selection; it does not change the image, so it never re-renders. */}
           {!isReference && items.length > 0 && (
@@ -965,7 +1003,7 @@ function ProcedureStackPanel({ items, standings, isTh, onIntensity, onToggleLock
                 {standing === 'added' && <em className="simulation-row-pending">{isTh ? 'ยังไม่อยู่ในภาพ' : 'not in the image'}</em>}
                 {standing === 'relevelled' && <em className="simulation-row-pending">{isTh ? 'ภาพยังเป็นระดับเดิม' : 'image has the old level'}</em>}
               </span>
-              {item.procedure?.technique && <em className="simulation-procedure-chip">{item.procedure.technique}</em>}
+              {renderKindName(item.procedure?.render_kind, isTh) && <em className="simulation-procedure-chip">{renderKindName(item.procedure.render_kind, isTh)}</em>}
               {/* Only the rows the catalog says have a dose to vary. A fixed procedure showing a
                   slider would be offering a choice that changes nothing. */}
               {levels && (
@@ -1054,8 +1092,9 @@ function ProcedureGrid({ procedures, stack, disabled, isTh, onChoose, onSelectAl
             >
               <span>{String(index + 1).padStart(2, '0')}</span>
               <strong>{isTh ? row.name_th : row.name_en}</strong>
-              {/* Names the technique this row belongs to, on the card where it is chosen. */}
-              {row.technique && <em className="simulation-procedure-chip">{row.technique}</em>}
+              {/* What the render does to the photograph — not the catalog's build-stage name,
+                  which is what used to be here and put the word "test" on a card for sale. */}
+              {renderKindName(row.render_kind, isTh) && <em className="simulation-procedure-chip">{renderKindName(row.render_kind, isTh)}</em>}
               {chosen && !disabled && <Check />}
             </button>
           );
@@ -1078,6 +1117,17 @@ function ProcedureGrid({ procedures, stack, disabled, isTh, onChoose, onSelectAl
  */
 function VisibilityNote({ visibility, raisable, isTh, onRaise }) {
   if (visibility.level === 'clear' || visibility.level === 'unmeasured') return null;
+  // A small part of the picture that changed a lot — a hairline drawn in, a mole taken out. Real,
+  // and easy to walk past, so it is pointed at. This used to be reported as `faint` and carried
+  // the sentence below it, which told the reader the change was too small to see while they were
+  // looking at it. No offer to raise the intensity either: nothing here fell short.
+  if (visibility.level === 'local') {
+    return (
+      <p className="simulation-note" role="status">{isTh
+        ? 'ความเปลี่ยนแปลงอยู่เฉพาะจุด เห็นชัดในบริเวณนั้นแต่กินพื้นที่ภาพน้อย — เปิดปุ่มซูมเพื่อดูใกล้ ๆ'
+        : 'The change is concentrated in one spot — clear where it happened, small in the frame. Use the zoom to look closely.'}</p>
+    );
+  }
   const amount = visibility.percent < 0.01
     ? (isTh ? 'แทบไม่ต่างเลย' : 'almost nothing')
     : (isTh ? `ต่างจากเดิม ${visibility.percent}% ของพื้นที่ภาพ` : `${visibility.percent}% of the frame`);

@@ -132,6 +132,27 @@ REFINE_PLANS = MappingProxyType({
 DEFAULT_REFINE_PLAN = ("polish", "surface_polish")
 
 
+def render_kind(procedure: "ProcedureSpec") -> str:
+    """What this row does to the photograph: `shape`, `surface`, or `shape_surface`.
+
+    Read off the pipeline, which is the only thing that decides it. The catalog already carried a
+    second answer to the same question -- `technique`, whose values are the strings data.txt used
+    for its own build stages: `dd2`, `test` and `Hybrid`. Those were being printed on the procedure
+    card, so a customer choosing laser skin tightening was shown a chip reading "test".
+
+    They were never wrong, only unreadable: across all 72 renderable rows `dd2` is exactly the
+    warp-only set, `test` exactly the surface-only set and `Hybrid` exactly the mixed one, which is
+    what `test_render_kind_agrees_with_the_source_technique_label` holds them to. So this is not a
+    new claim, it is the same one said in words -- and derived from the pipeline rather than from a
+    spreadsheet column, so a row whose steps change cannot keep a stale label.
+    """
+    warps = any(step.type == OpType.WARP_OP for step in procedure.pipeline)
+    draws = draws_surface(procedure)
+    if warps and draws:
+        return "shape_surface"
+    return "shape" if warps else "surface"
+
+
 def draws_surface(procedure: "ProcedureSpec") -> bool:
     """True when this row paints pixels rather than only displacing them.
 
@@ -209,11 +230,20 @@ class ProcedureSpec:
             "name_en": NAMES_EN.get(self.id, self.name_th),
             "technique_raw": technique_raw,
             "technique": canonical_technique(technique_raw),
+            # What the renderer does, for the chip on the card. `technique` above answers the same
+            # question in data.txt's own vocabulary and is kept for the audit against that file;
+            # it is not a display string and reads as a bug when shown to a customer.
+            "render_kind": render_kind(self) if self.pipeline else None,
             "available": available,
             "intensity_mode": self.intensity_mode if available else "unavailable",
+            # Read from the row's own `unsupported_reason` first. The reason used to be inferred
+            # from the technique column, which answers a different question and could only ever
+            # produce one sentence: every unavailable row was "outside the scope of a face
+            # photograph", including the ones retired because they have no visible effect *on* a
+            # face, which is the opposite claim.
             "unavailable_reason": (
-                "หัตถการนอกขอบเขตใบหน้า" if technique_raw == "N/A"
-                else "ต้องระบุหัตถการย่อย" if technique_raw == "-" else None
+                UNAVAILABLE_REASONS.get(self.unsupported_reason)
+                or ("ต้องระบุหัตถการย่อย" if technique_raw == "-" else None)
             ),
             # Which of the scan's three photographs this shows a change on. A chin projection or a
             # bridge height is a displacement along the face's forward axis: on a profile it is the
@@ -387,6 +417,13 @@ NAMES_EN = MappingProxyType({
 })
 
 
+# What an unavailable row says for itself, keyed by `ProcedureSpec.unsupported_reason`.
+UNAVAILABLE_REASONS = MappingProxyType({
+    "outside_face_image_scope": "หัตถการนอกขอบเขตใบหน้า",
+    "no_visible_face_effect": "ไม่มีผลที่เห็นได้ในภาพถ่ายใบหน้า จึงไม่จำลองให้",
+})
+
+
 def P(id: str, ref: str, category: str, name: str, *pipeline: Step,
       views: tuple[str, ...] = ALL_VIEWS) -> ProcedureSpec:
     return ProcedureSpec(
@@ -524,12 +561,21 @@ PROCEDURES = (
     P("korean-weight-herbs", "12.1", "traditional", "ยาสมุนไพรเกาหลีลดน้ำหนัก", W("lower_face", "jawBotox", 36)),
     P("facial-acupuncture", "12.2", "traditional", "ฝังเข็มความงาม",
       W("jaw", "hifuLifting", 25), T("face_skin", .22, l_delta=5)),
-    P("korean-health-herbs", "12.3", "traditional", "ยาสมุนไพรเกาหลีบำรุงผิว", T("face_skin", .24, a_delta=3, l_delta=4)),
+    # Retired from the renderable set, with 2.24 below and 14.1 further down, because the tone it
+    # asked for cannot be seen on any face. `tone_op` scales its delta by the step strength, so
+    # .24 x 4 is a 0.96-unit lift in L -- under one step of a 0-100 channel, against a 3-step
+    # threshold. Measured on two different scans it moved 72 pixels on one and none at all on the
+    # other. Raising the number would have made it visible; nothing in the catalog says a herbal
+    # skin tonic lightens a face by a measurable amount, so there is nothing to raise it to.
+    X("korean-health-herbs", "12.3", "traditional", "ยาสมุนไพรเกาหลีบำรุงผิว", "no_visible_face_effect"),
 
     # Category 13 (ฟันและช่องปาก) is retired: the mouth interior is not something a face-landmark
     # mask can address honestly, and dentistry is outside what this product claims to simulate.
 
-    P("iv-vitamins", "14.1", "other", "ให้วิตามินผิวทางหลอดเลือด", T("face_skin", .18, l_delta=4)),
+    # .18 x 4 = 0.72 units of L. Zero pixels cleared the visibility threshold on either scan
+    # tested -- the render returned the photograph, spent a preview to do it, and the screen had
+    # no way to tell that apart from a broken renderer. See 12.3 above.
+    X("iv-vitamins", "14.1", "other", "ให้วิตามินผิวทางหลอดเลือด", "no_visible_face_effect"),
     P("tattoo-removal", "14.2", "other", "ลบรอยสักและสักคิ้ว", I("brows", strength=.58)),
     P("cosmetic-tattoo", "14.3", "other", "สักคิ้วและสักปาก",
       I("brows", "brow_hair", .64, density=.30), T("lips", .24, a_delta=7)),

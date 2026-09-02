@@ -359,8 +359,17 @@ REST_FRAMEWORK = {
         # The expensive paths, by what they actually cost us.
         # A scan is 3-7 image uploads, a decode per image and a MediaPipe run in a worker.
         "scan_create": "6/hour",
-        # A preview is a full MediaPipe + OpenCV warp in the web process (views.py:640).
-        "preview": "20/hour",
+        # A backstop against a script, not the ceiling that shapes normal use — that one is
+        # `SiteSetting.preview_hourly_ceiling`, which an operator can move without a deploy and
+        # which answers with a code this product has translated copy for.
+        #
+        # This was 20/hour, set when the comment here was true: a preview rendered synchronously
+        # in the web process. It has not since `process_simulation.delay` took over, and 20 was
+        # far below the SiteSetting ceiling of 120, so the tunable limit was unreachable and the
+        # hard-coded one bound instead. On a screen where ticking a procedure renders and choosing
+        # an angle renders, a customer on a plan sold as unlimited previews hit a wall on the
+        # twenty-first, and DRF answered it in English with a 47-minute lockout.
+        "preview": "150/hour",
         # Money. Sits under the per-plan monthly quota and the hourly ceiling in SiteSetting.
         "chat": "30/hour",
     },
