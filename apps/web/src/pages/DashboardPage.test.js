@@ -293,3 +293,20 @@ test('the pillar progress marks track the pillars', () => {
   assert.match(source, /className=\{item\.locked \? undefined : "is-done"\}/,
     'the progress marks are no longer read from the pillars');
 });
+
+test('the overall card shows the overall score, not whichever pillar is selected', () => {
+  /**
+   * It printed `current.score` — one pillar — under a heading that said "Overall score", beside a
+   * chart whose marker read the real overall. A reader saw 9.9 here and 7.8 an inch away and asked
+   * which one was invented. Neither was: 9.9 was `proportions` alone, two measurements of facial
+   * height; 7.8 the average of all twelve, including a nose score of 53.
+   *
+   * The pillar figure still exists, on its own chip, next to the count of measurements behind it.
+   * What must not come back is a pillar's number standing in for the face.
+   */
+  const card = source.slice(source.indexOf('className="overall-card"'), source.indexOf('overall-distribution'));
+  assert.ok(!card.includes('{current?.score}'), 'the overall card is printing a pillar score again');
+  assert.match(card, /\(overall \/ 10\)\.toFixed\(1\)/, 'the overall score is not the number on this card');
+  // And it says what the average was taken over, for the same reason the pillar chips do.
+  assert.match(card, /scoredMetrics/, 'the card no longer says how many measurements it averaged');
+});

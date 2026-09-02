@@ -555,6 +555,9 @@ function Overview({
   const th = locale !== "en";
 
   const unlockedCount = pillars.filter((item) => !item.locked).length;
+  // Summed off the pillars rather than read from `coverage`, so the number under the overall score
+  // and the numbers under each pillar chip can never disagree: they come from one count.
+  const scoredMetrics = pillars.reduce((total, item) => total + item.metricCount, 0);
   // The pillar the card headlines. qijek hardcodes `pillars[0]` and marks "harmony"
   // active; here it is whichever pillar is actually readable, so an account whose
   // first pillar is locked does not get a headline with nothing under it.
@@ -678,13 +681,15 @@ function Overview({
       <GlassCard className="overall-card">
         <header>
           <div>
-            {/* The big number under this heading is `current.score` — one pillar's score, not
-                the overall one. It read "Overall score" while showing a pillar, which went
-                unnoticed while the chart beside it was decorative; now that the chart plots the
-                real overall and labels its marker with it, the card contradicted itself on
-                screen. The wording is the pillar grid's own aria-label. */}
-            <span className="eyebrow">{th ? "คะแนนรายมิติ" : "Pillar score"}</span>
-            <h1>{current?.label}</h1>
+            {/* This card shows the overall score, which is what the chart beside it has always
+                plotted and what its marker reads. It used to print `current.score` — whichever
+                pillar happened to be selected — under a heading that said "Overall score", so a
+                reader saw 9.9 here and 7.8 on the marker an inch away and asked which was made
+                up. Neither was: 9.9 was one pillar built on two measurements, 7.8 the average of
+                all of them. The pillar's own figure is on its chip above, next to the number of
+                measurements behind it, which is where a per-pillar score belongs. */}
+            <span className="eyebrow">{th ? "คะแนนภาพรวม" : "Overall score"}</span>
+            <h1>{th ? "ใบหน้าของคุณเทียบค่าอ้างอิง" : "Your face against the reference"}</h1>
           </div>
           <span className="overall-card__count">
             {th
@@ -694,9 +699,16 @@ function Overview({
         </header>
         <div className="overall-card__body">
           <div className="overall-score">
-            <strong>{current?.score}</strong>
+            <strong>{overall === null ? "—" : (overall / 10).toFixed(1)}</strong>
             <span>/10</span>
-            <p>{current?.note}</p>
+            {/* What the average was taken over. A score with no basis printed beside it invites
+                exactly the comparison that went wrong here — two numbers that look equally solid
+                when one rests on six times as many measurements as the other. */}
+            <p>{overall === null
+              ? (th ? "สแกนนี้ยังไม่มีคะแนนภาพรวม" : "This scan has no overall score yet")
+              : th
+                ? `เฉลี่ยจากค่าที่วัดได้ ${scoredMetrics} ค่า ใน ${unlockedCount} มิติ`
+                : `Averaged across ${scoredMetrics} measurements in ${unlockedCount} pillars`}</p>
             <div className="score-portrait-pair">
               <figure>
                 <ScanPhoto alt={th ? "ภาพหน้าตรงของคุณ" : "Your front scan"} />
