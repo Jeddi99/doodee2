@@ -16,23 +16,73 @@
  * answer is a business decision rather than a code fact, there is a `[BRACKETED PLACEHOLDER]`
  * rather than a guess.
  *
- * PLACEHOLDERS YOU MUST FILL IN BEFORE LAUNCH (search this file for "["):
+ * ===========================================================================================
+ * ==   STOP. TWO PLACEHOLDERS ARE STILL OPEN. DO NOT PUBLISH THIS FILE UNTIL BOTH ARE GONE. ==
+ * ===========================================================================================
  *
- *   1. [ชื่อ-นามสกุลผู้ควบคุมข้อมูล] / [DATA CONTROLLER FULL NAME]
- *        The individual data controller. PDPA s.23 requires the controller be identifiable.
- *   2. [ที่อยู่สำหรับติดต่อ] / [CONTACT ADDRESS]
- *   3. [อีเมลสำหรับติดต่อเรื่องข้อมูลส่วนบุคคล] / [PRIVACY CONTACT EMAIL]
- *        Where a data-subject request actually arrives. no-reply@doodee.app is not a mailbox.
- *   4. [ภูมิภาคเซิร์ฟเวอร์ Supabase] / [SUPABASE STORAGE REGION]
- *        Not recorded anywhere in this repo. Read it off the Supabase dashboard.
- *   5. [ที่ตั้งเซิร์ฟเวอร์ฐานข้อมูลและแอปพลิเคชัน] / [DATABASE AND APPLICATION SERVER LOCATION]
- *        .env.production's DATABASE_URL points at the compose `postgres` service, with a comment
- *        saying production uses the Supabase session pooler. Those are two different answers and
- *        the file does not settle which one ships. Settle it, then write it here.
- *   6. [วันที่มีผลบังคับใช้] / [EFFECTIVE DATE]
- *   7. [ระยะเวลาขอคืนเงิน] / [REFUND WINDOW] — see the refund section of the Terms. The code has
- *        an Order.Status.REFUNDED that a person sets by hand and no automated refund path at all,
- *        so the window is a policy you choose, not a fact anything here can report.
+ *   A.  [ชื่อ-นามสกุลผู้ควบคุมข้อมูล]  /  [DATA CONTROLLER FULL NAME]
+ *
+ *       The individual data controller, in full. PDPA s.23 requires that the controller be
+ *       identifiable to the data subject, and there is no company here to name instead — the
+ *       documents state outright that the controller is a natural person.
+ *
+ *   B.  [ที่อยู่สำหรับติดต่อ]  /  [CONTACT ADDRESS]
+ *
+ *       A postal address that a data-subject request, or a consumer complaint, can be sent to.
+ *
+ *   Each appears four times: privacy th s.1, privacy en s.1, terms th s.1, terms en s.1.
+ *   They render VERBATIM, square brackets and all, into the live Privacy Policy and Terms
+ *   pages — a visitor today sees the literal text "[DATA CONTROLLER FULL NAME]" on screen.
+ *   Nobody working in this repository can supply either value; they are the operator's own
+ *   legal identity and only the operator knows them. Guessing would be worse than the gap.
+ *
+ *   Done when `grep -n '\[' apps/web/src/legalCopy.ts` finds nothing below this header.
+ *
+ * ===========================================================================================
+ *
+ * RESOLVED ON 2 SEPTEMBER 2026 — five placeholders were closed, each on the evidence below.
+ * Every one of these is now a factual claim the published documents make out loud, so if the
+ * infrastructure or the policy moves, this file has to move with it:
+ *
+ *   ✔ EFFECTIVE DATE → 2 September 2026. Written in the Thai copy as "2 กันยายน 2569", in the
+ *       Buddhist era, matching that copy's own convention — it cites the statute as
+ *       "พระราชบัญญัติคุ้มครองข้อมูลส่วนบุคคล พ.ศ. 2562" throughout.
+ *
+ *   ✔ PRIVACY CONTACT EMAIL → hello@doodee.app, the address the product standardised on.
+ *       THIS MUST BE A MAILBOX A HUMAN READS. A PDPA data-subject request that arrives there
+ *       starts a statutory clock, and s.10 of both policies promises a reply within 30 days.
+ *       An unmonitored alias here is not a cosmetic problem; it is a missed legal deadline.
+ *
+ *   ✔ SUPABASE STORAGE REGION → AWS ap-southeast-1 (Singapore). Evidence: SUPABASE_URL in
+ *       .env.production carries project ref `buaayhdcjiljoedhohdb`; that project's direct
+ *       database host db.buaayhdcjiljoedhohdb.supabase.co resolves to an address inside
+ *       2406:da18::/35, which AWS publishes in ip-ranges.json as ap-southeast-1. Supabase
+ *       provisions a project's Postgres and its Storage bucket in a single chosen region, so
+ *       the face images in the `face-scans` bucket sit in the same place. The API hostname
+ *       itself is behind Cloudflare and tells you nothing — do not re-derive this from a ping.
+ *       If the project is ever migrated to another region, the transfer disclosure in s.7 of
+ *       both privacy policies becomes false. Update it in the same commit as the migration.
+ *
+ *   ✔ DATABASE AND APPLICATION SERVER LOCATION → application servers on AWS Lightsail in
+ *       Singapore (ap-southeast-1); database on Supabase, same region. This is the operator's
+ *       decision of 2 September 2026.
+ *       ⚠ KNOWN GAP AT THE TIME OF WRITING: .env.production's DATABASE_URL still reads
+ *       `postgresql://postgres:postgres@postgres:5432/doodee` — the local compose Postgres —
+ *       and MIGRATION_DATABASE_URL is empty. The copy below describes the INTENDED production
+ *       topology. Point DATABASE_URL at the Supabase pooler before deploying, or the running
+ *       system will contradict a published privacy policy.
+ *
+ *   ✔ REFUND WINDOW → replaced by a stated refund policy in s.8 of both Terms: no refund once
+ *       an entitlement has been granted and used, with an exception where the service failed
+ *       to deliver what was paid for. This is a COMMERCIAL DECISION by the operator, not a
+ *       fact read out of the code, and it is the clause a Thai lawyer should read hardest — a
+ *       refund term that looks like it waives statutory consumer rights is the kind a court
+ *       disregards and a regulator notices, which is why the section says in terms that it
+ *       does not limit those rights. The failure cases it names are states the system really
+ *       records — Scan.Status.FAILED, Simulation.Status.FAILED, and an order marked paid whose
+ *       entitlement was never opened — rather than a vague "if something goes wrong".
+ *
+ * ===========================================================================================
  *
  * FACTS THE COPY BELOW IS BUILT ON, with where to check them:
  *   - Scan.expires_at = now + 24h for a minor, now + 30 days for an adult (views.py `_scan_fields`).
@@ -87,7 +137,7 @@ const privacyTh: LegalDocument = {
   title: "นโยบายความเป็นส่วนตัว",
   subtitle:
     "DOODEE วิเคราะห์ภาพถ่ายใบหน้าของคุณ ภาพใบหน้าเป็นข้อมูลชีวมิติ ซึ่งพระราชบัญญัติคุ้มครองข้อมูลส่วนบุคคล พ.ศ. 2562 จัดเป็นข้อมูลอ่อนไหว เอกสารนี้บอกว่าเราเก็บอะไร เก็บนานแค่ไหน ใครได้รับบ้าง และคุณสั่งให้เราหยุดได้อย่างไร",
-  effective: "มีผลบังคับใช้ [วันที่มีผลบังคับใช้] · ปรับปรุงล่าสุด [วันที่มีผลบังคับใช้]",
+  effective: "มีผลบังคับใช้ 2 กันยายน 2569 · ปรับปรุงล่าสุด 2 กันยายน 2569",
   sections: [
     {
       heading: "1. ผู้ควบคุมข้อมูลส่วนบุคคล",
@@ -98,7 +148,7 @@ const privacyTh: LegalDocument = {
         dl(
           ["ชื่อ-นามสกุล", "[ชื่อ-นามสกุลผู้ควบคุมข้อมูล]"],
           ["ที่อยู่", "[ที่อยู่สำหรับติดต่อ]"],
-          ["อีเมล", "[อีเมลสำหรับติดต่อเรื่องข้อมูลส่วนบุคคล]"],
+          ["อีเมล", "hello@doodee.app"],
         ),
         p(
           "ผู้ควบคุมข้อมูลไม่ได้แต่งตั้งเจ้าหน้าที่คุ้มครองข้อมูลส่วนบุคคล (DPO) การติดต่อทุกเรื่องที่เกี่ยวกับข้อมูลส่วนบุคคลจึงติดต่อที่อีเมลข้างต้นโดยตรง",
@@ -323,11 +373,11 @@ const privacyTh: LegalDocument = {
         dl(
           [
             "Supabase — ที่เก็บไฟล์ภาพ",
-            "[ภูมิภาคเซิร์ฟเวอร์ Supabase]",
+            "จัดเก็บในศูนย์ข้อมูลของ Amazon Web Services ภูมิภาคสิงคโปร์ (ap-southeast-1)",
           ],
           [
             "ฐานข้อมูลและเซิร์ฟเวอร์แอปพลิเคชัน",
-            "[ที่ตั้งเซิร์ฟเวอร์ฐานข้อมูลและแอปพลิเคชัน]",
+            "เซิร์ฟเวอร์แอปพลิเคชันทำงานบน Amazon Web Services (Lightsail) ภูมิภาคสิงคโปร์ (ap-southeast-1) และฐานข้อมูลอยู่บน Supabase ในภูมิภาคเดียวกัน ข้อมูลของคุณจึงถูกเก็บและประมวลผลในประเทศสิงคโปร์",
           ],
           [
             "Google — Firebase Authentication และ Gemini",
@@ -415,7 +465,7 @@ const privacyTh: LegalDocument = {
           "เปิดหรือปิดความยินยอมเรื่องการส่งภาพใบหน้าให้โมเดลภายนอกได้จากหน้าตั้งค่า (จะแสดงเมื่อความสามารถนี้เปิดใช้งานในระบบ)",
         ),
         p(
-          "สิทธิอื่น ๆ ให้ส่งคำขอมาที่ [อีเมลสำหรับติดต่อเรื่องข้อมูลส่วนบุคคล] เราจะตอบกลับภายใน 30 วันนับจากวันที่ได้รับคำขอ และอาจขอให้คุณยืนยันตัวตนก่อน เพื่อไม่ให้มีใครใช้สิทธิแทนคุณได้",
+          "สิทธิอื่น ๆ ให้ส่งคำขอมาที่ hello@doodee.app เราจะตอบกลับภายใน 30 วันนับจากวันที่ได้รับคำขอ และอาจขอให้คุณยืนยันตัวตนก่อน เพื่อไม่ให้มีใครใช้สิทธิแทนคุณได้",
         ),
         p(
           "การถอนความยินยอมมีผลอย่างไร: การถอนมีผลนับจากวันที่ถอนเป็นต้นไป ไม่กระทบการประมวลผลที่ทำไปแล้วโดยชอบก่อนหน้านั้น เมื่อคุณถอนความยินยอมเรื่องการวิเคราะห์ใบหน้าหรือการเก็บภาพ เราจะไม่รับการสแกนใหม่จากบัญชีของคุณ และคุณควรลบการสแกนที่มีอยู่ด้วยหากต้องการให้ข้อมูลเดิมหายไป เพราะการถอนความยินยอมกับการขอให้ลบเป็นคนละคำขอกัน — หากคุณต้องการทั้งสองอย่าง โปรดระบุมาให้ชัดเจน หรือใช้ปุ่มลบบัญชีซึ่งทำให้ทั้งสองอย่างในครั้งเดียว",
@@ -460,13 +510,13 @@ const termsTh: LegalDocument = {
   title: "ข้อกำหนดการใช้งาน",
   subtitle:
     "ข้อตกลงระหว่างคุณกับผู้ให้บริการ DOODEE การกดใช้งานต่อถือว่าคุณยอมรับข้อกำหนดฉบับนี้ กรุณาอ่านข้อ 2 ให้ครบ เพราะเป็นข้อที่บอกว่าบริการนี้ไม่ใช่อะไร",
-  effective: "มีผลบังคับใช้ [วันที่มีผลบังคับใช้] · ปรับปรุงล่าสุด [วันที่มีผลบังคับใช้]",
+  effective: "มีผลบังคับใช้ 2 กันยายน 2569 · ปรับปรุงล่าสุด 2 กันยายน 2569",
   sections: [
     {
       heading: "1. ผู้ให้บริการ และบริการนี้คืออะไร",
       blocks: [
         p(
-          "ผู้ให้บริการคือ [ชื่อ-นามสกุลผู้ควบคุมข้อมูล] บุคคลธรรมดา ที่อยู่ [ที่อยู่สำหรับติดต่อ] ติดต่อได้ที่ [อีเมลสำหรับติดต่อเรื่องข้อมูลส่วนบุคคล]",
+          "ผู้ให้บริการคือ [ชื่อ-นามสกุลผู้ควบคุมข้อมูล] บุคคลธรรมดา ที่อยู่ [ที่อยู่สำหรับติดต่อ] ติดต่อได้ที่ hello@doodee.app",
         ),
         p("DOODEE ให้บริการดังนี้"),
         ul(
@@ -600,16 +650,36 @@ const termsTh: LegalDocument = {
       heading: "8. การคืนเงิน",
       blocks: [
         p(
-          "[ระยะเวลาขอคืนเงิน] — ผู้ให้บริการต้องกำหนดเงื่อนไขการคืนเงินและระยะเวลาที่ขอคืนได้ แล้วเขียนแทนที่วงเล็บนี้ก่อนเปิดขาย ระบบไม่มีกลไกคืนเงินอัตโนมัติ การคืนเงินทุกกรณีทำโดยการโอนคืนด้วยมือและบันทึกสถานะคำสั่งซื้อเป็น “คืนเงินแล้ว”",
+          "โดยหลักแล้วเราไม่คืนเงิน เมื่อผู้ดูแลระบบยืนยันการชำระเงินและเปิดสิทธิ์ให้คุณแล้ว และคุณได้เริ่มใช้สิทธิ์นั้น ค่าบริการถือเป็นอันสิ้นสุด การเปลี่ยนใจภายหลัง การปล่อยให้สิทธิ์หมดอายุโดยไม่ได้ใช้ หรือความไม่พอใจในผลการวิเคราะห์หรือภาพจำลอง ไม่ใช่เหตุในการขอคืนเงิน เพราะการวิเคราะห์ใบหน้าและการจำลองผลลัพธ์เป็นการประมวลผลที่เกิดขึ้นจริงและใช้ทรัพยากรไปแล้วในครั้งที่คุณกดใช้",
+        ),
+        p(
+          "ข้อยกเว้นคือกรณีที่บริการไม่ได้ส่งมอบสิ่งที่คุณจ่ายเงินไป กรณีเหล่านี้เราคืนเงินให้",
+        ),
+        ul(
+          "คุณโอนเงินแล้ว ผู้ดูแลระบบยืนยันการชำระเงินแล้ว แต่สิทธิ์ไม่เคยถูกเปิดให้คุณใช้",
+          "การสแกนไม่สำเร็จจนระบบบันทึกสถานะของการสแกนนั้นว่า “ล้มเหลว” และเราไม่สามารถประมวลผลภาพของคุณให้สำเร็จได้",
+          "การจำลองผลลัพธ์ไม่สำเร็จจนระบบบันทึกสถานะของงานนั้นว่า “ล้มเหลว” และเรนเดอร์ภาพไม่ออก",
+          "บริการขัดข้องต่อเนื่องเป็นเวลานานจนคุณใช้สิทธิ์ที่ซื้อไว้ไม่ได้ตามสมควรตลอดช่วงที่สิทธิ์ยังไม่หมดอายุ",
+        ),
+        p(
+          "หากเป็นความล้มเหลวเป็นครั้งคราว เราจะคืนสิทธิ์ครั้งที่ล้มเหลวนั้นให้คุณใช้ใหม่ก่อนเป็นลำดับแรก ในกรณีภาพตัวอย่าง (preview) ที่เรนเดอร์ไม่สำเร็จ ระบบจะคืนโควตาให้อัตโนมัติ ส่วนกรณีอื่นเราคืนให้ด้วยมือเมื่อคุณแจ้งเข้ามา ถ้าคืนสิทธิ์แล้วยังใช้ไม่ได้ จึงคืนเป็นเงิน",
+        ),
+        p(
+          "วิธีขอคืนเงิน ส่งอีเมลมาที่ hello@doodee.app ระบุหมายเลขคำสั่งซื้อ วันที่โอน และสิ่งที่เกิดขึ้น เราตอบกลับทุกคำขอ",
+        ),
+        p(
+          "การคืนเงินทำด้วยมือ ไม่ใช่ระบบอัตโนมัติ ระบบไม่มีกลไกคืนเงินอัตโนมัติเลย ทุกครั้งคือคนอ่านคำขอ ตรวจสอบ โอนเงินคืน แล้วบันทึกสถานะคำสั่งซื้อนั้นเป็น “คืนเงินแล้ว” จึงต้องใช้เวลา เราไม่รับปากว่าจะคืนเงินได้ทันทีหรือภายในเวลาที่แน่นอน",
+        ),
+        p(
+          "เนื่องจากเรารับชำระเงินด้วยการโอนเท่านั้น การคืนเงินจะโอนกลับไปยังบัญชีธนาคารที่โอนเข้ามา ระบบไม่ได้เก็บเลขบัญชีของคุณไว้ที่ใด เราจึงจะขอให้คุณยืนยันชื่อบัญชีและเลขบัญชีอีกครั้งก่อนโอนคืน",
         ),
         p("สิ่งที่ระบบทำได้จริงในวันนี้"),
         ul(
           "คำสั่งซื้อที่ยังไม่ได้ชำระเงิน ผู้ดูแลระบบยกเลิกได้",
-          "คำสั่งซื้อที่ชำระเงินแล้วจะไม่ถูกยกเลิกโดยอัตโนมัติ เพราะการยกเลิกจะทำให้สิทธิ์ที่ยังใช้งานอยู่ขาดหลักฐานรองรับ การคืนเงินจึงเป็นการตัดสินใจของผู้ให้บริการเป็นราย ๆ ไป",
-          "หากคุณเป็นผู้บริโภคตามกฎหมายคุ้มครองผู้บริโภคของไทย สิทธิตามกฎหมายของคุณไม่ถูกจำกัดโดยข้อกำหนดข้อนี้",
+          "คำสั่งซื้อที่ชำระเงินแล้วจะไม่ถูกยกเลิกโดยอัตโนมัติ เพราะการยกเลิกจะทำให้สิทธิ์ที่ยังใช้งานอยู่ขาดหลักฐานรองรับ การคืนเงินจึงบันทึกไว้เป็นสถานะ “คืนเงินแล้ว” บนคำสั่งซื้อนั้นแทน",
         ),
         p(
-          "หากต้องการขอคืนเงิน ให้ติดต่อ [อีเมลสำหรับติดต่อเรื่องข้อมูลส่วนบุคคล] พร้อมระบุหมายเลขคำสั่งซื้อและวันที่โอน",
+          "ข้อกำหนดข้อนี้ไม่ได้ตัดหรือจำกัดสิทธิของคุณในฐานะผู้บริโภคตามกฎหมายไทย หากกฎหมายให้สิทธิคุณมากกว่าที่เขียนไว้ข้างต้น ให้ถือตามกฎหมาย",
         ),
       ],
     },
@@ -707,7 +777,7 @@ const privacyEn: LegalDocument = {
   title: "Privacy Policy",
   subtitle:
     "DOODEE analyses photographs of your face. A face photograph is biometric data, which Thailand's Personal Data Protection Act B.E. 2562 (2019) treats as sensitive personal data. This document says what we collect, how long we keep it, who else receives it, and how you tell us to stop.",
-  effective: "Effective [EFFECTIVE DATE] · Last updated [EFFECTIVE DATE]",
+  effective: "Effective 2 September 2026 · Last updated 2 September 2026",
   sections: [
     {
       heading: "1. Who the data controller is",
@@ -718,7 +788,7 @@ const privacyEn: LegalDocument = {
         dl(
           ["Full name", "[DATA CONTROLLER FULL NAME]"],
           ["Address", "[CONTACT ADDRESS]"],
-          ["Email", "[PRIVACY CONTACT EMAIL]"],
+          ["Email", "hello@doodee.app"],
         ),
         p(
           "No Data Protection Officer has been appointed. Every request about your personal data goes to the email address above.",
@@ -933,10 +1003,13 @@ const privacyEn: LegalDocument = {
           "The providers in section 6 are outside Thailand, so your data is stored or processed abroad. As far as is known at the time of writing:",
         ),
         dl(
-          ["Supabase — image storage", "[SUPABASE STORAGE REGION]"],
+          [
+            "Supabase — image storage",
+            "Held in Amazon Web Services data centres in the Singapore region (ap-southeast-1).",
+          ],
           [
             "Database and application servers",
-            "[DATABASE AND APPLICATION SERVER LOCATION]",
+            "The application servers run on Amazon Web Services (Lightsail) in the Singapore region (ap-southeast-1), and the database is on Supabase in the same region. Your data is therefore stored and processed in Singapore.",
           ],
           [
             "Google — Firebase Authentication and Gemini",
@@ -1014,7 +1087,7 @@ const privacyEn: LegalDocument = {
           "Turn the \"send my face photograph to an external model\" consent on or off in Settings (shown when that capability is enabled on the service).",
         ),
         p(
-          "For anything else, email [PRIVACY CONTACT EMAIL]. We will respond within 30 days of receiving your request, and may ask you to verify your identity first so that nobody can exercise your rights on your behalf.",
+          "For anything else, email hello@doodee.app. We will respond within 30 days of receiving your request, and may ask you to verify your identity first so that nobody can exercise your rights on your behalf.",
         ),
         p(
           "What withdrawing consent does: it takes effect from the moment you withdraw and does not make lawful earlier processing unlawful. If you withdraw consent to facial analysis or to image storage, we will not accept new scans from your account, and you should also delete your existing scans if you want the earlier data gone — withdrawing consent and requesting erasure are two different requests. If you want both, say so, or use the delete-account button, which does both at once.",
@@ -1059,13 +1132,13 @@ const termsEn: LegalDocument = {
   title: "Terms of Service",
   subtitle:
     "The agreement between you and the provider of DOODEE. Continuing to use the service means you accept these terms. Please read section 2 in full — it is the section that says what this service is not.",
-  effective: "Effective [EFFECTIVE DATE] · Last updated [EFFECTIVE DATE]",
+  effective: "Effective 2 September 2026 · Last updated 2 September 2026",
   sections: [
     {
       heading: "1. Who provides this, and what it is",
       blocks: [
         p(
-          "The provider is [DATA CONTROLLER FULL NAME], an individual, of [CONTACT ADDRESS], contactable at [PRIVACY CONTACT EMAIL].",
+          "The provider is [DATA CONTROLLER FULL NAME], an individual, of [CONTACT ADDRESS], contactable at hello@doodee.app.",
         ),
         p("DOODEE does the following:"),
         ul(
@@ -1197,16 +1270,36 @@ const termsEn: LegalDocument = {
       heading: "8. Refunds",
       blocks: [
         p(
-          "[REFUND WINDOW] — the provider must decide the refund conditions and the period in which a refund can be requested, and replace this bracket before selling. The system has no automated refund path; every refund is a manual transfer with the order marked \"refunded\" afterwards.",
+          "As a general rule we do not give refunds. Once an administrator has confirmed your payment, your access has been granted, and you have begun using it, the payment is final. Changing your mind, letting access expire without using it, or being unhappy with an analysis or a simulated image are not grounds for a refund — the face analysis and the simulation are real processing that has already been done and already cost us to run at the moment you asked for it.",
+        ),
+        p(
+          "The exception is where the service failed to deliver what you paid for. In these cases you get your money back:",
+        ),
+        ul(
+          "You transferred the money, an administrator confirmed the payment, but access was never opened to you.",
+          "A scan did not succeed — the system recorded that scan as \"failed\" — and we could not process your photograph.",
+          "A simulation did not succeed — the system recorded that job as \"failed\" — and no image was rendered.",
+          "The service was down or broken for long enough that you could not reasonably use the access you had bought while it was still valid.",
+        ),
+        p(
+          "For an occasional failure, our first step is to give the failed use back to you rather than the money. When a preview fails to render the system returns the quota automatically; in the other cases we return it by hand once you tell us. If the returned use still does not work, we refund.",
+        ),
+        p(
+          "To request a refund, email hello@doodee.app with your order number, the date of the transfer, and what happened. We answer every request.",
+        ),
+        p(
+          "Refunds are processed by a person, not automatically. There is no automated refund path in the system at all: every refund is a human reading the request, checking it, transferring the money back, and then marking that order \"refunded\". That takes time, and we do not promise an instant refund or a fixed turnaround.",
+        ),
+        p(
+          "Because we only accept bank transfer, a refund is returned to the bank account the payment came from. The system stores no account number of yours anywhere, so we will ask you to confirm the account name and number before we transfer.",
         ),
         p("What the system can actually do today:"),
         ul(
           "An unpaid order can be cancelled by an administrator.",
-          "A paid order is not cancelled automatically, because cancelling it would strip the record from behind access that is still running. A refund is therefore a decision made case by case.",
-          "If you are a consumer under Thai consumer protection law, nothing in this section limits your statutory rights.",
+          "A paid order is not cancelled automatically, because cancelling it would strip the record from behind access that is still running. A refund is recorded as the status \"refunded\" on that order instead.",
         ),
         p(
-          "To request a refund, contact [PRIVACY CONTACT EMAIL] with your order number and the date of transfer.",
+          "Nothing in this section removes or limits your rights as a consumer under Thai law. Where the law gives you more than is written above, the law applies.",
         ),
       ],
     },
