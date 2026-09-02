@@ -68,7 +68,7 @@
       **Session pooler** URI → `DATABASE_URL` · **Direct connection** URI → `MIGRATION_DATABASE_URL`
       (compose.prod บังคับให้มีทั้งคู่ ไม่มีแล้วไม่ยอมขึ้น)
 - [ ] `firebase-service-account.json` ของ project ใหม่
-- [ ] VPS Ubuntu 24.04 สิงคโปร์ 8GB · จด public IP
+- [ ] VPS Ubuntu 24.04 สิงคโปร์ **2GB ก็พอ, 4GB สบาย** (ดู "เครื่องต้องใหญ่แค่ไหน" ท้ายไฟล์) · จด public IP
 - [ ] A record `api.doodee.app` → IP ของ VPS (ตั้งไว้ล่วงหน้าแล้วรอ DNS กระจาย)
 
 ตรวจว่า DNS พร้อมจริงก่อนไปต่อ:
@@ -340,3 +340,41 @@ docker compose -f compose.yaml -f compose.prod.yaml up -d --build
 ฐานข้อมูลอยู่ที่ Supabase ไม่ได้อยู่ในเครื่อง — ลบ container ทิ้งข้อมูลไม่หาย
 แต่ **migration ไม่ถอยกลับเอง** ถ้า deploy ที่พังมี migration ต้องถอยด้วย `migrate doodee <หมายเลขก่อนหน้า>`
 โดยชี้ `DATABASE_URL` ไปที่ **direct URI** ชั่วคราว ไม่ใช่ pooler
+
+---
+
+# เครื่องต้องใหญ่แค่ไหน — วัดแล้ว
+
+เดิมไฟล์นี้เขียนว่า 8GB โดยไม่มีการวัดรองรับ นี่คือตัวเลขจริง
+
+**วิธีวัด** — sample `docker stats` ทุกวินาที ระหว่างสั่ง render จริงหกครั้ง สองเธรดพร้อมกัน
+(ตรงกับ `--concurrency=2` ของ worker บน production) ที่ `max_side=1280`:
+
+```sh
+while true; do docker stats --no-stream --format '{{.Name}} {{.MemUsage}}'; sleep 1; done
+```
+
+| container | idle | peak ตอน render |
+|---|---:|---:|
+| `worker` (render สามมุม ×2 พร้อมกัน) | 238 MiB | **375 MiB** |
+| `api` (ตอนเป็นตัว render เอง) | 253 MiB | **452 MiB** |
+| `beat` | 122 MiB | 122 MiB |
+| `redis` | 11 MiB | 11 MiB |
+| **dev stack รวม** | **679 MiB** | **752 MiB** |
+
+การ render สามมุมหนึ่งครั้งกิน **~140–200 MiB** เหนือ idle · สองงานพร้อมกันไม่ได้กินสองเท่า
+เพราะโมเดล fused กับ mediapipe ใช้ร่วมกัน
+
+**ประมาณการของ production** (ไม่ใช่ผลวัด — prod overlay ต้องต่อ Supabase จึงรันในเครื่องไม่ได้)
+โทโพโลยีจริงมี 8 คอนเทนเนอร์ ตัด `postgres` ออก (ใช้ Supabase) แล้วเพิ่ม `chat-api`,
+`legacy-upload-api`, `maintenance-worker`, `redis-cache`:
+
+```
+api 452 + chat-api ~250 + legacy-upload ~200 + worker 375
+  + maintenance-worker ~240 + beat 122 + redis 11 + redis-cache ~10   ≈ 1.7 GiB peak
+```
+
+**สรุป: 2GB คือขั้นต่ำที่ใช้ได้จริง · 4GB คือสบาย · 8GB ที่เขียนไว้เดิมเกินไปประมาณ 5 เท่า**
+
+> เลขนี้มีผลกับกระเป๋าเงินโดยตรง — 8GB ที่สิงคโปร์ราว $48/เดือน ส่วน 2GB ราว $12
+> ถ้าวันหนึ่งย้ายออกจาก Oracle Always Free ให้ใช้ตารางนี้เลือกขนาด ไม่ใช่เลขที่เดาไว้
