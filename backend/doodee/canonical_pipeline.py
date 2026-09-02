@@ -147,10 +147,11 @@ def scan_face_pose(image):
     rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
     result = _face_landmarker().detect(mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb))
     if not result.face_landmarks:
-        raise ValueError("ไม่พบใบหน้าในภาพ — ลองถ่ายให้หน้าตรงและมีแสงพอ")
+        return _ladder_face_pose(image, "ไม่พบใบหน้าในภาพ — ลองถ่ายให้หน้าตรงและมีแสงพอ")
     points = result.face_landmarks[0]
     if len(points) < REFINED_LANDMARKS:
-        raise ValueError(f"ได้ landmark เพียง {len(points)} จุด (ต้องการ {REFINED_LANDMARKS})")
+        return _ladder_face_pose(
+            image, f"ได้ landmark เพียง {len(points)} จุด (ต้องการ {REFINED_LANDMARKS})")
     landmarks = np.array([[point.x * width, point.y * height, point.z * width] for point in points],
                          dtype=np.float32)
     rotation = np.eye(3, dtype=np.float64)
@@ -161,6 +162,42 @@ def scan_face_pose(image):
         if np.all(norms > 1e-6):
             rotation = block / norms
     return landmarks, rotation
+
+
+def _ladder_face_pose(image, error_message):
+    """`scan_face_pose`'s fallback: the analysis engine's full retry/mirror ladder.
+
+    The analysis engine accepts a scan by retrying detection across several working sizes and,
+    for a hard profile, by locating the face through a mirror before landmarking the original
+    pixels (`analysis_engine._landmarks_with_rotation`). This pipeline used to make exactly one
+    detection pass at one size, so a photograph that the analysis engine had *accepted* — and the
+    customer had paid to simulate — could still die here with "no face found". The rule this
+    function enforces: any image the analysis engine can landmark, the canonical pipeline must
+    also landmark.
+
+    The ladder is called rather than copied. Its scale list (`SCAN_ATTEMPTS`), its two detector
+    configurations and the mirror-crop geometry live in `analysis_engine` and are pinned by the
+    real-photograph tests there; a second copy here would drift. The import is lazy and one-way,
+    so no cycle is possible.
+
+    The ladder returns normalised coordinates and a display pose; this module's convention is
+    pixels plus the raw 3x3 rotation, so the points are scaled and the pose discarded. The
+    rotation it returns is built by `analysis_engine.rotation_from_matrix`, which normalises the
+    same 3x3 block of the MediaPipe transform that `scan_face_pose` normalises itself — the two
+    are the same matrix.
+    """
+    from .analysis_engine import _landmarks_with_rotation
+
+    try:
+        points, _pose, rotation = _landmarks_with_rotation(image)
+    except ValueError:
+        # The ladder's "face_count" is an internal code; callers of this module get the
+        # user-facing message the single pass would have raised.
+        raise ValueError(error_message) from None
+    height, width = image.shape[:2]
+    landmarks = (np.asarray(points, dtype=np.float64)
+                 * np.array([width, height, width], dtype=np.float64)).astype(np.float32)
+    return landmarks, np.asarray(rotation, dtype=np.float64)
 
 
 def face_height(points):
@@ -1360,7 +1397,19 @@ def simulate_scan_views(scan, sliders, download_fn, *, selections=None, presets=
         if scale < 1.:
             image = cv2.resize(image, (round(width * scale), round(height * scale)),
                                interpolation=cv2.INTER_AREA)
-        points, rotation = scan_face_pose(image)
+        try:
+            points, rotation = scan_face_pose(image)
+        except ValueError as exc:
+            # The comment above the availability check is the contract: profiles are optional,
+            # and fewer angles means a weaker depth estimate, not a broken simulation. So a
+            # profile or oblique the detector cannot read — a future photograph even the retry
+            # ladder in `scan_face_pose` fails on — costs that one view, not the render the
+            # customer already paid for. The front is the reference frame everything else is
+            # aligned onto; without it there is nothing to simulate, so it still raises.
+            if name == "front":
+                raise
+            logger.warning("simulate_scan_views: dropping unreadable view %r (%s)", name, exc)
+            continue
         prepared.append({"name": name, "object_name": object_name, "image": image,
                          "points": points, "rotation": rotation})
     if not prepared:

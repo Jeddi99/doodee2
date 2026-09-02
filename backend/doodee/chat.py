@@ -38,7 +38,10 @@ class ChatUnavailable(RuntimeError):
 
 
 USER_AGENT = "doodee/1.0"
-MODEL = "gemini-2.5-flash"
+# gemini-2.5-flash was retired for new projects ("no longer available to new users... use
+# gemini-3.6-flash"), and this fallback is what a fresh deployment runs on before anyone
+# creates a ChatSetting row.
+MODEL = "gemini-3.6-flash"
 MAX_TOKENS = 1000
 # This is an explanatory Q&A over a dozen numbers, not agentic work. Low effort keeps both the
 # per-turn cost (~฿0.6) and the wait (a few seconds, since gunicorn's sync workers cannot

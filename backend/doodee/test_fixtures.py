@@ -29,7 +29,7 @@ from pathlib import Path
 
 from django.test import SimpleTestCase
 
-from . import analysis_engine, skin_engine
+from . import analysis_engine, canonical_pipeline, skin_engine
 
 FIXTURES = Path(__file__).resolve().parents[1] / "datamock"
 
@@ -63,8 +63,20 @@ PICKED = {
 }
 
 
+# The photograph at the centre of the paid-simulation failure: a hard left profile (yaw ~-64)
+# that the analysis engine only reads through its retry/mirror ladder. The primary detector
+# misses it at every working size in both engines, so it is the one fixture that proves the
+# canonical pipeline's fallback is real rather than the easy path wearing a new name.
+LADDER_ONLY = "upload-left-profile-mirror.jpg"
+
+
 def available():
     return all((FIXTURES / name).exists() for name in POSED.values())
+
+
+def parity_available():
+    return all((FIXTURES / name).exists()
+               for name in (LADDER_ONLY, "upload-front.jpg", "fail-no-face.jpg"))
 
 
 def read(name):
@@ -423,3 +435,101 @@ class SkinScanModeTest(SimpleTestCase):
                 {"front": read("fail-dark.jpg")}, age_band="adult", scan_mode="skin",
             )
         self.assertTrue(str(caught.exception).startswith("poor_lighting"), caught.exception)
+
+
+@unittest.skipUnless(parity_available(), REGENERATE)
+class CanonicalDetectionParityTest(SimpleTestCase):
+    """The two engines must agree on what a face is, because money changes hands between them.
+
+    The analysis engine decides whether a scan is *accepted*; the canonical pipeline is what the
+    customer then *pays* to run simulations on. When the first said yes and the second said
+    "ไม่พบใบหน้าในภาพ" on the very same photograph, the product took the money and then failed its
+    core feature. These tests pin both halves of the fix: the canonical pipeline now climbs the
+    same retry/mirror ladder before giving up, and when a future photograph defeats even the
+    ladder, only the optional view is lost rather than the whole simulation.
+    """
+
+    def _decode(self, name):
+        import cv2
+        import numpy as np
+
+        image = cv2.imdecode(np.frombuffer(read(name), np.uint8), cv2.IMREAD_COLOR)
+        self.assertIsNotNone(image, f"{name} did not decode")
+        return image
+
+    def test_the_fixture_still_requires_the_ladder(self):
+        """The premise, pinned: one canonical detection pass at native size misses this face.
+
+        If a future MediaPipe model finds this profile in a single pass, the test below stops
+        exercising the fallback without anyone noticing. This test makes that event loud, so the
+        fixture gets replaced with one that is hard again rather than the ladder silently losing
+        its only witness.
+        """
+        import cv2
+        import mediapipe as mp
+
+        image = self._decode(LADDER_ONLY)
+        result = canonical_pipeline._face_landmarker().detect(mp.Image(
+            image_format=mp.ImageFormat.SRGB, data=cv2.cvtColor(image, cv2.COLOR_BGR2RGB)))
+        self.assertFalse(
+            result.face_landmarks,
+            f"{LADDER_ONLY} is now found in a single pass — it no longer proves the ladder runs. "
+            "Replace it with a profile the primary detector still misses.",
+        )
+
+    def test_a_scan_the_analysis_engine_accepts_is_usable_by_the_canonical_pipeline(self):
+        """The exact reported failure. Both engines read the photograph, and read the same head.
+
+        Asserting the yaw, not merely that something came back: the fallback landmarks a crop
+        found through a mirror, and a mis-mapped crop would return 478 plausible points of the
+        wrong face region. A yaw agreeing with the analysis engine (opposite sign — the two
+        modules define positive yaw in opposite directions, verified on every fixture) cannot
+        come from a face found in the wrong place.
+        """
+        image = self._decode(LADDER_ONLY)
+        _, pose = analysis_engine._landmarks(image)
+        self.assertLess(pose["yaw"], -40, f"premise broken: {LADDER_ONLY} is not a hard left profile")
+
+        points, rotation = canonical_pipeline.scan_face_pose(image)
+        self.assertEqual(points.shape, (478, 3))
+        canonical_yaw = canonical_pipeline.yaw_degrees(rotation)
+        self.assertGreater(canonical_yaw, 40,
+                           f"canonical yaw {canonical_yaw:.1f} does not match the analysis "
+                           f"engine's {pose['yaw']:.1f} (conventions are opposite-signed)")
+        # The landmarks are in pixels of this image, like every other scan_face_pose result.
+        height, width = image.shape[:2]
+        self.assertGreater(canonical_pipeline.face_height(points), height * .2)
+        self.assertLessEqual(points[:, 0].max(), width * 1.1)
+
+    def _scan(self, image_objects):
+        class Scan:
+            pass
+
+        scan = Scan()
+        scan.image_objects = image_objects
+        return scan
+
+    def test_a_simulation_survives_a_profile_view_with_no_readable_face(self):
+        """`simulate_scan_views` documents that profiles are optional; now failure agrees.
+
+        The right-profile slot holds a landscape with no face in it — beyond what any ladder can
+        ever read — and the simulation completes on the front alone instead of dying with the
+        error the customer was told could not happen to an accepted scan.
+        """
+        blobs = {"front-object": read("upload-front.jpg"),
+                 "profile-object": read("fail-no-face.jpg")}
+        result = canonical_pipeline.simulate_scan_views(
+            self._scan({"front": "front-object", "right_profile": "profile-object"}),
+            {}, blobs.__getitem__,
+        )
+        self.assertEqual(sorted(result["views"]), ["front"])
+        self.assertTrue(result["views"]["front"]["encoded"], "the surviving view rendered nothing")
+
+    def test_a_front_view_with_no_readable_face_still_fails_the_simulation(self):
+        """The front is the reference frame; without it there is nothing to degrade to."""
+        blobs = {"front-object": read("fail-no-face.jpg")}
+        with self.assertRaises(ValueError) as caught:
+            canonical_pipeline.simulate_scan_views(
+                self._scan({"front": "front-object"}), {}, blobs.__getitem__,
+            )
+        self.assertIn("ไม่พบใบหน้าในภาพ", str(caught.exception))
