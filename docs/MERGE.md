@@ -181,51 +181,65 @@ chi-square ถึงค่าเฉลี่ยอ้างอิง ส่ว�
 
 > `medical_references.py` **ไม่พอร์ต** — ไม่มีไฟล์ข้อมูล และคีย์ด้วย preset_id ที่กำลังจะลบ
 
-### Phase 3 — ชั้นจำลองให้ครบ
+### Phase 3 — เหลือ renderer เดียว ✅ เสร็จแล้ว
 
-(การสลับแคตตาล็อกกับ intensity ลงไปแล้วใน Phase 0 — ที่เหลือคือทำให้ครบ)
+commit `0dbcea7` · `259bb95` · `f1347e2` · `666bcf7`
 
-- ลบ legacy `simulation_engine.simulate()` — เหลือ renderer เดียว
-- serve `Simulation.view_objects` (เขียนแล้วแต่ไม่มีใครอ่าน)
-- ส่ง `refine=False` สำหรับ preview ให้ตรงกับที่ docstring อ้างไว้
+**reference-target บน canonical** — เดิมทำไม่ได้เพราะ fused engine รัน slider บนโมเดล 3D แล้ว
+project กลับ จึงไม่มีลูปที่เล็งไปยังค่าที่วัดได้ · `solve_reference_sliders` คือลูปนั้น:
+bisection บน landmark อย่างเดียว 12 รอบ ก่อนแตะ pixel · ของจริง — คางเข้าเป้าพอดีที่ setting 83.69
 
-**reference-target บน canonical engine** — ตัวที่ต้องคิดใหม่ ไม่ใช่การย้ายโค้ด
+> **กับดักที่เกือบพลาด:** `chin_height` ในระบบคือ stomion→gnathion **ไม่ใช่** ขอบริมฝีปาก 17→152
+> เวอร์ชันแรกใช้ตัวหลัง ผิดไป 40% ซึ่งมากกว่าการเปลี่ยนแปลงที่กำลัง solve หาทั้งก้อน
+> จับได้ตอนวัดกับสแกนจริง · ตอนนี้ parity 0.1–1.4% และมีเทสต์อ่าน `analysis_engine.py` มาตรึง
 
-legacy ทำได้เพราะมันขยับ control point บนภาพเดียวจนวัดได้ตามเป้า · fused engine รัน slider บนโมเดล
-3D แล้ว project กลับ จึงไม่มีลูปแบบนั้น
+**ทำไม legacy renderer ถึงยังอยู่มาตลอด** — ไม่ใช่เพราะ reference target แต่เพราะ
+`engine_for_selections` ต้องการครบสามมุม ส่วน `fast` scan ถ่าย **oblique ไม่ใช่ profile** ·
+วัดแล้วพบว่า `fuse_views` ไม่เคยต้องการสามมุมเลย (fuse 3/2/1 มุมให้ displacement เท่ากัน) ·
+เปลี่ยนเป็น "มีภาพหน้าตรงก็พอ" → fast scan ได้แคตตาล็อก 72 หัตถการแทนที่จะไม่ได้อะไรเลย
+→ legacy ไม่มีใครเรียก → ลบ (`simulation_engine` สั้นลง 631 บรรทัด, ลบ `procedures.py`)
 
-แนวทาง: `reference_scoring.reference_target()` ให้ ratio เป้าหมาย → **solve หา slider setting ด้วย
-bisection บน landmark อย่างเดียว** (`morph_fused` + `project_to_view` + วัด ไม่ต้อง warp ภาพ) ราว
-5–8 รอบ ซึ่งถูกมากเพราะไม่แตะ pixel → ได้ setting แล้วค่อย render ครั้งเดียว
+> **เกือบหายไปสองอย่างตอนลบ:**
+> 1. **ลายน้ำ** — `_watermark` อยู่ใน renderer ที่ถูกลบ ส่วน fused engine ไม่วาดอะไรเลย
+>    (`DISCLAIMER_TH` ลอยไม่มีคนเรียก) การลบจึงถอด "EDUCATIONAL SIMULATION" ออกจากทุกภาพ
+>    ย้ายเข้า fused render แล้ว วาดหลังวัดความเปลี่ยนแปลง เพื่อไม่ให้ลายน้ำถูกนับเป็นการเปลี่ยน
+> 2. **แถวที่บันทึกไว้แล้ว** — preset id 24 ตัวเก่าเก็บไว้เป็น input alias เหมือนที่
+>    `procedure_catalog` ทำกับ slug เก่า · แถวที่ worker re-render ไม่ได้คือแถวที่หายไปเงียบ ๆ
 
-ไฟล์: `backend/doodee/simulation_engine.py`, `canonical_pipeline.py`, `procedures.py` (ลบ),
-`views.py`, `serializers.py`
+**ตารางคลินิกหนึ่งเดียว** — `procedure_catalog.MEASUREMENT_PROCEDURES` แทนที่ `procedures=`
+ที่กระจายอยู่ 85 แถว + ลูปใน `development_plan` · มีช่อง `direction` ซึ่งข้อมูลเก่าบอกไม่ได้:
+ตัดปีกจมูกทำให้แคบอย่างเดียว จมูกที่แคบอยู่แล้วจึงไม่ถูกเสนออีก
 
-### Phase 4 — mesh
+**`view_objects`** — worker เขียนมาตลอดตั้งแต่ fused engine เกิด แต่ไม่มี serializer ไหนอ่าน
+สองมุมที่เหลือถูก render อัปโหลด จ่ายเงินเก็บ แล้วเข้าถึงไม่ได้ · เสิร์ฟแล้ว
 
-ต่อ `face_mesh_render.mesh_png()` / `canonical_pipeline.mesh_map()` เข้ากับ route
-`GET /scans/<uuid>/mesh/<view>/` (PNG, `Cache-Control: private, max-age=900`) และ
-`GET /mesh-legend/` (โซน + ป้ายไทย + สี)
+### Phase 4 — mesh ✅ เสร็จแล้ว
 
-### Phase 5 — UI
+commit `4af710a` — `face_mesh_render.py` · `GET /scans/<id>/mesh/<view>/` (PNG, private 900s) ·
+`GET /mesh-legend/` (RGB ไม่ใช่ BGR) · ของจริง: PNG 205KB, 12,975 สี, 8 โซน
 
-- ต่อหน้าจอที่มีอยู่เข้ากับ endpoint ใหม่ — `DashboardPage` Analysis view ยังมี SVG ตกแต่งคงที่,
-  ปุ่ม "Start Angularity/Dimorphism/Features" ที่แค่สลับแท็บ, และ `dimorphism` ที่ล็อกถาวรเพราะ
-  `PILLAR_CATEGORIES.dimorphism = []`
-- เอา capture helper 6 ไฟล์ที่ลอยมาใช้: `captureCandidates`, `captureConfidence`,
-  `capturePerformance`, `captureGuidance`, `facePreview`, `stillFace`
-- `SimulationView` ต้องมี intensity control (ตอนนี้ไม่มี UI เลย ทุกอย่างวิ่งที่ระดับ 3)
+### Phase 5 — UI ✅ หน้าจอ assessment เสร็จแล้ว
 
-> **ห้ามทำซ้ำ `1a9f8f0`** — การพอร์ต UI ก้อนใหญ่ 82,000 บรรทัดถูก revert มาแล้วครั้งหนึ่ง
-> รอบนี้ต่อทีละหน้าจอเข้ากับ UI ที่มีอยู่ ไม่ยก UI อีกฝั่งมาทั้งชุด
+commit `16393b5` — `AssessmentView.jsx` + `assessment.css` (token `--dd-*` เดียวกับ simulation)
 
-### Phase 6 — เทสต์
+findings พร้อมคำตัดสิน · กราฟการกระจาย (histogram + KDE + หมุดของตัวเอง) · คะแนนรายมุม ·
+mesh พร้อม legend · `lib/api.js` ได้ `getScanAssessment` `getMetricCatalog` `getScanMesh` `getMeshLegend`
 
-`canonical_pipeline`, `surface_effects`, `procedure_catalog`, `flux_refine`, `geometry_controls`
-ไม่มีเทสต์อ้างถึงเลยในทั้งสามไฟล์เทสต์ · ยก `test_simulation_pipeline.py` (626 บรรทัด) จาก
-doodoodeedee มาแล้วปรับให้เข้ากับ schema ที่นี่
+ความรุนแรงเป็นแถบขอบซ้าย ไม่ใช่สีทั้งการ์ด — การ์ดแดงเต็มหน้าอ่านเป็นคำตัดสินต่อตัวคน
 
----
+> **ยังเหลือใน Phase 5:** `CATALOG_NAME_TO_METRIC` + `analysisCatalog` 102 รายการ hardcode
+> ในหน้า measurement library ยังไม่ได้เปลี่ยนไปใช้ `/metric-catalog/` · `PILLAR_CATEGORIES.dimorphism`
+> ยังล็อก · capture helper 6 ไฟล์ยังลอย
+
+### Phase 6 — เทสต์ ✅ เสร็จแล้ว
+
+commit `4b772b8` — ยก `test_simulation_pipeline.py` มา **36 tests ผ่านหมดโดยไม่ต้องแก้**
+ซึ่งเป็นผลลัพธ์ที่มีความหมายเอง: แคตตาล็อก, surface pipeline และ refine planner ที่นี่
+ยังเข้ากันได้กับที่เขียนไว้ หลังแก้ทั้งสามอย่างมาแปด commit
+
+รวม **825 backend tests** · ทุกโมดูลใน `backend/doodee/` มีคน import แล้ว ·
+เหลือ `canonical_pipeline.mesh_map` ฟังก์ชันเดียวที่ไม่มีคนเรียก — wireframe overlay ที่ไม่มีหน้าจอไหนขอ
+ไม่ลบและไม่ต่อไปยังการใช้งานที่กุขึ้น
 
 ## ความเสี่ยง
 
