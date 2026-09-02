@@ -81,6 +81,11 @@
       {% if overview.referrals.held %}<small>รอคนอนุมัติหรือปฏิเสธ</small>{% endif %}
     </a>
     <a class="ops-card" href="{% url 'admin:doodee_subscription_changelist' %}"><span>หมดอายุใน 7 วัน</span><strong>{{ overview.expiring_week }}</strong></a>
+    {# เงินเข้า — คิวที่ต้องเคลียร์ทุกวัน ไม่มีใครได้สิทธิ์ที่จ่ายไปแล้วจนกว่าจะมีคนกดยืนยัน #}
+    <a class="ops-card{% if overview.orders.count %} is-alert{% endif %}" href="{% url 'admin:doodee_order_changelist' %}?status__exact=pending">
+      <span>รอยืนยันการชำระเงิน</span><strong>{{ overview.orders.count }}</strong>
+      {% if overview.orders.count %}<small>รวม ฿{{ overview.orders.total|satang }} — ติ๊กแล้วเลือก "ยืนยันการชำระเงิน"</small>{% endif %}
+    </a>
     {# is-alert เพราะแต่ละรายการคือคนที่รอเงินอยู่ ไม่ใช่แค่ตัวเลข #}
     <a class="ops-card{% if overview.withdrawals.count %} is-alert{% endif %}" href="{% url 'admin:doodee_withdrawalrequest_changelist' %}?status__exact=pending">
       <span>รอโอนเงินคืน</span><strong>{{ overview.withdrawals.count }}</strong>

@@ -285,6 +285,19 @@ def process_simulation(simulation_id):
         ).update(count=F("count") - 1)
 
 
+#: How many times a heavy job may be picked up before it is called failed rather than retried.
+#:
+#: `reconcile_heavy_jobs` resets anything stuck in PROCESSING back to QUEUED and dispatches it
+#: again, every minute, forever. A scan that reliably kills its worker — a decode that segfaults
+#: mediapipe, an image the detector hangs on — therefore cycles for as long as the row exists,
+#: burning a worker slot a minute and never telling anybody. `attempt_count` was being
+#: incremented for exactly this and read by nothing.
+#:
+#: Five, because the legitimate reason to be reset is a worker restart mid-job, and five of those
+#: for one scan is already a different problem.
+MAX_HEAVY_ATTEMPTS = 5
+
+
 @shared_task
 def reconcile_heavy_jobs():
     """Re-enqueue DB-authoritative work after a broker or worker restart."""
@@ -295,12 +308,22 @@ def reconcile_heavy_jobs():
     for scan_id in abandoned_uploads:
         cleanup_scan.delay(str(scan_id))
     stale = timezone.now() - timedelta(minutes=5)
-    Scan.objects.filter(status=Scan.Status.PROCESSING, started_at__lt=stale).update(
-        status=Scan.Status.QUEUED, progress=0, started_at=None,
-    )
-    Simulation.objects.filter(status=Simulation.Status.PROCESSING, started_at__lt=stale).update(
-        status=Simulation.Status.QUEUED, progress=0, started_at=None,
-    )
+    # A job that has been picked up too many times is not stuck, it is broken. Failed with a code
+    # the user can be shown, rather than retried until the row expires.
+    Scan.objects.filter(
+        status=Scan.Status.PROCESSING, started_at__lt=stale, attempt_count__gte=MAX_HEAVY_ATTEMPTS,
+    ).update(status=Scan.Status.FAILED, progress=100, error_code="too_many_attempts")
+    Simulation.objects.filter(
+        status=Simulation.Status.PROCESSING, started_at__lt=stale,
+        attempt_count__gte=MAX_HEAVY_ATTEMPTS,
+    ).update(status=Simulation.Status.FAILED, progress=100, error_code="too_many_attempts")
+    Scan.objects.filter(
+        status=Scan.Status.PROCESSING, started_at__lt=stale, attempt_count__lt=MAX_HEAVY_ATTEMPTS,
+    ).update(status=Scan.Status.QUEUED, progress=0, started_at=None)
+    Simulation.objects.filter(
+        status=Simulation.Status.PROCESSING, started_at__lt=stale,
+        attempt_count__lt=MAX_HEAVY_ATTEMPTS,
+    ).update(status=Simulation.Status.QUEUED, progress=0, started_at=None)
     for scan_id in Scan.objects.filter(status=Scan.Status.QUEUED).order_by("created_at").values_list("id", flat=True)[:100]:
         process_scan.delay(str(scan_id))
     for simulation_id in Simulation.objects.filter(status=Simulation.Status.QUEUED).order_by("created_at").values_list("id", flat=True)[:100]:

@@ -1253,6 +1253,106 @@ class NotificationDeliveryTest(TestCase):
         del reload
 
 
+class HeavyJobRetryCapTest(TestCase):
+    """A job that keeps killing its worker must stop being retried.
+
+    `reconcile_heavy_jobs` resets anything stuck in PROCESSING back to QUEUED and dispatches it
+    again, every minute. A scan that reliably crashes — a decode that segfaults mediapipe, an
+    image the detector hangs on — cycled for as long as the row existed, burning a worker slot a
+    minute and telling nobody. `attempt_count` was incremented for exactly this and read by
+    nothing.
+    """
+
+    def setUp(self):
+        self.user = User.objects.create_user("retrier")
+
+    def stuck(self, attempts):
+        return Scan.objects.create(
+            user=self.user, age_band="adult", status=Scan.Status.PROCESSING,
+            attempt_count=attempts, started_at=timezone.now() - timedelta(minutes=10),
+            expires_at=timezone.now() + timedelta(days=1),
+        )
+
+    @patch("doodee.tasks.process_scan.delay")
+    def test_a_job_that_has_not_run_out_of_attempts_is_retried(self, dispatch):
+        from .tasks import MAX_HEAVY_ATTEMPTS, reconcile_heavy_jobs
+
+        scan = self.stuck(MAX_HEAVY_ATTEMPTS - 1)
+        reconcile_heavy_jobs()
+        scan.refresh_from_db()
+        self.assertEqual(scan.status, Scan.Status.QUEUED)
+        dispatch.assert_called_once()
+
+    @patch("doodee.tasks.process_scan.delay")
+    def test_one_that_has_is_failed_with_a_code_rather_than_retried_forever(self, dispatch):
+        from .tasks import MAX_HEAVY_ATTEMPTS, reconcile_heavy_jobs
+
+        scan = self.stuck(MAX_HEAVY_ATTEMPTS)
+        reconcile_heavy_jobs()
+        scan.refresh_from_db()
+        self.assertEqual(scan.status, Scan.Status.FAILED)
+        self.assertEqual(scan.error_code, "too_many_attempts")
+        dispatch.assert_not_called()
+
+    @patch("doodee.tasks.process_simulation.delay")
+    def test_the_same_cap_applies_to_a_simulation(self, dispatch):
+        from .tasks import MAX_HEAVY_ATTEMPTS, reconcile_heavy_jobs
+
+        scan = Scan.objects.create(
+            user=self.user, age_band="adult", status=Scan.Status.COMPLETED,
+            expires_at=timezone.now() + timedelta(days=1),
+        )
+        simulation = Simulation.objects.create(
+            scan=scan, region="jaw", preset_id="1.1", model_version="",
+            status=Simulation.Status.PROCESSING, attempt_count=MAX_HEAVY_ATTEMPTS,
+            started_at=timezone.now() - timedelta(minutes=10),
+            expires_at=timezone.now() + timedelta(days=30),
+        )
+        reconcile_heavy_jobs()
+        simulation.refresh_from_db()
+        self.assertEqual(simulation.status, Simulation.Status.FAILED)
+        self.assertEqual(simulation.error_code, "too_many_attempts")
+        dispatch.assert_not_called()
+
+
+class AdminOverviewOrdersTest(TestCase):
+    """The queue an operator must clear daily to collect money is on the dashboard.
+
+    Withdrawals — money going out — were counted and totalled there. Orders waiting to be
+    confirmed, which is money coming in and the thing a paying customer is waiting on, were not
+    shown at all.
+    """
+
+    def setUp(self):
+        self.user = User.objects.create_user("dash-buyer")
+        self.plan = Plan.objects.get(code="plus")
+        setting = SiteSetting.current()
+        setting.transfer_account_number = "1"
+        setting.slip_contact = "x"
+        setting.save()
+
+    def overview(self):
+        from .admin_site import DoodeeAdminSite
+
+        return DoodeeAdminSite._overview()["overview"]
+
+    def test_pending_orders_are_counted_and_totalled(self):
+        create_order(self.user, self.plan)
+        create_order(self.user, self.plan)
+        orders = self.overview()["orders"]
+        self.assertEqual(orders["count"], 2)
+        self.assertEqual(orders["total"], self.plan.price_satang * 2)
+
+    def test_a_confirmed_order_leaves_the_queue(self):
+        order = create_order(self.user, self.plan)
+        activate(order)
+        self.assertEqual(self.overview()["orders"]["count"], 0)
+
+    def test_an_empty_queue_totals_zero_rather_than_none(self):
+        """`Sum` over no rows is None, and a template that prints it says "None บาท"."""
+        self.assertEqual(self.overview()["orders"], {"count": 0, "total": 0})
+
+
 class ProcedureNamesEnTest(TestCase):
     """Every row carries an English name, and the table names nothing that does not exist.
 

@@ -19,6 +19,7 @@ from django.urls import path
 from django.utils import timezone
 
 from .models import (
+    Order,
     PromoRedemption, Referral, Scan, Simulation, Subscription, WithdrawalRequest,
 )
 
@@ -125,6 +126,14 @@ class DoodeeAdminSite(AdminSite):
             status__in=WithdrawalRequest.OPEN_STATUSES,
         ).aggregate(count=Count("pk"), total=Sum("amount_satang"))
         withdrawals["total"] = withdrawals["total"] or 0
+        # Money coming *in*, and until now the one queue this page did not show. Withdrawals —
+        # money going out — were counted and totalled; the orders an operator has to confirm
+        # before anybody is let in were not. On the manual-transfer path this is the queue the
+        # business runs on: nobody gets what they paid for until somebody looks at it.
+        orders = Order.objects.filter(status=Order.Status.PENDING).aggregate(
+            count=Count("pk"), total=Sum("total_satang"),
+        )
+        orders["total"] = orders["total"] or 0
         expiring = Subscription.objects.filter(
             current_period_end__gt=now, current_period_end__lte=now + timedelta(days=7),
         ).exclude(status=Subscription.Status.CANCELLED).count()
@@ -135,6 +144,7 @@ class DoodeeAdminSite(AdminSite):
                 "redemptions": redemptions,
                 "referrals": referrals,
                 "withdrawals": withdrawals,
+                "orders": orders,
                 "expiring_week": expiring,
                 # A queue that keeps growing is the first sign the Celery worker is wedged or
                 # that MediaPipe is saturating the box — see compose.yaml's --concurrency=2.
