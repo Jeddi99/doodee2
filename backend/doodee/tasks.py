@@ -335,6 +335,20 @@ def _delete_objects(objects):
         delete_image(object_name)
 
 
+def _simulation_objects(simulation):
+    """Every storage key one simulation owns, the per-view renders included.
+
+    `view_objects` was missing from both deletion paths for as long as the field has existed, and
+    the omission was unrecoverable rather than merely late: `Simulation.scan` cascades, so
+    deleting a scan dropped the only row holding these keys before anything deleted the files.
+    Nothing referenced them afterwards, so no later sweep could even enumerate them.
+
+    They are renders of somebody's face. A minor's scan is promised deletion within 24 hours; the
+    renders of that same face were being kept for good.
+    """
+    return (simulation.before_object, simulation.after_object, *simulation.view_objects.values())
+
+
 @shared_task
 def cleanup_expired_data():
     """The retention sweep: expired face photographs and the sessions that carried them.
@@ -363,7 +377,7 @@ def cleanup_scan(scan_id):
         return
     objects = list(scan.image_objects.values())
     for simulation in scan.simulations.all():
-        objects.extend((simulation.before_object, simulation.after_object))
+        objects.extend(_simulation_objects(simulation))
     _delete_objects(objects)
     user_id = scan.user_id
     scan.delete()
@@ -387,7 +401,7 @@ def cleanup_simulation(simulation_id):
     simulation = Simulation.objects.filter(pk=simulation_id).first()
     if not simulation:
         return
-    _delete_objects((simulation.before_object, simulation.after_object))
+    _delete_objects(_simulation_objects(simulation))
     simulation.delete()
 
 

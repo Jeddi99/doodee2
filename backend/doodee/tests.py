@@ -70,7 +70,7 @@ from .reference_scoring import (
     MAX_REFERENCE_SHIFT, REFERENCE_TARGETS, metric_score, reference_for, reference_target, score_observations,
 )
 from .serializers import ScanSerializer
-from .tasks import purge_scan_images
+from .tasks import cleanup_scan, cleanup_simulation, purge_scan_images
 from .simulation_engine import (
     resolve_preset,
 )
@@ -2822,6 +2822,50 @@ class RetentionTest(TestCase):
             call_command("cleanup_expired_data")
         cleanup_scan.assert_called_once_with(str(scan.id))
         cleanup_simulation.assert_called_once_with(str(simulation.id))
+
+    def _simulation_with_views(self):
+        user = User.objects.create_user("retention-views")
+        scan = Scan.objects.create(
+            user=user,
+            age_band=Scan.AgeBand.ADULT,
+            image_objects={"front": "scan/front.jpg"},
+            expires_at=timezone.now() + timedelta(days=1),
+        )
+        simulation = Simulation.objects.create(
+            scan=scan,
+            region="nose",
+            model_version="test",
+            before_object="sim/before.png",
+            after_object="sim/front.png",
+            view_objects={"front": "sim/front.png", "right_profile": "sim/right.png"},
+            expires_at=timezone.now() + timedelta(days=1),
+        )
+        return scan, simulation
+
+    @patch("doodee.tasks.delete_image")
+    def test_deleting_a_scan_deletes_every_rendered_view(self, delete_image):
+        """The per-view renders go with the scan, or they can never be deleted at all.
+
+        `Simulation.scan` cascades, so the row holding `view_objects` disappears the moment the
+        scan does. Anything left behind in storage at that point is unreachable: nothing
+        references it and no later sweep can enumerate it. That made a 24-hour promise to a minor
+        into permanent retention of renders of the same face.
+        """
+        scan, _ = self._simulation_with_views()
+        cleanup_scan(str(scan.id))
+        self.assertEqual(
+            sorted(call.args[0] for call in delete_image.call_args_list),
+            ["scan/front.jpg", "sim/before.png", "sim/front.png", "sim/right.png"],
+        )
+
+    @patch("doodee.tasks.delete_image")
+    def test_deleting_a_simulation_deletes_every_rendered_view(self, delete_image):
+        _, simulation = self._simulation_with_views()
+        cleanup_simulation(str(simulation.id))
+        self.assertEqual(
+            sorted(call.args[0] for call in delete_image.call_args_list),
+            ["sim/before.png", "sim/front.png", "sim/right.png"],
+        )
 
 
 class UserAdminTest(TestCase):
