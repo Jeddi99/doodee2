@@ -29,6 +29,11 @@ import {
   ratioRows,
   METRIC_SIMULATION_REGION,
   METRIC_VIEW,
+  type MetricCategory,
+  pillarOfCategory,
+  /* Imported rather than restated. The union and `PILLAR_CATEGORIES` have to name the same four
+     pillars, and the local copy of both that used to live here is what let them drift apart. */
+  type PillarId,
   type ReferenceCohort,
   referenceCohortFor,
   strengthsFor,
@@ -84,7 +89,6 @@ type AppView =
   | "referral"
   | "profile"
   | "skin";
-type PillarId = "harmony" | "angularity" | "dimorphism" | "features";
 type FaceAngle = "front" | "side";
 type AnalysisMode = "results" | "library";
 
@@ -273,14 +277,11 @@ const PLAN_LABELS: Record<string, string> = {
   clinic: "Clinic partner",
 };
 
-const CATEGORY_PILLAR: Record<string, PillarId> = {
-  proportions: "harmony",
-  chin: "angularity",
-  eyes: "features",
-  nose: "features",
-  lips: "features",
-};
-const pillarOf = (category: string) => CATEGORY_PILLAR[category];
+/* The category-to-pillar map used to be written out again here, and it went stale the moment the
+   fourth pillar was filled: `eyes` still pointed at `features`, so the nose-and-mouth tab listed
+   the two eye measurements under it. It comes from `PILLAR_CATEGORIES` now, which is the table
+   that decides the cards, so the tab and the card can no longer disagree. */
+const pillarOf = (category: string) => pillarOfCategory(category as MetricCategory);
 
 /* qijek's `ratios`, `strengths` and `improvements` fixtures lived here — roughly 435 lines of
  * literal measurements, scores and copy. They are derived from the scan payload now; see

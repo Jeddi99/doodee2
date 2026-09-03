@@ -10,6 +10,7 @@ import {
   deviationStatus,
   improvementsFor,
   overallScore,
+  pillarOfCategory,
   pillarsFor,
   ratioRows,
   referenceCohortFor,
@@ -58,34 +59,42 @@ test('status describes distance from the reference, not a verdict on the face', 
   assert.equal(deviationStatus(-3), 'Beyond two SD');
 });
 
-test('a pillar with no scored category stays locked instead of showing a number', () => {
+test('every pillar on the screen is scored, because every one has categories behind it', () => {
+  /**
+   * The fourth card used to be `dimorphism` with no categories at all: an em dash forever, a
+   * disabled button, and no plan that unlocked it. It could not be filled with a masculinity
+   * figure either — `reference_scoring.REFERENCE` holds a male and a female mean for all twelve
+   * observations, and once they are divided by n-gn the way a photograph forces, seven of the
+   * twelve separate by under 0.2 of a pooled SD. The dimorphism there is overall face size, and
+   * a photograph has no scale to read it with.
+   *
+   * So the four cards are now four groups of real measurements. This is the assertion that keeps
+   * a blank one from coming back: a pillar with nothing behind it is a card that can never say
+   * anything, and it does not belong on the first screen of a product being sold.
+   */
   const pillars = pillarsFor(scan);
   const byId = Object.fromEntries(pillars.map((pillar) => [pillar.id, pillar]));
 
-  assert.equal(byId.harmony.locked, false);
+  assert.equal(pillars.length, 4);
+  assert.deepEqual(pillars.map((pillar) => pillar.locked), [false, false, false, false]);
+  assert.equal(pillars.filter((pillar) => pillar.lockReason === 'unmeasurable').length, 0,
+    'a pillar no reference can measure is back on the screen');
+
   assert.equal(byId.harmony.score, '8.0');
   assert.equal(byId.angularity.score, '9.0');
-  // features averages eyes, nose and lips: (70 + 60 + 50) / 3 = 60
-  assert.equal(byId.features.score, '6.0');
-  assert.equal(byId.features.metricCount, 8);
-
-  assert.equal(byId.dimorphism.locked, true);
-  assert.equal(byId.dimorphism.score, '—');
+  // The eyes stand on their own now: their category scores 70.
+  assert.equal(byId.eyes.score, '7.0');
+  assert.equal(byId.eyes.metricCount, 2);
+  // And the card that was blank carries nose and lips: (60 + 50) / 2 = 55.
+  assert.equal(byId.features.score, '5.5');
+  assert.equal(byId.features.metricCount, 6);
 });
 
-test('a pillar nothing can measure is not the same lock as one this scan did not score', () => {
-  /**
-   * Both render locked, and the difference is what happens on the click: a locked pillar opens
-   * the pricing modal. For `dimorphism` that was selling something that does not exist — no
-   * published reference measures sexual dimorphism, so paying reveals nothing. The reason has
-   * to reach the component, or the component cannot tell the two apart.
-   */
-  const byId = Object.fromEntries(pillarsFor(scan).map((pillar) => [pillar.id, pillar]));
-
-  assert.equal(byId.dimorphism.lockReason, 'unmeasurable');
-  assert.equal(byId.harmony.lockReason, null, 'a scored pillar has nothing to explain');
-  // And it says so in the note, which is what the disabled control shows on hover.
-  assert.match(byId.dimorphism.note, /No published reference/);
+test('the twelve scored observations are all still spoken for, none twice', () => {
+  // Splitting a pillar is where a category quietly goes missing from the screen, or gets counted
+  // in two cards at once and inflates the measurement totals under them.
+  const counts = pillarsFor(scan).reduce((total, pillar) => total + pillar.metricCount, 0);
+  assert.equal(counts, 12, 'the pillars no longer add up to the twelve scored measurements');
 });
 
 test('a scan with no scores locks every pillar as unscored, not as unmeasurable', () => {
@@ -94,7 +103,7 @@ test('a scan with no scores locks every pillar as unscored, not as unmeasurable'
 
   assert.equal(byId.harmony.lockReason, 'not_scored');
   assert.equal(byId.features.lockReason, 'not_scored');
-  assert.equal(byId.dimorphism.lockReason, 'unmeasurable', 'this one is unmeasurable regardless');
+  assert.equal(byId.eyes.lockReason, 'not_scored', 'nothing is unmeasurable any more');
 });
 
 test('every pillar locks when the scan carries no reference scores at all', () => {
@@ -401,7 +410,33 @@ test('a pillar reports how many measurements it rests on', () => {
   const byId = Object.fromEntries(pillarsFor(scan, 'th').map((item) => [item.id, item]));
   assert.equal(byId.harmony.score, '9.9');
   assert.equal(byId.harmony.metricCount, 2, 'the 9.9 must carry the two measurements it came from');
-  // And a pillar nothing measures reports no count rather than a confident zero-of-nothing.
-  assert.equal(byId.dimorphism.metricCount, 0);
-  assert.equal(byId.dimorphism.locked, true);
+  assert.equal(byId.eyes.metricCount, 4);
+  // And a pillar this scan did not score reports no count rather than a confident zero-of-nothing.
+  assert.equal(byId.features.metricCount, 0);
+  assert.equal(byId.features.locked, true);
+});
+
+test('every scored category belongs to exactly one pillar, and the page reads that table', () => {
+  /**
+   * The analysis tab filters its rows with `pillarOf(row.category)`, and that used to be a second
+   * hand-written copy of the mapping inside `DashboardPage.tsx`. When the fourth pillar was
+   * filled the copy was not updated, so opening "จมูกและปาก" listed the two eye measurements
+   * under it — the card said one thing and the tab behind it said another.
+   *
+   * Both halves are asserted: every category the backend scores lands somewhere, and none lands
+   * twice. A category with no pillar disappears from the analysis screen entirely; a category in
+   * two pillars is counted twice under "จาก N ค่าวัด".
+   */
+  const scored = ['proportions', 'eyes', 'nose', 'lips', 'chin'];
+  for (const category of scored) {
+    const owner = pillarOfCategory(category);
+    assert.ok(owner, `${category} belongs to no pillar, so its rows reach no tab`);
+  }
+  const owners = scored.map((category) => pillarOfCategory(category));
+  assert.equal(new Set(owners).size, 4, 'the five categories no longer fill exactly four pillars');
+
+  // And the page must not carry its own copy of the mapping again.
+  const page = readFileSync(fileURLToPath(new URL('../pages/DashboardPage.tsx', import.meta.url)), 'utf8');
+  assert.ok(!/CATEGORY_PILLAR\s*[:=]/.test(page), 'DashboardPage has its own category→pillar table again');
+  assert.match(page, /pillarOfCategory/, 'DashboardPage no longer reads the shared mapping');
 });

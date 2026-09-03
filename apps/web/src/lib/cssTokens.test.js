@@ -67,3 +67,22 @@ test('the spacing scale has no gaps a reader would guess at', () => {
     'the spacing scale changed — update this list deliberately, and check nothing used the old steps',
   );
 });
+
+test('a line meant to sit under the pillar score does not sit on top of it', () => {
+  /**
+   * `.pillar-basis` shipped with `margin-top: -18px`, copied from `.pillar-unlock` next to it —
+   * which is correct there, because it follows a locked card's tall number shell. This line
+   * follows an ordinary `<strong>`, and `.pillar-card` is a plain block, so the negative margin
+   * did the only thing it could: printed "จาก 2 ค่าวัด" straight through the 9.9 and its "/10".
+   *
+   * Its own comment said "under the number rather than beside it", which is what makes this worth
+   * a test rather than a re-read: the intent was recorded correctly and the rule contradicted it,
+   * and nothing in the suite compares the two.
+   */
+  const rule = css.match(/\.pillar-card > span\.pillar-basis \{([^}]*)\}/);
+  assert.ok(rule, '.pillar-basis is gone from styles.css');
+  const margin = rule[1].match(/margin-top:\s*(-?[\d.]+)px/);
+  assert.ok(margin, '.pillar-basis no longer sets margin-top; decide where it sits');
+  assert.ok(Number(margin[1]) >= 0,
+    `.pillar-basis has margin-top: ${margin[1]}px, which lifts it into the score above it`);
+});

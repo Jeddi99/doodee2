@@ -10,7 +10,7 @@
  * Backend scores run 0–100; the qijek UI is a 0–10 scale, so scores are divided by ten.
  */
 
-export type PillarId = 'harmony' | 'angularity' | 'dimorphism' | 'features';
+export type PillarId = 'harmony' | 'angularity' | 'eyes' | 'features';
 export type MetricCategory = 'proportions' | 'eyes' | 'nose' | 'lips' | 'chin';
 /** The two photographs a measurement can be read off. `reference_scoring.SCORED_VIEWS`. */
 export type ScoredView = 'front' | 'side';
@@ -83,14 +83,43 @@ export type Pillar = {
   metricCount: number;
 };
 
-/** Which reference_scoring categories feed each qijek pillar. Empty means the pillar stays locked. */
+/**
+ * Which reference_scoring categories feed each qijek pillar. Empty means the pillar stays locked.
+ *
+ * The fourth card used to be `dimorphism`, and it was empty on purpose: no published reference
+ * measures sexual dimorphism from a photograph, so it showed an em dash forever, could not be
+ * clicked, and no plan unlocked it. Filling it with a masculinity figure was never an option —
+ * `reference_scoring.REFERENCE` carries a male and a female mean for all twelve observations, and
+ * once they are divided by n-gn the way a photograph forces (there is no scale in a photo), the
+ * two collapse: seven of the twelve separate by under 0.2 of a pooled SD and eleven by under 0.5.
+ * The dimorphism in that cohort is almost entirely overall size — 120.6 mm of facial height
+ * against 110.8 — which is the one thing a photograph cannot read. Only the nasofrontal angle
+ * reaches 0.8, and a pillar built on one angle would be a coin flip wearing a decimal point.
+ *
+ * So the fourth card is filled from measurements that are real instead. `features` was carrying
+ * eight of the twelve averaged into a single number, which hid more than it showed; the eyes now
+ * stand on their own and the card that was dead carries the nose and mouth. Nothing was invented
+ * and nothing was dropped — all twelve observations are still scored, in four groups instead of
+ * three plus a blank.
+ */
 const PILLAR_CATEGORIES: Record<PillarId, MetricCategory[]> = {
   harmony: ['proportions'],
   angularity: ['chin'],
-  features: ['eyes', 'nose', 'lips'],
-  // No published reference measures sexual dimorphism, so this pillar has nothing to unlock.
-  dimorphism: [],
+  eyes: ['eyes'],
+  features: ['nose', 'lips'],
 };
+
+/**
+ * Which pillar a scored category belongs to — the inverse of the table above.
+ *
+ * Derived rather than written down. `DashboardPage` kept its own copy of this mapping, and when
+ * the fourth card was filled the copy was not updated, so the analysis tab for "nose and mouth"
+ * listed the two eye measurements under it. A second table nothing checks is a second answer to
+ * the same question; this one cannot disagree with `PILLAR_CATEGORIES` because it is built from it.
+ */
+export const pillarOfCategory = (category: MetricCategory): PillarId | undefined =>
+  (Object.keys(PILLAR_CATEGORIES) as PillarId[])
+    .find((id) => PILLAR_CATEGORIES[id].includes(category));
 
 /**
  * A pillar names the measurements behind it, not a quality of the face.
@@ -105,14 +134,14 @@ const PILLAR_LABELS: Record<'th' | 'en', Record<PillarId, { label: string; note:
   th: {
     harmony: { label: 'สัดส่วนความสูงใบหน้า', note: 'ความสูงของกลางหน้าและหน้าส่วนล่าง เทียบค่าอ้างอิง' },
     angularity: { label: 'คาง', note: 'ความสูงและความกว้างของคาง เทียบค่าอ้างอิง' },
-    dimorphism: { label: 'เอกลักษณ์เฉพาะ', note: 'ยังไม่มีงานวิจัยที่ให้ค่ามาตรฐานไว้ จึงให้คะแนนไม่ได้' },
-    features: { label: 'ตา จมูก ปาก', note: 'สัดส่วนของตา จมูกและปาก เทียบค่าอ้างอิง' },
+    eyes: { label: 'ดวงตา', note: 'ระยะระหว่างหัวตาและความกว้างของตา เทียบค่าอ้างอิง' },
+    features: { label: 'จมูกและปาก', note: 'ความกว้างจมูก มุมจมูก และความหนาของริมฝีปาก เทียบค่าอ้างอิง' },
   },
   en: {
     harmony: { label: 'Facial height', note: 'Midface and lower-face height against the reference' },
     angularity: { label: 'Chin', note: 'Chin height and width against the reference' },
-    dimorphism: { label: 'Dimorphism', note: 'No published reference measures this, so it cannot be scored' },
-    features: { label: 'Features', note: 'Eye, nose and lip proportions against the reference' },
+    eyes: { label: 'Eyes', note: 'Intercanthal width and eye fissure against the reference' },
+    features: { label: 'Nose and mouth', note: 'Nasal width, nasal angles and lip thickness against the reference' },
   },
 };
 

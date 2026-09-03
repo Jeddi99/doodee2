@@ -509,9 +509,14 @@ body:has(.doodee-app),
 }
 
 /* What the score rests on, under the number rather than beside it: two measurements and twelve
-   produce numbers that look equally confident, and only one of them is. */
+   produce numbers that look equally confident, and only one of them is.
+ *
+ * Positive, and the sibling rules below are why it has to be said out loud. `.pillar-unlock` pulls
+ * itself up by 24px because it follows a locked card's tall number shell; this line follows an
+ * ordinary `<strong>` and copying that offset printed "จาก 2 ค่าวัด" straight through the score and
+ * its "/10". The card is a plain block, so a negative top margin here can only mean overlap. */
 .pillar-card > span.pillar-basis {
-  margin-top: -18px;
+  margin-top: 6px;
   font-size: .68rem;
   font-weight: 600;
   letter-spacing: .01em;
@@ -15008,7 +15013,7 @@ body[data-locale="th"] .eyebrow {
 
 .pillar-art--angularity { background-position: 33.333% 50%; transform: rotate(5deg); }
 
-.pillar-art--dimorphism { background-position: 66.666% 50%; }
+.pillar-art--eyes { background-position: 66.666% 50%; }
 
 .pillar-art--features { background-position: 100% 50%; transform: rotate(4deg); }
 
