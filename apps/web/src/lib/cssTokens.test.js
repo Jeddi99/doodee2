@@ -86,3 +86,23 @@ test('a line meant to sit under the pillar score does not sit on top of it', () 
   assert.ok(Number(margin[1]) >= 0,
     `.pillar-basis has margin-top: ${margin[1]}px, which lifts it into the score above it`);
 });
+
+test('a withheld measurement keeps its name and loses only its numbers', () => {
+  /**
+   * The owner asked for the numbers to be blurred, not the row. `.ratio-row.is-locked strong` is
+   * the metric's own name, and blurring it left a smear where "ความสูงของคาง" should be — the
+   * reader could not tell what was being withheld, so the padlock read as something broken rather
+   * than as something for sale. The server sends the key and the name of a withheld row for
+   * exactly this; see `percentile.redact_reference_scores`.
+   */
+  // Comments stripped first: a selector capture that runs back to the previous `}` swallows any
+  // comment above the rule, and none of these selectors would compare equal to anything.
+  const bare = css.replace(/\/\*[\s\S]*?\*\//g, '');
+  const blurred = [...bare.matchAll(/([^{}]*)\{[^}]*filter:\s*blur\([^)]*\)[^}]*\}/g)]
+    .flatMap(([, selectors]) => selectors.split(','))
+    .map((selector) => selector.trim());
+  assert.ok(blurred.some((selector) => selector === '.ratio-row.is-locked .ratio-score'),
+    'the withheld score is no longer blurred');
+  assert.ok(!blurred.includes('.ratio-row.is-locked strong'),
+    'the name of a withheld measurement is being blurred along with its numbers');
+});

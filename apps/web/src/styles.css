@@ -11205,9 +11205,16 @@ body:has(.results-page) {
 .ratio-row em svg { width: 16px; color: var(--app-muted); }
 .ratio-score { font-size: 11px; font-weight: 650; text-align: right; }
 .ratio-row > svg { width: 12px; color: var(--app-muted); transform: rotate(-90deg); }
-.ratio-row.is-locked strong,
+/* The name of a withheld measurement stays legible; only its figures are blurred.
+ *
+ * `strong` here is the metric's own name, and blurring it made the row unreadable in both
+ * directions: the reader could not see what was being withheld, so the padlock read as a fault
+ * rather than as an offer. The server sends the key and the name of a withheld row precisely so
+ * the screen can say a measurement exists without saying what it says — blurring the name threw
+ * that away. See `percentile.redact_reference_scores`. */
 .ratio-row.is-locked .ratio-score { filter: blur(4px); user-select: none; }
 .ratio-row.is-locked .ratio-row__track { filter: blur(3px); opacity: .48; }
+.ratio-row.is-locked strong { color: var(--app-muted); }
 .ratio-show-more { width: 100%; min-height: 42px; margin-top: 12px; display: flex; align-items: center; justify-content: center; gap: 7px; border: 1px solid rgba(255,255,255,.84); border-radius: 13px; background: rgba(231,242,252,.68); color: #4f5e72; font-size: 10px; }
 .ratio-show-more svg { width: 13px; }
 
@@ -11412,6 +11419,9 @@ body:has(.results-page) {
    this is the part that tells whoever maintains the deployment what to change. Wraps rather
    than truncates — a reason cut off mid-sentence is worse than no reason. */
 .gpt-error-reason { display: inline-block; margin-top: 5px; font-size: 10px; line-height: 1.5; color: var(--app-muted); overflow-wrap: anywhere; }
+.gpt-retry { display: inline-block; margin-top: 9px; min-height: 28px; padding: 0 11px; border: 1px solid var(--app-line); border-radius: 999px; background: rgba(255,255,255,.72); color: #344154; font-size: 10px; }
+.gpt-retry:hover:not(:disabled) { background: #fff; border-color: rgba(11,14,20,.2); }
+.gpt-retry:disabled { opacity: .5; }
 .gpt-message.is-user p { border-color: transparent; background: var(--app-ink); color: #fff; }
 .gpt-chat > form { width: min(780px,100%); margin: 0 auto; padding: 7px; display: grid; grid-template-columns: 1fr 42px; gap: 6px; border: 1px solid var(--app-line); border-radius: 22px; background: rgba(255,255,255,.74); box-shadow: 0 15px 36px rgba(30,60,94,.11); }
 .gpt-chat form > button { width: 42px; height: 42px; display: grid; place-items: center; border: 0; border-radius: 15px; background: rgba(230,239,248,.8); color: var(--app-muted); }
@@ -12391,8 +12401,14 @@ body:has(.results-page) {
 }
 
 /* ── Score card ────────────────────────────────────────────────────────────
- * Entitlement-gated similarity card. Reuses the .score-curve rules above
- * (line 657) — only the axis caption and the card chrome are new.
+ * Two surfaces, and the split is deliberate. `.share-card` is the rectangle
+ * the download button turns into a PNG: dark, self-contained, carrying its own
+ * wordmark and its own caveat because the file it becomes is looked at away
+ * from every other pixel on this page. `.score-card` beside it is an ordinary
+ * light GlassCard holding the category detail, which nobody exports.
+ *
+ * The dark palette is scoped to `.share-card` and its own actions row. It is
+ * not a theme, there is no switch, and nothing else on the route inherits it.
  * ─────────────────────────────────────────────────────────────────────────*/
 
 .score-curve__axis {
@@ -12400,93 +12416,318 @@ body:has(.results-page) {
   font-size: 13px;
 }
 
-.score-card {
+.score-card-stage {
   display: grid;
-  gap: var(--space-8);
-  padding: clamp(24px, 3vw, 40px);
+  /* A fixed first track, not `minmax(0, 420px)`: a non-fr track is sized from its
+     own content, so the card narrowed to whatever its widest line happened to be
+     and changed width again once the portraits loaded. */
+  grid-template-columns: 420px minmax(0, 1fr);
+  gap: var(--space-6);
+  align-items: start;
 }
-.score-card__portraits {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-8);
-  align-items: center;
+
+.share-card-column {
+  display: grid;
+  gap: var(--space-4);
+  min-width: 0;
 }
-.score-card__portraits figure {
-  margin: 0;
+
+.share-card {
+  --share-ink: #f3f7fb;
+  --share-muted: rgba(228, 238, 248, 0.56);
+  --share-faint: rgba(228, 238, 248, 0.38);
+  --share-mint: #6fe3c8;
+  --share-line: rgba(255, 255, 255, 0.09);
+  --share-well: rgba(255, 255, 255, 0.04);
+  position: relative;
+  overflow: hidden;
+  padding: 26px 24px 20px;
+  border: 1px solid var(--share-line);
+  border-radius: 28px;
+  /* Two lights: a mint one behind the score, a colder blue one bottom-left, so
+     the card has depth without a photograph behind it. */
+  background:
+    radial-gradient(112% 74% at 50% -8%, rgba(111, 227, 200, 0.16), transparent 58%),
+    radial-gradient(90% 60% at 6% 104%, rgba(8, 123, 255, 0.16), transparent 62%),
+    linear-gradient(168deg, #182029 0%, #111820 46%, #0b0f15 100%);
+  box-shadow: 0 30px 68px rgba(9, 16, 26, 0.34), inset 0 1px 0 rgba(255, 255, 255, 0.06);
+  color: var(--share-ink);
+  /* Thai and Latin in one card. Named here rather than inherited because the
+     PNG is rendered from a cloned copy of this node with its computed styles,
+     and an inherited family that never resolved would be silently substituted. */
+  font-family: var(--font-thai), var(--font-primary);
   text-align: center;
 }
-.score-card__portraits img {
-  width: 132px;
-  height: 132px;
-  border-radius: var(--dd-radius-frame);
+
+.share-card__brand {
+  display: flex;
+  white-space: nowrap;
+  align-items: center;
+  justify-content: space-between;
+  color: var(--share-faint);
+  font-size: 10px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+.share-card__mark {
+  color: var(--share-ink);
+  font-family: var(--font-primary);
+  font-weight: 600;
+  letter-spacing: 0.24em;
+}
+
+.share-card__faces {
+  margin-top: 22px;
+  display: flex;
+  justify-content: center;
+  gap: 30px;
+}
+.share-card__faces figure {
+  margin: 0;
+}
+/* A ring rather than a border: the 2px gradient edge reads as a frame at any
+   photo brightness, where a flat border disappears against a pale forehead. */
+.share-card__ring {
+  width: 104px;
+  height: 104px;
+  padding: 2px;
+  border-radius: var(--dd-radius-pill);
+  background: linear-gradient(150deg, rgba(255, 255, 255, 0.3), rgba(255, 255, 255, 0.05) 62%);
+}
+.share-card__ring img {
+  width: 100%;
+  height: 100%;
+  display: block;
+  border-radius: var(--dd-radius-pill);
   object-fit: cover;
 }
-.score-card__portraits figcaption {
-  margin-top: var(--space-2);
-  color: var(--app-muted);
-  font-size: 12px;
-}
-/* Same footprint as a photo, so the card does not reflow when one is missing or expires. */
-.score-card__portrait-empty {
-  width: 132px;
-  height: 132px;
+/* Same footprint as a photo, so the card does not reflow when one is missing
+   or has been purged. */
+.share-card__ring-empty {
+  width: 100%;
+  height: 100%;
   display: grid;
   place-items: center;
-  border: 1px dashed rgba(11, 14, 20, 0.16);
-  border-radius: var(--dd-radius-frame);
-  background: rgba(11, 14, 20, 0.03);
-  color: var(--app-muted);
+  border: 1px dashed var(--share-line);
+  border-radius: var(--dd-radius-pill);
+  background: rgba(0, 0, 0, 0.24);
+  color: var(--share-faint);
 }
-.score-card__portrait-note {
-  margin: var(--space-4) 0 0;
-  color: var(--app-muted);
-  font-size: 13px;
-  line-height: 1.6;
-}
-.score-card__headline strong {
+.share-card__faces strong {
+  margin-top: 12px;
   display: block;
-  color: var(--dd-ink);
-  font-size: clamp(44px, 6vw, 68px);
+  font-family: var(--font-primary);
+  font-size: 26px;
   font-weight: 600;
+  letter-spacing: -0.03em;
   line-height: 1;
 }
-.score-card__headline small {
-  color: var(--app-muted);
-  font-size: 20px;
-  font-weight: 400;
-}
-.score-card__headline span {
-  color: var(--app-muted);
-  font-size: 14px;
+.share-card__faces figcaption {
+  margin-top: 5px;
+  color: var(--share-faint);
+  font-size: 11px;
 }
 
-.score-card__percentile {
-  padding: var(--space-6);
-  border: 1px solid var(--app-line);
-  border-radius: var(--dd-radius-card);
-  background: var(--dd-blue-soft);
+/* The two hairlines that join the angle scores to their average. Decorative,
+   which is why it is drawn here and not as an SVG path in the panel: nothing
+   about it is measured. */
+.share-card__join {
+  position: relative;
+  height: 26px;
+  margin: 0 auto;
+  width: 200px;
 }
-.score-card__percentile strong {
+.share-card__join::before,
+.share-card__join::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  width: 78px;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.2));
+}
+.share-card__join::before {
+  left: 12px;
+  transform: rotate(11deg);
+}
+.share-card__join::after {
+  right: 12px;
+  transform: rotate(-11deg);
+  background: linear-gradient(270deg, transparent, rgba(255, 255, 255, 0.2));
+}
+
+.share-card__headline strong {
   display: block;
-  color: var(--dd-blue-strong);
-  font-size: clamp(32px, 4vw, 44px);
+  color: var(--share-mint);
+  font-family: var(--font-primary);
+  font-size: 68px;
+  font-weight: 600;
+  letter-spacing: -0.055em;
+  line-height: 1;
+  text-shadow: 0 8px 34px rgba(111, 227, 200, 0.28);
+}
+.share-card__headline small {
+  display: block;
+  margin-top: 4px;
+  color: var(--share-faint);
+  font-family: var(--font-primary);
+  font-size: 13px;
+  letter-spacing: 0.06em;
+}
+.share-card__headline span {
+  display: block;
+  margin-top: 8px;
+  color: var(--share-muted);
+  font-size: 12px;
+}
+
+.share-card__rank {
+  margin: 16px auto 0;
+  max-width: 300px;
+  padding: 12px 16px;
+  border: 1px solid var(--share-line);
+  border-radius: 18px;
+  background: var(--share-well);
+}
+.share-card__rank strong {
+  display: block;
+  font-family: var(--font-primary);
+  font-size: 26px;
+  font-weight: 600;
+  letter-spacing: -0.03em;
   line-height: 1.1;
 }
-.score-card__percentile span {
-  color: var(--dd-text);
-  font-size: 14px;
+.share-card__rank span {
+  display: block;
+  margin-top: 4px;
+  color: var(--share-muted);
+  font-size: 11.5px;
+  line-height: 1.55;
 }
-/* Shown instead of a number when the user is outside the published cohort. */
-.score-card__withheld {
-  margin: 0;
-  padding: var(--space-4) var(--space-6);
-  border-left: 3px solid var(--dd-blue);
-  background: var(--dd-canvas);
-  color: var(--app-muted);
-  font-size: 14px;
+/* The approximation warning is not fine print — same weight as the sentence it
+   qualifies, only in the mint so the eye lands on it. */
+.share-card__rank em {
+  color: var(--share-mint);
+  font-style: normal;
+}
+.share-card__rank.is-locked {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  color: var(--share-muted);
+  font-size: 11.5px;
+  line-height: 1.5;
+  text-align: start;
+}
+.share-card__rank.is-locked svg {
+  flex-shrink: 0;
+  color: var(--share-faint);
+}
+
+/* Shown instead of a percentile when the reader is outside the published
+   cohort. Not the locked state and not styled like it. */
+.share-card .score-card__withheld {
+  margin: 16px 0 0;
+  padding: 12px 14px;
+  border: 0;
+  border-inline-start: 2px solid rgba(111, 227, 200, 0.5);
+  border-radius: 4px;
+  background: var(--share-well);
+  color: var(--share-muted);
+  font-size: 11.5px;
+  line-height: 1.6;
+  text-align: start;
+}
+
+.share-card__curve {
+  margin: 18px 0 0;
+  padding: 10px 10px 4px;
+  border: 1px solid var(--share-line);
+  border-radius: 18px;
+  background: var(--share-well);
+}
+.share-card__curve svg {
+  width: 100%;
+  height: auto;
+  display: block;
+  overflow: visible;
+}
+/* The curve's own colours are presentation attributes in the panel, not rules
+   here: the PNG exporter deep-clones an <svg> without carrying computed styles
+   onto its children, so anything styled from this file is lost in the file the
+   reader keeps. See the comment above that SVG. */
+.share-card__curve figcaption {
+  padding: 6px 4px 2px;
+  color: var(--share-faint);
+  font-size: 10.5px;
+}
+
+.share-card__portrait-note {
+  margin: 14px 0 0;
+  color: var(--share-faint);
+  font-size: 11px;
   line-height: 1.6;
 }
 
+.share-card__foot {
+  /* `background` and `border-top` are overrides, not decoration: the bare `footer`
+     and `p` element rules earlier in this sheet both reach in here. */
+  background: none;
+  margin: 18px 0 0;
+  padding-top: 14px;
+  border-top: 1px solid var(--share-line);
+  color: var(--share-faint);
+  font-size: 10.5px;
+  line-height: 1.6;
+}
+
+.share-card__actions {
+  display: grid;
+  justify-items: center;
+  gap: 8px;
+  text-align: center;
+}
+.share-card__actions button {
+  min-height: 44px;
+  padding: 0 22px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  border: 0;
+  border-radius: var(--dd-radius-pill);
+  background: linear-gradient(150deg, #182029 0%, #0d131a 100%);
+  box-shadow: 0 12px 26px rgba(12, 22, 36, 0.24);
+  color: #f3f7fb;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+  transition: transform var(--dd-motion-fast) var(--dd-ease-out), box-shadow var(--dd-motion-fast) var(--dd-ease-out);
+}
+.share-card__actions button:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow: 0 16px 32px rgba(12, 22, 36, 0.3);
+}
+.share-card__actions button:disabled {
+  opacity: 0.62;
+  cursor: progress;
+}
+.share-card__actions p {
+  margin: 0;
+  max-width: 320px;
+  color: var(--app-muted);
+  font-size: 11.5px;
+  line-height: 1.55;
+}
+.share-card__error {
+  color: #b03434;
+}
+
+.score-card {
+  display: grid;
+  gap: var(--space-6);
+  padding: clamp(20px, 2.4vw, 30px);
+}
 .score-card__categories {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
@@ -12579,12 +12820,38 @@ body:has(.results-page) {
   color: var(--dd-canvas);
 }
 
+@media (max-width: 1200px) {
+  /* One column, and the breakpoint is set by the *other* column: the sidebar takes
+     282px before this stage starts, so a viewport under about 1160 leaves the detail
+     card too narrow to read beside a 420px picture. Below that the card keeps its own
+     width and centres, rather than stretching into a page-wide rectangle nobody would
+     want as a picture. */
+  .score-card-stage {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .share-card-column {
+    justify-self: center;
+    width: min(100%, 420px);
+  }
+}
+
 @media (max-width: 720px) {
   .score-card {
     gap: var(--space-6);
   }
-  .score-card__portraits {
-    gap: var(--space-4);
+  .share-card {
+    padding: 22px 18px 18px;
+    border-radius: 24px;
+  }
+  .share-card__faces {
+    gap: 20px;
+  }
+  .share-card__ring {
+    width: 92px;
+    height: 92px;
+  }
+  .share-card__headline strong {
+    font-size: 58px;
   }
 }
 
@@ -12604,24 +12871,6 @@ body:has(.results-page) {
 }
 .score-card__categories article.is-locked i {
   background: var(--app-line);
-}
-.score-card__percentile.is-locked {
-  align-items: center;
-}
-.score-card__percentile.is-locked strong {
-  display: inline-flex;
-  color: var(--app-muted);
-  font-size: 20px;
-}
-.score-card__percentile.is-locked button {
-  margin-inline-start: 8px;
-  padding: 0;
-  border: 0;
-  background: none;
-  color: var(--dd-ink);
-  font: inherit;
-  text-decoration: underline;
-  cursor: pointer;
 }
 .score-card__upgrade {
   display: grid;

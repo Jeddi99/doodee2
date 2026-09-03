@@ -15,6 +15,8 @@ data the analysis screen is showing.
 from math import erf, exp, sqrt
 from statistics import NormalDist
 
+from . import reference_scoring
+
 # Mirrors the guard in reference_target() (reference_scoring.py:103) — never trust an
 # analysis_data blob that did not come from a completed adult scoring run.
 SCORED_STATUS = "experimental_reference_similarity"
@@ -122,10 +124,11 @@ def cohort_is_comparable(reference_scores):
     )
 
 
-# How many category scores a partial-depth plan may read. Two rather than none: the free tier is
-# meant to show that the analysis is real, and a card with every number missing demonstrates
-# nothing. Two rather than all five: the remaining three are what the plan is for.
-VISIBLE_CATEGORIES_WHEN_REDACTED = 2
+# Which category scores a partial-depth plan may read now lives in `reference_scoring.PILLARS`:
+# the first pillar this scan scored, and nothing else. The count it replaces was two, chosen as
+# "enough to show the analysis is real"; one pillar is the same argument made in the vocabulary
+# the screen actually uses, and it is the vocabulary that matters — the dashboard groups these
+# five categories into four cards, so withholding by category count could open half of a card.
 
 
 def redact(card):
@@ -140,17 +143,19 @@ def redact(card):
     unreadable is the honest shape of a teaser; hiding the row entirely would misrepresent how
     much the analysis actually covers.
 
+    Which categories stay is `reference_scoring.visible_categories` — the first pillar the scan
+    scored. It used to be the two highest-scoring categories, and that was wrong twice over: it
+    told a free reader which of their categories scored best, which is an ordering fact this tier
+    does not include, and it was a second rule alongside the dashboard's own, so the two together
+    opened three categories of five with nobody having decided that.
+
     `similarity_percentile` gets a separate `_locked` flag rather than reusing the existing None.
     That None already means something specific and different — "this face is outside the
     published cohort, so we will not claim a percentile for it" (see `cohort_is_comparable`) —
     and collapsing "we won't say" into "pay to see" would make the paid product look like it
     unlocks a number that, for those users, does not exist.
     """
-    ranked = sorted(
-        card.get("categories") or [],
-        key=lambda item: (item.get("score") is None, -(item.get("score") or 0)),
-    )
-    visible, hidden = ranked[:VISIBLE_CATEGORIES_WHEN_REDACTED], ranked[VISIBLE_CATEGORIES_WHEN_REDACTED:]
+    visible, hidden = split_categories(card.get("categories") or [])
     return {
         **card,
         "categories": [
@@ -164,6 +169,88 @@ def redact(card):
         "locked_categories": [item.get("key") for item in hidden],
         "redacted": True,
     }
+
+
+def split_categories(categories):
+    """`(visible, hidden)` for a partial-depth plan, by `reference_scoring.visible_categories`.
+
+    Both redactions below go through this, so the line between what a free account may read and
+    what it may not is drawn exactly once. The scan endpoint and the score card disagreeing about
+    it is not a cosmetic inconsistency — whichever of them is more generous becomes the paywall,
+    and the other one is decoration.
+    """
+    scored = {item.get("key") for item in categories if item.get("score") is not None}
+    allowed = set(reference_scoring.visible_categories(scored))
+    return (
+        [item for item in categories if item.get("key") in allowed],
+        [item for item in categories if item.get("key") not in allowed],
+    )
+
+
+def redact_reference_scores(scores):
+    """The partial-depth version of `analysis_data.reference_scores`, for the scan endpoint.
+
+    This is the block the dashboard builds its four pillar cards from, and until now it was served
+    whole to everybody: a free account received `overall_score`, all five category scores and all
+    twelve measurements, and the cards were "locked" by nothing but the absence of a reason to
+    unlock them. Anyone who opened the network tab had the numbers a plan is sold for.
+
+    The overall score stays — it is what the free tier is *for*, and the distribution chart beside
+    it plots the same figure. Everything the pillar cards and the ratio rows read is withheld
+    outside the one visible pillar. A hidden row keeps `key`, `category` and `unit` so the screen
+    can still name what it is not showing; it loses `observed`, `reference`,
+    `normalized_deviation` and `score`, which is every number a reader could learn something from.
+
+    `strengthsFor` and `improvementsFor` on the client filter on a numeric `score`, so dropping it
+    is also what keeps the two cards under the chart from listing measurements out of a locked
+    pillar. That falls out rather than being arranged, which is the right way round: one rule
+    withholds, and the screens that read the payload follow it without being told.
+    """
+    if not isinstance(scores, dict):
+        return scores
+    visible, hidden = split_categories(scores.get("categories") or [])
+    allowed = {item.get("key") for item in visible}
+    return {
+        **scores,
+        "categories": [
+            *visible,
+            *({"key": item.get("key"), "score": None,
+               "metric_count": item.get("metric_count"), "locked": True} for item in hidden),
+        ],
+        "metrics": [
+            item if item.get("category") in allowed else {
+                "key": item.get("key"), "category": item.get("category"),
+                "unit": item.get("unit"), "locked": True,
+            }
+            for item in (scores.get("metrics") or [])
+        ],
+        "locked_categories": [item.get("key") for item in hidden],
+        "redacted": True,
+    }
+
+
+def readable_scores(user, analysis_data):
+    """`analysis_data` carrying only the scores this user's plan may read.
+
+    The one call every server-side reader of the numbers goes through, so that "what a free
+    account can learn" has a single answer rather than one per surface. Before it there were four
+    surfaces and three answers: the score card and the assessment withheld, the scan endpoint
+    served everything, and the chat — both the canned topic answers and the block of text sent to
+    the model — was built from the raw twelve. A reader looking at four blurred cards could type
+    "what is my chin score" and be told.
+
+    Returns `analysis_data` unchanged for a full-depth plan, and for a payload with no scores in
+    it, so callers can hand their data through unconditionally.
+    """
+    from . import entitlement
+    from .models import Plan
+
+    if entitlement.current_plan(user).analysis_depth != Plan.AnalysisDepth.PARTIAL:
+        return analysis_data
+    scores = (analysis_data or {}).get("reference_scores")
+    if not scores:
+        return analysis_data
+    return {**analysis_data, "reference_scores": redact_reference_scores(scores)}
 
 
 def score_card(analysis_data, redacted=False):

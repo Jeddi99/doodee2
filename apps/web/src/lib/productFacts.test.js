@@ -135,12 +135,17 @@ test('every quota on the page is a quota the plan table grants', () => {
   assert.equal(PLAN_LIMITS.free.chatTurns, Number(free[1]));
 });
 
-test('the free tier renders a face but does not read one in full', () => {
+test('the free tier reads a face in part and does not render one at all', () => {
   // Both of these have to stay as they are or the copy under the free card has to change with
-  // them. `simulations` moved from 0 to 3 in migration 0041 and the card copy moved with it; the
-  // partial read is what still separates free from Plus.
-  assert.equal(PLAN_LIMITS.free.simulations, 3);
+  // them. `simulations` went 0 → 3 in migration 0041 and back to 0 in 0042, and the card copy
+  // moved each time; what separates free from Plus is now the partial read *and* the simulator.
+  assert.equal(PLAN_LIMITS.free.simulations, 0);
   assert.equal(PLAN_LIMITS.free.fullAnalysis, false);
+  // The note under the free card must not quote the zero as if it were an allowance — "0
+  // simulations a month" is a sentence the template would happily build.
+  for (const locale of ['en', 'th']) {
+    assert.ok(!/\b0 simulations|0 ครั้ง/.test(siteCopy[locale].freeNote), `${locale} freeNote`);
+  }
 });
 
 test('there is one currency, so the page can only quote one', () => {

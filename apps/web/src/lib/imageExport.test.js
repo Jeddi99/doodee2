@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { EXPORT_MAX_SIDE, exportFailureText, exportSize, simulationFileName } from './imageExport.js';
+import { EXPORT_MAX_SIDE, exportFailureText, exportSize, scoreCardFileName, simulationFileName } from './imageExport.js';
 
 test('an image smaller than the cap is exported at its own resolution', () => {
   // The whole point of exporting through a canvas rather than screenshotting the viewer: the
@@ -63,4 +63,12 @@ test('an unrecognised reason still produces a sentence rather than nothing', () 
   // A caller that grows a fourth cause must not silently render an empty error line.
   assert.equal(exportFailureText('something-new', false), exportFailureText('encode', false));
   assert.ok(exportFailureText(undefined, true).length > 0);
+});
+
+test('the score card downloads under its own dated name, not the simulation one', () => {
+  // Two different pictures from two different screens land in the same folder. Sharing a prefix
+  // would let a simulation export and a score card overwrite each other on the same day.
+  const day = new Date(2026, 8, 3);
+  assert.equal(scoreCardFileName(day), 'doodee-score-card-2026-09-03.png');
+  assert.notEqual(scoreCardFileName(day), simulationFileName('front', day));
 });

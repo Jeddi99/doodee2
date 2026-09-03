@@ -440,3 +440,39 @@ test('every scored category belongs to exactly one pillar, and the page reads th
   assert.ok(!/CATEGORY_PILLAR\s*[:=]/.test(page), 'DashboardPage has its own category→pillar table again');
   assert.match(page, /pillarOfCategory/, 'DashboardPage no longer reads the shared mapping');
 });
+
+test('the server withholds along the same pillar boundary the cards are drawn on', () => {
+  /**
+   * `percentile.redact_reference_scores` decides what a free account may read, and it decides it
+   * one pillar at a time — `reference_scoring.PILLARS`. This file decides which categories make up
+   * a pillar. If the two disagree the paywall lands somewhere the screen does not: half a card
+   * readable, or a card the server opened that the client still blurs.
+   *
+   * Read out of the Python rather than copied, the same way `faceMetrics.test.js` reads the metric
+   * tables. The boundary is where the money is, so it is not a place for a second source of truth.
+   */
+  const backend = readFileSync(
+    fileURLToPath(new URL('../../../../backend/doodee/reference_scoring.py', import.meta.url)),
+    'utf8',
+  );
+  const table = backend.match(/^PILLARS = \(([\s\S]*?)^\)/m);
+  assert.ok(table, 'PILLARS is gone from reference_scoring.py');
+  const server = [...table[1].matchAll(/\(\s*"(\w+)",\s*\(([^)]*)\)/g)].map(([, name, keys]) => [
+    name,
+    [...keys.matchAll(/"(\w+)"/g)].map((m) => m[1]),
+  ]);
+  assert.ok(server.length, 'PILLARS parsed empty');
+
+  // Same pillars, same order — the order is what "the first pillar this scan scored" means.
+  const client = ['harmony', 'angularity', 'eyes', 'features'];
+  assert.deepEqual(server.map(([name]) => name), client, 'the pillar order differs from the cards');
+  for (const [name, keys] of server) {
+    assert.deepEqual(
+      keys, keys.filter((key) => pillarOfCategory(key) === name),
+      `${name} groups different categories on the two sides`,
+    );
+    for (const key of keys) {
+      assert.equal(pillarOfCategory(key), name, `${key} is in ${name} on the server only`);
+    }
+  }
+});

@@ -57,7 +57,7 @@ from .serializers import (
 )
 from .analysis_engine import PROFILE_VIEWS, SCAN_VIEW_MODES, DEFAULT_SCAN_MODE, scan_views_for_mode
 from .reference_scoring import REFERENCE_POPULATIONS
-from .percentile import score_card as build_score_card
+from .percentile import readable_scores, score_card as build_score_card
 from .development_plan import build as build_development_plan
 from .simulation_engine import (
     CANONICAL_VIEWS, has_profile_images, related_union, simulation_columns, validate_selections,
@@ -1169,17 +1169,23 @@ def scan_assessment(request, scan_id):
     return Response(payload)
 
 
-#: How many findings a partial plan sees. Enough to be worth reading and to show the rest exists.
-VISIBLE_FINDINGS_WHEN_REDACTED = 2
-
-
 def _redact_assessment(payload):
     """The partial-depth assessment: the same categories rule as the card, applied to findings too.
 
     `redact` already answers the categories half, and reusing it is the point — two withholding
     rules for one product means the day they disagree, one of them is leaking. What it does not
-    know about is `improvements`, which is the paid answer in prose: every finding carries the
-    verdict sentence naming what to do something about.
+    know about are the findings, which are the paid answer in prose: each one carries the verdict
+    sentence naming what to do something about, and also `observed`, `reference`,
+    `normalized_deviation` and `score` — every figure the category above it just had blanked.
+
+    Which findings go is decided by category, not by position. It used to be the first two by
+    position: two findings from anywhere in the twelve, so a reader whose top two happened to sit
+    in withheld categories was handed those categories' numbers in full, in prose, under a card
+    that showed them as locked. Cutting on the same line `redact` cuts on means a finding is
+    visible exactly when the measurement behind it is.
+
+    `strengths` is redacted alongside `improvements`. It was not redacted at all, and it is the
+    same shape carrying the same fields — the closest measurements rather than the furthest.
 
     The count stays, and so do the names. Seeing that four more findings exist is the honest shape
     of a teaser; hiding them entirely would misrepresent how much the analysis found.
@@ -1188,17 +1194,24 @@ def _redact_assessment(payload):
 
     redacted = redact(payload)
     locked_categories = set(redacted.get("locked_categories") or ())
-    improvements = payload.get("improvements") or []
-    visible, hidden = (improvements[:VISIBLE_FINDINGS_WHEN_REDACTED],
-                       improvements[VISIBLE_FINDINGS_WHEN_REDACTED:])
+
+    def withhold(findings):
+        """Name-only rows for findings whose category was withheld, in the original order."""
+        return [
+            item if item.get("category") not in locked_categories else {
+                "key": item.get("key"), "catalog_id": item.get("catalog_id"),
+                "name_th": item.get("name_th"), "name_en": item.get("name_en"),
+                "group": item.get("group"), "category": item.get("category"), "locked": True,
+            }
+            for item in findings
+        ]
+
+    hidden = [item for item in (payload.get("improvements") or [])
+              if item.get("category") in locked_categories]
     return {
         **redacted,
-        "improvements": [
-            *visible,
-            *({"key": item.get("key"), "catalog_id": item.get("catalog_id"),
-               "name_th": item.get("name_th"), "name_en": item.get("name_en"),
-               "group": item.get("group"), "locked": True} for item in hidden),
-        ],
+        "improvements": withhold(payload.get("improvements") or []),
+        "strengths": withhold(payload.get("strengths") or []),
         "locked_findings": [item.get("key") for item in hidden],
         # The metrics a locked category was averaged from, withheld with it.
         #
@@ -1484,8 +1497,12 @@ class ChatViewSet(viewsets.GenericViewSet, mixins.ListModelMixin, mixins.Retriev
             "scan_id": str(scan.id) if scan else None,
             # Wording, order and visibility come from the admin; which chips can actually
             # answer still comes from the scan.
+            # Through `readable_scores`, so a chip is only offered when this plan may hear the
+            # answer. A free account was being offered "which measurement is furthest from the
+            # reference" over four cards it could not read.
             "topics": available_topics(
-                scan.analysis_data if scan else None, lang, overrides=_topic_overrides(lang),
+                readable_scores(request.user, scan.analysis_data) if scan else None,
+                lang, overrides=_topic_overrides(lang),
             ),
         })
 
@@ -1518,7 +1535,9 @@ class ChatViewSet(viewsets.GenericViewSet, mixins.ListModelMixin, mixins.Retriev
         into the box continues the same conversation.
         """
         lang = "en" if str(request.data.get("lang", "")) == "en" else "th"
-        result = topic_answer(topic, scan.analysis_data if scan else None, lang)
+        result = topic_answer(
+            topic, readable_scores(request.user, scan.analysis_data) if scan else None, lang,
+        )
         if result is None:
             return Response({"detail": "topic_unavailable"}, status=status.HTTP_409_CONFLICT)
         question, text = result
@@ -1627,7 +1646,10 @@ class ChatViewSet(viewsets.GenericViewSet, mixins.ListModelMixin, mixins.Retriev
         try:
             try:
                 answer, usage = chat_reply(
-                    f"{system_prompt(persona)}\n\n{scan_context(scan)}",
+                    # The model is told what this plan may read and nothing else. Instructing it
+                    # to withhold would be asking a prompt to hold a paywall, which is a paywall
+                    # anyone can talk their way past.
+                    f"{system_prompt(persona)}\n\n{scan_context(scan, request.user)}",
                     history,
                     model=config.model,
                     effort=config.effort,

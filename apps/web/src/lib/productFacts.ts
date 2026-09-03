@@ -84,7 +84,7 @@ export const PLAN_PRICE_BAHT = { free: 0, plus: 499, pro: 799 } as const;
  * Three, not two: one look before each save, so the last one is not committed blind.
  */
 export const PLAN_LIMITS = {
-  free: { simulations: 3, chatTurns: 5, fullAnalysis: false, developmentPlan: false },
+  free: { simulations: 0, chatTurns: 5, fullAnalysis: false, developmentPlan: false },
   plus: { simulations: 10, chatTurns: 100, fullAnalysis: true, developmentPlan: true },
   pro: { simulations: -1, chatTurns: -1, fullAnalysis: true, developmentPlan: true },
 } as const;

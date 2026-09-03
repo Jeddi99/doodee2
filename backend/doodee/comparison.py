@@ -319,11 +319,6 @@ def compare(earlier_data, later_data, redacted=False):
     return _redact(payload, later) if redacted else payload
 
 
-# How many metric rows a partial plan reads in full. Mirrors `views.VISIBLE_FINDINGS_WHEN_REDACTED`
-# — enough to show the comparison is real, few enough that the rest is what the plan is for.
-VISIBLE_METRICS_WHEN_REDACTED = 2
-
-
 def _redact(payload, later):
     """The partial-depth comparison.
 
@@ -332,8 +327,13 @@ def _redact(payload, later):
     nothing.
 
     Which categories go is `percentile.redact`'s answer, taken by handing it the *later* scan's
-    category scores — the current state of the face, and the same two the score card would leave
-    visible for this user, so the two screens cannot show a different pair.
+    category scores — the current state of the face, and the same pillar the score card would
+    leave visible for this user, so the two screens cannot open a different one.
+
+    The metric rows are cut on that same line. They used to be cut by position — the first two of
+    twelve, whatever category they belonged to — so a reader could watch a withheld measurement
+    move between two scans while the category above it showed as locked. Two numbers and a
+    difference is more than the category score they were meant to be paying for.
 
     Keys and labels stay on the withheld rows. Seeing that eight more measurements were compared
     is the honest shape of a teaser; hiding them would misrepresent how much was actually done.
@@ -341,8 +341,8 @@ def _redact(payload, later):
     from .percentile import redact
 
     locked_categories = set(redact({"categories": later.get("categories") or []})["locked_categories"])
-    visible = payload["metrics"][:VISIBLE_METRICS_WHEN_REDACTED]
-    hidden = payload["metrics"][VISIBLE_METRICS_WHEN_REDACTED:]
+    visible = [row for row in payload["metrics"] if row["category"] not in locked_categories]
+    hidden = [row for row in payload["metrics"] if row["category"] in locked_categories]
     return {
         **payload,
         "categories": [

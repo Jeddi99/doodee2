@@ -236,21 +236,29 @@ test('a pillar is locked because the scan did not score it, never because of its
     'an unmeasurable pillar is offered as a destination again');
 });
 
-test('the paid gate is the plan the server reports, not a row index', () => {
+test('the paid gate is the row the server withheld, not a row index or a plan flag', () => {
   /**
-   * `index > 2` padlocked the fourth row onwards for everybody — including a subscriber who had
-   * already paid for it, under a button offering to sell what they were holding. `analysis_depth`
-   * is the entitlement that governs how much of an analysis a plan may read, and `GET /session/`
-   * publishes it precisely so the rule is not re-decided in the client.
+   * Three gates have stood here and the first two both decided in the browser. `index > 2`
+   * padlocked the fourth row onwards for everybody, including a subscriber who had already paid
+   * for it, under a button offering to sell what they were holding. `analysisRedacted && index >=
+   * FREE_RATIO_ROWS` used the right entitlement and still applied it by counting rows.
+   *
+   * Neither withheld anything. `GET /scans/<id>/` served `reference_scores` whole to every plan,
+   * so the numbers behind both padlocks were already in the response body — the comment beside
+   * the second gate said so and called the fix a backend change. That change is
+   * `percentile.redact_reference_scores`, which empties the row before it is sent, and this
+   * screen now reads the answer off the row instead of deciding it again.
    */
   assert.ok(!/index > 2/.test(code), 'the row-index paywall is back');
-  assert.match(source, /session\.data\?\.score_card_redacted === true/,
-    'the gate no longer asks the server which plan this is');
-  assert.match(source, /analysisRedacted && index >= FREE_RATIO_ROWS/,
-    'the gate is no longer applied only to plans that are actually redacted');
+  assert.ok(!/FREE_RATIO_ROWS/.test(source), 'the row-counting paywall is back');
+  assert.match(source, /const locked = pillarLocked \|\| metric\.locked;/,
+    'the row lock is no longer read from the row the server sent');
   // A locked row used to draw its score bar at full length, so the fill gave away the number the
-  // padlock beside it claimed to be withholding.
-  assert.match(source, /\{!locked && \(\s*<>/, 'a locked row is drawing its score bar again');
+  // padlock beside it claimed to be withholding. `isReadable` is the second half of the same
+  // guard: a withheld row has no score at all now, and a bar drawn from a missing number would
+  // read as a zero rather than as an absence.
+  assert.match(source, /\{!locked && isReadable\(metric\) && \(\s*<>/,
+    'a locked row is drawing its score bar again');
 });
 
 test('no claim is made about a count of ratios the product cannot back', () => {
@@ -309,4 +317,17 @@ test('the overall card shows the overall score, not whichever pillar is selected
   assert.match(card, /\(overall \/ 10\)\.toFixed\(1\)/, 'the overall score is not the number on this card');
   // And it says what the average was taken over, for the same reason the pillar chips do.
   assert.match(card, /scoredMetrics/, 'the card no longer says how many measurements it averaged');
+});
+
+test('the sentence under the overall counts the arithmetic, not the paywall', () => {
+  /**
+   * The overall is the mean of every scored measurement — twelve of them — whatever a plan
+   * withholds. The line under it was built from `unlockedCount`, which on a free account is 1, so
+   * it read "averaged from 12 measurements in 1 pillar": a true number and a false one in the same
+   * sentence, and the false one describing the paywall as if it were the calculation.
+   */
+  assert.match(source, /const measuredPillars = pillars\.filter\(\(item\) => item\.metricCount > 0\)\.length;/);
+  assert.match(source, /\$\{scoredMetrics\} ค่า ใน \$\{measuredPillars\} มิติ/);
+  assert.ok(!/\$\{scoredMetrics\} measurements in \$\{unlockedCount\}/.test(source),
+    'the overall is being described by how much of it the reader may see');
 });

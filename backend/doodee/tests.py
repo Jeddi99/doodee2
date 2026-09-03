@@ -30,6 +30,7 @@ from django.core.exceptions import ImproperlyConfigured as DjangoImproperlyConfi
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db.utils import IntegrityError
 
+from . import billing
 from . import chat as chat_module
 from . import request_cache
 from .models import (
@@ -302,10 +303,12 @@ class PromoCodeTest(TestCase):
         session = self.plan()
         self.assertEqual(session["plan"], "free")
         self.assertIsNone(session["vip_expires_at"])
-        # Back to the free tier's own three, not to zero. Migration 0041 gave free a preview
-        # allowance because the three saves it already advertised were unreachable without one:
-        # `_simulation_locked` refuses the save route as well whenever a plan grants no previews.
-        self.assertEqual(session["preview_remaining"], 3)
+        # Back to the free tier's own allowance, which migration 0042 set to zero: the simulator
+        # is not part of that tier. What this test is about is that the lapse lands on the free
+        # row rather than leaving the promo's allowance behind, so it reads the row rather than a
+        # number written here — a figure copied into a test is the second source of truth the rest
+        # of this file exists to avoid.
+        self.assertEqual(session["preview_remaining"], Plan.objects.get(code="free").simulation_previews_per_month)
 
     def test_an_unknown_code_and_a_disabled_code_are_indistinguishable(self):
         self.code.is_active = False
@@ -801,10 +804,90 @@ class ScanAssessmentEndpointTest(TestCase):
         self.assertTrue(response.data["locked_findings"])
         self.assertTrue(all(item.get("name_th") for item in response.data["improvements"]))
 
-    def test_the_two_strongest_categories_are_the_ones_left_visible(self):
+    def test_one_pillar_is_left_visible_and_it_is_not_chosen_by_score(self):
+        """The rule this replaced opened the two highest-scoring categories.
+
+        Two problems with that, and the second is the one that leaked. It told a free reader which
+        of their categories scored best, which is an ordering fact the tier does not include — and
+        the dashboard was picking its own visible category by a different rule entirely, so between
+        the two screens a free account could open three of the five with nobody deciding that.
+
+        `reference_scoring.visible_categories` is now the single answer: the first pillar the scan
+        scored, in the order the cards are drawn. This fixture has no `proportions`, so the first
+        pillar with anything in it is `angularity` — chin — which is also the *lowest*-scoring
+        category here. That is the point of the assertion: the choice does not follow the score.
+        """
         response = self.client.get(self.url())
         visible = [item["key"] for item in response.data["categories"] if not item.get("locked")]
-        self.assertEqual(visible, ["nose", "lips"])
+        self.assertEqual(visible, ["chin"])
+        best = max(self.SCORES["categories"], key=lambda item: item["score"])["key"]
+        self.assertNotIn(best, visible, "the visible category is still being picked by score")
+
+    def test_a_finding_is_visible_exactly_when_its_measurement_is(self):
+        """Findings used to be cut by position — the first two of twelve, from any category.
+
+        A finding carries `observed`, `reference`, `normalized_deviation` and `score`, so two
+        findings out of withheld categories handed back, in prose, every figure the category card
+        above them had just had blanked.
+        """
+        response = self.client.get(self.url())
+        locked = {item["key"] for item in response.data["categories"] if item.get("locked")}
+        for field in ("improvements", "strengths"):
+            for item in response.data.get(field) or []:
+                withheld = item["category"] in locked
+                self.assertEqual(
+                    bool(item.get("locked")), withheld,
+                    f"{field}:{item['key']} in {item['category']} is readable but its category is not",
+                )
+                if withheld:
+                    self.assertNotIn("observed", item, f"{field}:{item['key']} kept its numbers")
+                    self.assertNotIn("score", item)
+
+    def test_the_scan_endpoint_withholds_the_same_scores_the_assessment_does(self):
+        """The leak this file was missing entirely.
+
+        `GET /scans/<id>/` is what the four pillar cards on the dashboard are built from, and it
+        served `analysis_data` whole: a free account received `overall_score`, every category
+        score and all twelve measurements, and the locked cards were locked by a CSS blur painted
+        over numbers already in the response body. `percentile.redact` had been withholding
+        correctly on the score card and the assessment for as long as it has existed; this
+        endpoint went through no rule at all.
+
+        Asserted against the assessment's own answer rather than against a list written here, so
+        the two cannot drift: whichever of them were more generous would become the paywall and
+        the other one would be decoration.
+        """
+        payload = self.client.get(f"/api/v1/scans/{self.scan.id}/").data
+        scores = payload["analysis_data"]["reference_scores"]
+        assessment = self.client.get(self.url()).data
+
+        self.assertTrue(scores.get("redacted"))
+        self.assertEqual(
+            sorted(scores["locked_categories"]),
+            sorted(item["key"] for item in assessment["categories"] if item.get("locked")),
+        )
+        # The overall score stays: it is what this tier is for, and the chart beside it plots it.
+        self.assertEqual(scores["overall_score"], self.SCORES["overall_score"])
+
+        visible = {item["key"] for item in scores["categories"] if not item.get("locked")}
+        for item in scores["categories"]:
+            if item.get("locked"):
+                self.assertIsNone(item["score"], f"{item['key']} kept its score")
+        for metric in scores["metrics"]:
+            if metric["category"] in visible:
+                self.assertIn("observed", metric, f"{metric['key']} lost numbers it may show")
+                continue
+            for field in ("observed", "reference", "normalized_deviation", "score"):
+                self.assertNotIn(field, metric, f"{metric['key']} leaked {field}")
+
+    def test_a_full_depth_plan_still_receives_every_score(self):
+        """The other half. A paywall that withholds from everybody is a broken product."""
+        self.entitle()
+        scores = self.client.get(f"/api/v1/scans/{self.scan.id}/").data["analysis_data"]["reference_scores"]
+        self.assertIsNone(scores.get("redacted"))
+        self.assertEqual(len(scores["metrics"]), len(self.SCORES["metrics"]))
+        self.assertTrue(all("observed" in metric for metric in scores["metrics"]))
+        self.assertTrue(all(item.get("score") is not None for item in scores["categories"]))
 
     def test_someone_elses_scan_is_not_found_rather_than_forbidden(self):
         other = User.objects.create_user("someone-else")
@@ -3934,8 +4017,12 @@ class ChatRoleRoutingTest(TestCase):
                 "population_match": True,
                 "reference": {"sample_size": 240, "population": "Thai adults", "age_range": "18-35"},
                 "categories": [{"key": "nose", "score": 71, "metric_count": 3}],
+                # `category` is not optional in a real payload — `reference_scoring` puts it on
+                # every row and `percentile.redact_reference_scores` withholds a row it cannot
+                # place. A fixture without it was being withheld from a plan that may read it.
                 "metrics": [{
-                    "key": "alar_width", "observed": 0.409, "reference": 0.346, "unit": "ratio",
+                    "key": "alar_width", "category": "nose", "observed": 0.409,
+                    "reference": 0.346, "unit": "ratio",
                     "normalized_deviation": 1.9, "score": 62,
                 }],
                 "unsupported_categories": ["skin"],
@@ -4503,12 +4590,13 @@ class EntitlementTest(TestCase):
 
     def test_the_free_tier_matches_what_requirement_md_asks_for(self):
         free = self.plan("free")
-        # Three, matching the three saves on the same row. The document used to say the free tier
-        # got no simulation at all, and the row said the same — which made the three saves beside
-        # it unspendable, because `_simulation_locked` refuses the save route too. The owner
-        # changed the decision and `.md/requirement.md` was changed with it.
-        self.assertEqual(free.simulation_previews_per_month, 3, "จำลองใบหน้าได้ 3 ครั้งต่อเดือน")
-        self.assertEqual(free.simulation_saves_per_month, 3)
+        # Both zero, and they have to move together: `_simulation_locked` reads a plan-level zero
+        # on previews and refuses the save route with it, so a non-zero save count here would be
+        # an allowance the row advertises and no user can spend. The document has said this, then
+        # said three a month, and now says it again — each time because the owner decided it and
+        # `.md/requirement.md` was changed with the decision.
+        self.assertEqual(free.simulation_previews_per_month, 0, "ไม่มีการจำลองใบหน้า")
+        self.assertEqual(free.simulation_saves_per_month, 0)
         self.assertFalse(free.has_development_plan, "ไม่มีแผนการพัฒนา")
         self.assertEqual(free.analysis_depth, Plan.AnalysisDepth.PARTIAL, "บอกแค่ส่วนน้อย")
         self.assertEqual(free.price_satang, 0)
@@ -9908,22 +9996,26 @@ class PriceLadderTest(TestCase):
 
 
 @override_settings(SIMULATION_ENABLED=True)
-class FreeTierSimulationTest(TestCase):
-    """The free tier can reach the three saves it advertises.
+class MeteredTierSimulationTest(TestCase):
+    """A metered plan can reach every save it advertises, and is rate-limited rather than locked.
 
-    It could not before migration 0041. The row said three saves and zero previews, and
-    `_simulation_locked` — a plan-level zero — refuses the save route as well as the preview one,
-    so the number on the pricing page was unreachable by construction. The pricing card went as
-    far as hiding the saves row when previews were zero (`PricingPanel.quotaLines`) rather than
-    print a figure nobody could spend, which is the shape of a product defect being papered over
-    in the client.
+    This was written about the free tier, which migration 0041 gave three previews and three saves.
+    0042 closed the simulator to free entirely at the owner's decision, so the two properties moved
+    to `plus`, which is now the cheapest tier that meters rather than refuses. They are properties
+    of metering, not of a particular price:
 
-    Three previews against three saves is one look before each save. Fewer would mean the last
-    save is committed without the user ever seeing what they were committing to.
+    * an allowance of N saves needs at least N previews, or the last save is committed without the
+      user ever seeing what they were committing to;
+    * a spent allowance answers 429 and not 403. 403 says "this plan does not include simulation"
+      and the client offers an upgrade; 429 says "come back next month". Answering the first when
+      the second is true is how the free tier once advertised three saves behind a wall.
+
+    Free's lockout is `test_requirements.FreePackageTest`, which reads it off the document.
     """
 
     def setUp(self):
-        self.user = User.objects.create_user("free-simulator")
+        self.user = User.objects.create_user("metered-simulator")
+        billing.activate(billing.create_order(self.user, Plan.objects.get(code="plus")))
         self.client = APIClient()
         self.client.force_authenticate(self.user)
         self.scan = Scan.objects.create(
@@ -9960,38 +10052,33 @@ class FreeTierSimulationTest(TestCase):
             status__in=(Simulation.Status.QUEUED, Simulation.Status.PROCESSING),
         ).update(status=Simulation.Status.COMPLETED)
 
-    def test_the_session_no_longer_reports_a_locked_free_account(self):
+    def test_the_session_reports_a_metered_account_rather_than_a_locked_one(self):
         session = self.client.get("/api/v1/session/").data
-        self.assertEqual(session["plan"], "free")
+        self.assertEqual(session["plan"], "plus")
         self.assertIs(session["simulation_locked"], False)
-        self.assertEqual(session["preview_remaining"], 3)
-        self.assertEqual(session["saved_remaining"], 3)
+        self.assertEqual(session["preview_remaining"], 10)
+        self.assertEqual(session["saved_remaining"], 10)
 
     @patch("doodee.views.process_simulation.delay")
-    def test_a_free_account_can_look_before_it_spends_each_of_its_saves(self, delay):
-        for attempt in range(3):
+    def test_the_account_can_look_before_it_spends_each_of_its_saves(self, delay):
+        for attempt in range(10):
             with self.subTest(attempt=attempt):
                 self.assertEqual(self.preview().status_code, 202)
                 self.settle()
                 self.assertEqual(self.save().status_code, 202)
                 self.settle()
         self.assertEqual(
-            Simulation.objects.filter(scan=self.scan, kind=Simulation.Kind.SAVED).count(), 3,
-            "the three saves the free row advertises were not all reachable",
+            Simulation.objects.filter(scan=self.scan, kind=Simulation.Kind.SAVED).count(), 10,
+            "the saves this row advertises were not all reachable",
         )
         session = self.client.get("/api/v1/session/").data
         self.assertEqual(session["preview_remaining"], 0)
         self.assertEqual(session["saved_remaining"], 0)
 
     @patch("doodee.views.process_simulation.delay")
-    def test_a_spent_free_allowance_is_rate_limited_and_not_locked(self, delay):
-        """429 and not 403, and the distinction is the whole reason free was given an allowance.
-
-        403 says "this plan does not include simulation" and the client offers an upgrade. 429
-        says "come back next month". Answering the first when the second is true is how the free
-        tier ended up advertising three saves behind a wall.
-        """
-        for _ in range(3):
+    def test_a_spent_allowance_is_rate_limited_and_not_locked(self, delay):
+        """429 and not 403 — see the class docstring for why the two must not be confused."""
+        for _ in range(10):
             self.assertEqual(self.preview().status_code, 202)
             self.settle()
             self.assertEqual(self.save().status_code, 202)

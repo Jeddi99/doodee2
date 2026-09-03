@@ -19,6 +19,8 @@ export type ScoredView = 'front' | 'side';
 export type ScoredMetric = {
   key: string;
   category: MetricCategory;
+  /** Set by `percentile.redact_reference_scores` on a row this plan may not read. */
+  locked?: boolean;
   observed: number;
   reference: number;
   normalized_deviation: number;
@@ -30,10 +32,18 @@ export type ScoredMetric = {
 
 export type ReferenceScores = {
   overall_score: number | null;
-  categories: { key: MetricCategory; score: number; metric_count: number }[];
+  /**
+   * `score` is `null` and `locked` is true on a category this plan may not read — the server
+   * keeps the key and the count so the screen can say a measurement exists without saying what
+   * it says. See `percentile.redact_reference_scores`.
+   */
+  categories: { key: MetricCategory; score: number | null; metric_count: number; locked?: boolean }[];
   metrics: ScoredMetric[];
   /** Present only on scans analysed after per-view scoring landed; derived here when it is not. */
   views?: { key: ScoredView; score: number; metric_count: number }[];
+  /** Set by `percentile.redact_reference_scores`: which categories this plan may not read. */
+  locked_categories?: string[];
+  redacted?: boolean;
   /** Who the published means were measured on. `reference_scoring.score_observations`. */
   reference?: {
     profile?: string;
@@ -56,14 +66,17 @@ export type RatioRow = {
   id: string;
   name: string;
   value: string;
-  score: number;
+  /** `null` on a withheld row, never 0 — a zero would rank as the worst measurement on the face. */
+  score: number | null;
   ideal: string;
   status: string;
   detail: string;
   mayIndicate: string;
   affected: string[];
   category: MetricCategory;
-  normalizedDeviation: number;
+  normalizedDeviation: number | null;
+  /** Withheld by the plan: the name is real, every number on the row is absent. */
+  locked: boolean;
 };
 
 export type Pillar = {
@@ -75,11 +88,20 @@ export type Pillar = {
   /**
    * Why it is locked, which is not one thing.
    *
-   * `not_scored` means this scan has no score for it yet — a paid plan or a better scan can
-   * change that. `unmeasurable` means no published reference measures it at all, so paying
-   * changes nothing and offering the upgrade is selling something that does not exist.
+   * `plan` means the server withheld the score because this account has not paid for it — the
+   * one lock an upgrade actually opens. `not_scored` means this scan has no score for it yet, so
+   * a better scan can change it and paying cannot. `unmeasurable` means no published reference
+   * measures it at all, so neither changes anything and offering the upgrade would be selling
+   * something that does not exist.
    */
-  lockReason: 'not_scored' | 'unmeasurable' | null;
+  lockReason: 'plan' | 'not_scored' | 'unmeasurable' | null;
+  /**
+   * How many measurements sit behind the pillar — including the ones this plan may not read.
+   *
+   * The server keeps `metric_count` on a withheld category for exactly this: the overall score is
+   * the mean of all twelve however few of them are legible, and a card that counted only the
+   * readable ones would make the sentence under the overall say it was averaged from two.
+   */
   metricCount: number;
 };
 
@@ -335,6 +357,25 @@ const formatReference = (metric: ScoredMetric) => formatMeasure(metric.reference
 export function toRatioRow(metric: ScoredMetric, locale: 'th' | 'en' = 'en'): RatioRow {
   const dict = METRIC_COPY[locale] || METRIC_COPY.en;
   const copy = dict[metric.key] || METRIC_COPY.en[metric.key] || {};
+  // A withheld row keeps its name and its place in the list and loses every number. `score` is
+  // `null` rather than 0, because `strengthsFor` and `improvementsFor` select on a numeric score
+  // and a zero would rank the row as the worst measurement on the face.
+  if (metric.locked) {
+    return {
+      id: metric.key,
+      name: copy.name || metric.key,
+      value: '',
+      score: null,
+      ideal: '',
+      status: '',
+      detail: copy.detail || '',
+      mayIndicate: '',
+      affected: copy.affected || [],
+      category: metric.category,
+      normalizedDeviation: null,
+      locked: true,
+    };
+  }
   return {
     id: metric.key,
     name: copy.name || metric.key,
@@ -347,8 +388,22 @@ export function toRatioRow(metric: ScoredMetric, locale: 'th' | 'en' = 'en'): Ra
     affected: copy.affected || [],
     category: metric.category,
     normalizedDeviation: metric.normalized_deviation,
+    locked: false,
   };
 }
+
+/** A row with numbers on it. The withheld ones keep only their name. */
+export type ReadableRatioRow = RatioRow & { score: number; normalizedDeviation: number };
+
+/**
+ * Whether this row can be ranked or plotted.
+ *
+ * A type guard rather than a bare filter so the compiler carries the answer into the sort and the
+ * formatting below. That is what turned the withheld rows into a compile error at every place
+ * that read a number off one, instead of `undefined` reaching a `toFixed` at runtime.
+ */
+export const isReadable = (row: RatioRow): row is ReadableRatioRow =>
+  !row.locked && typeof row.score === 'number' && typeof row.normalizedDeviation === 'number';
 
 const referenceScores = (scan: Scan): ReferenceScores | null => scan?.analysis_data?.reference_scores || null;
 
@@ -371,13 +426,21 @@ export function pillarsFor(scan: Scan, locale: 'th' | 'en' = 'en'): Pillar[] {
       return item ? [item] : [];
     });
     const { label, note } = dict[id] || PILLAR_LABELS.en[id];
-    if (!present.length) {
-      // No category behind it at all means no study measures it — as against a category that
-      // exists but this particular scan did not score.
-      const lockReason = categories.length ? 'not_scored' : 'unmeasurable';
-      return { id, label, note, score: '—', locked: true, lockReason, metricCount: 0 };
+    // A category the server withheld arrives with its key and its metric count and no score. It is
+    // present — the pillar exists and has measurements behind it — but there is nothing to average.
+    const readable = present.filter(
+      (item): item is typeof item & { score: number } => typeof item.score === 'number',
+    );
+    const behind = present.reduce((total, item) => total + (item.metric_count || 0), 0);
+    if (!readable.length) {
+      // Three different locks, and the difference decides what the card offers. Paying opens the
+      // first and neither of the others, so a card that cannot tell them apart either sells an
+      // upgrade that changes nothing or fails to sell the one that does.
+      const lockReason = present.some((item) => item.locked) ? 'plan'
+        : categories.length ? 'not_scored' : 'unmeasurable';
+      return { id, label, note, score: '—', locked: true, lockReason, metricCount: behind };
     }
-    const mean = present.reduce((total, item) => total + item.score, 0) / present.length;
+    const mean = readable.reduce((total, item) => total + item.score, 0) / readable.length;
     return {
       id,
       label,
@@ -385,7 +448,7 @@ export function pillarsFor(scan: Scan, locale: 'th' | 'en' = 'en'): Pillar[] {
       score: (toTenScale(mean) ?? 0).toFixed(1),
       locked: false,
       lockReason: null,
-      metricCount: present.reduce((total, item) => total + item.metric_count, 0),
+      metricCount: behind,
     };
   });
 }
@@ -474,7 +537,8 @@ export function viewScoresFor(scan: Scan): ViewScore[] {
   });
 }
 
-const byScoreDescending = (a: RatioRow, b: RatioRow) => b.score - a.score;
+/** Only ever applied to rows `isReadable` has already accepted, so both scores are numbers. */
+const byScoreDescending = (a: ReadableRatioRow, b: ReadableRatioRow) => b.score - a.score;
 
 /**
  * The two insight cards rank the same measurements two different ways, so the number each one
@@ -504,7 +568,7 @@ export type InsightRow = {
 export function strengthsFor(scan: Scan, limit = Infinity, locale: 'th' | 'en' = 'en'): InsightRow[] {
   const refLabel = locale === 'th' ? 'เกณฑ์อ้างอิง' : 'Reference';
   return ratioRows(scan, locale)
-    .filter((row) => typeof row.score === 'number')
+    .filter(isReadable)
     .sort(byScoreDescending)
     .slice(0, limit)
     .map((row) => ({
@@ -527,7 +591,7 @@ export function improvementsFor(scan: Scan, limit = Infinity, locale: 'th' | 'en
   const obsLabel = locale === 'th' ? 'ค่าที่วัดได้' : 'Observed';
   const refLabel = locale === 'th' ? 'เกณฑ์อ้างอิง' : 'Reference';
   return ratioRows(scan, locale)
-    .filter((row) => typeof row.score === 'number')
+    .filter(isReadable)
     .sort((a, b) => Math.abs(b.normalizedDeviation) - Math.abs(a.normalizedDeviation))
     .slice(0, limit)
     .map((row) => ({

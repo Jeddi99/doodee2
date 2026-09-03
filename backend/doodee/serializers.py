@@ -1,5 +1,6 @@
 from rest_framework import serializers
 
+from . import percentile
 from .analysis_engine import strip_metric_geometry
 from .models import ChatConversation, ChatMessage, Order, Plan, Scan, Simulation
 from .storage import signed_url
@@ -26,18 +27,32 @@ class ScanSerializer(serializers.ModelSerializer):
         read_only_fields = fields
 
     def get_analysis_data(self, obj):
-        """The stored analysis, minus the measured points once the photographs are gone.
+        """The stored analysis, minus the measured points once the photographs are gone, and minus
+        the scores a partial-depth plan has not paid for.
 
-        `purge_scan_images` already removes them at 30 days, so this is the same rule enforced a
-        second time at the moment of serving. Worth the duplication: that task is a retrying
-        Celery job and this is the only path the coordinates can reach a browser by, so a broker
-        outage must not be able to hand out a landmark set for a photograph that no longer
+        `purge_scan_images` already removes the points at 30 days, so that half is the same rule
+        enforced a second time at the moment of serving. Worth the duplication: that task is a
+        retrying Celery job and this is the only path the coordinates can reach a browser by, so a
+        broker outage must not be able to hand out a landmark set for a photograph that no longer
         exists. It is also what covers a scan whose upload failed after the row was written.
+
+        The second half is newer and was missing entirely. A free account received every category
+        score and all twelve measurements here, and the dashboard's locked cards were locked by
+        client-side CSS over numbers that were already in the response body. `percentile.redact`
+        had been withholding correctly on the score card and the assessment for as long as it has
+        existed; this endpoint — the one the four pillar cards actually read — went through no
+        such rule. Both list and detail come through here, so both are covered.
         """
-        if obj.image_objects:
-            return obj.analysis_data
-        stripped, _changed = strip_metric_geometry(obj.analysis_data)
-        return stripped
+        data = obj.analysis_data
+        if not obj.image_objects:
+            data, _changed = strip_metric_geometry(data)
+        # `None` context — a serializer built outside a request, as several tasks and the admin
+        # do — withholds nothing: there is no user to withhold from, and the caller is server-side
+        # code that already holds the row.
+        user = getattr(self.context.get("request"), "user", None)
+        if user is not None and user.is_authenticated:
+            data = percentile.readable_scores(user, data)
+        return data
 
     def get_has_profile_images(self, obj):
         """Lets clients gate profile presets on the photos that exist, not the mode name."""

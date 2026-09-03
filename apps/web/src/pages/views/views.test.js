@@ -371,6 +371,64 @@ test('the score card names its cohort only when the scan carries one', () => {
     'the cohort sentence is printed again without checking there is a cohort');
 });
 
+// ---------------------------------------------------------------- what leaves as a file
+
+test('the card that leaves as a file carries the sentences that qualify it', () => {
+  /**
+   * `.share-card` is the node the download button renders to a PNG. That file is opened in a
+   * camera roll, forwarded to friends, and read by people who have never seen this page — so a
+   * caveat that sits *beside* the card on screen has not qualified the thing that travelled.
+   * Both sentences the product is careful about have to be inside the exported node itself: that
+   * this is closeness to a reference mean rather than a beauty score, and that the percentile
+   * assumes independent measurements.
+   */
+  const source = copyOf('ScoreCardPanel.tsx');
+  const start = source.indexOf('className="share-card" ref={shareRef}');
+  const end = source.indexOf('share-card__actions', start);
+  assert.ok(start > 0 && end > start, 'the exported node moved; re-read what travels inside it');
+  const exported = source.slice(start, end);
+  assert.match(exported, /ไม่ใช่การให้คะแนนความสวยงาม/,
+    'the exported card no longer says it is not a beauty score');
+  assert.match(exported, /assumes_independent_metrics/,
+    'the independence caveat is no longer inside the part that gets saved as a file');
+});
+
+test('the exported chart is coloured by attributes, not by the stylesheet', () => {
+  /**
+   * `html-to-image` deep-clones an <svg> and copies computed styles onto its root and onto no
+   * child of it. A class-styled path therefore arrives in the PNG with SVG defaults: the area
+   * under the curve came out as a solid black slab, and the line and the marker did not come out
+   * at all, while the same card on screen looked correct. A `url(#gradient)` fill fails the same
+   * trip for a different reason — the reference resolves against a document the exported SVG
+   * cannot see.
+   */
+  const source = copyOf('ScoreCardPanel.tsx');
+  assert.ok(!/className="share-card__curve-/.test(source),
+    'the chart is styled from styles.css again, which the PNG export cannot carry');
+  assert.ok(!/url\(#/.test(source), 'a fragment-reference paint is back in the exported chart');
+  assert.match(source, /<path d=\{curve\} fill="none" stroke=\{CURVE_INK\}/,
+    'the curve line no longer carries its own stroke');
+});
+
+test('the angle scores come from the block the server builds before it withholds', () => {
+  /**
+   * `viewScoresFor(scan)` averages the metrics on the scan payload, and those are withheld by
+   * plan: `redact_reference_scores` strips `score` from every measurement outside the readable
+   * categories. On a free account the front figure was the mean of the two measurements that
+   * survived, printed as "หน้าตรง · 2 ค่า" beside an overall built from all twelve — a real
+   * number computed over the wrong nine. `GET .../assessment/` builds `views` from the whole
+   * list, before any withholding.
+   */
+  const source = read('ScoreCardPanel.tsx');
+  assert.ok(!copyOf('ScoreCardPanel.tsx').includes('viewScoresFor'),
+    'the card derives its angle scores from the redacted scan payload again');
+  assert.match(source, /assessmentData\?\.views/, 'the angle scores no longer come from the assessment');
+  assert.match(backend('views.py'), /scored_views = scores\.get\("views"\) or views_from_metrics/,
+    'the assessment stopped building views before redaction; re-read where the angle scores come from');
+  assert.match(backend('percentile.py'), /"key": item\.get\("key"\), "category": item\.get\("category"\),/,
+    'redact_reference_scores changed shape; re-check whether the scan payload can be averaged again');
+});
+
 test('the payout form is not offered where an account cannot be stored', () => {
   /**
    * `payout.save_account` fails closed without PAYOUT_ENCRYPTION_KEY — correctly — but the only

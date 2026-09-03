@@ -40,11 +40,15 @@ REQUIRED_PACKAGES = {
         "baht": 0,
         "analysis_depth": Plan.AnalysisDepth.PARTIAL,   # "บอกแค่ส่วนน้อย"
         "has_development_plan": False,                  # "ไม่มีแผนการพัณนา"
-        # The document used to say "ไม่มีการจำลองใบหน้า" and the row agreed with it, which is how
-        # the three saves on the same row became an allowance nobody could spend: the save route
-        # is gated on the preview quota too. The owner changed the decision, the document was
-        # changed with it, and the figure is read from the document as this file always does.
-        "simulations": 3,                               # "จำลองใบหน้าได้ 3 ครั้งต่อเดือน"
+        # Zero, and it has been both. The document said "ไม่มีการจำลองใบหน้า", then said three a
+        # month, and now says none again — each time because the owner decided it and the document
+        # was changed with the decision. The figure is read from the document either way, which is
+        # the point of this table: it is not the place the number is chosen.
+        #
+        # Both simulation columns move together. Zero previews with a non-zero save count is the
+        # incoherence 0041 was written to remove — `_simulation_locked` gates the save route on the
+        # preview quota, so saves the plan advertises would be unreachable.
+        "simulations": 0,                               # "ไม่มีการจำลองใบหน้า"
         "chat_turns": 5,                                # "ai chat ได้ 5 ข้อความต่อเดือน"
     },
     "plus": {
@@ -182,24 +186,33 @@ class FreePackageTest(TestCase):
         response = self.client.get(f"/api/v1/scans/{self.scan.id}/development-plan/")
         self.assertEqual(response.status_code, 403)
 
-    def test_simulation_is_metered_rather_than_locked(self):
-        """"จำลองใบหน้าได้ 3 ครั้งต่อเดือน" — an allowance, so neither route may answer 403.
+    def test_simulation_is_locked_rather_than_metered(self):
+        """"ไม่มีการจำลองใบหน้า" — a plan-level zero, so both routes answer 403.
 
-        403 is the lock, and it is a plan-level zero: `_simulation_locked` refuses the preview
-        *and* the save route whenever a plan grants no previews at all. While the free row said
-        zero, the three saves it also advertised were unreachable. So what this asserts is the
-        absence of that answer, not a particular success — the render itself needs a real image
-        and belongs to the simulation tests.
+        This test has said both things. While the document sold three a month it asserted the
+        absence of a 403; the owner has since closed the simulator to this tier and the document
+        was changed with the decision, so it asserts the 403 instead.
+
+        Both routes, because `_simulation_locked` gates them together — a save is a render too, and
+        a tier that could save without previewing would be committing to a picture it never saw.
+        403 rather than 429: a spent monthly allowance is rate-limiting and says something the user
+        can wait out, while this is the tier not including the feature at all.
         """
-        self.assertEqual(entitlement.quota(self.user, entitlement.PREVIEWS), 3)
-        self.assertEqual(entitlement.quota(self.user, entitlement.SAVES), 3)
+        self.assertEqual(entitlement.quota(self.user, entitlement.PREVIEWS), 0)
+        self.assertEqual(entitlement.quota(self.user, entitlement.SAVES), 0)
         for route, key in (("preview/", "k1"), ("", "k2")):
             with self.subTest(route=route or "create"):
                 response = self.client.post(f"/api/v1/simulations/{route}", {
                     "scan_id": str(self.scan.id), "region": "nose", "preset_id": "x",
                     "simulation_consent_version": "1",
                 }, format="json", HTTP_IDEMPOTENCY_KEY=key)
-                self.assertNotEqual(response.status_code, 403, response.content)
+                self.assertEqual(response.status_code, 403, response.content)
+                self.assertEqual(response.data["detail"], "simulation_requires_entitlement")
+
+    def test_the_session_tells_the_client_before_it_asks(self):
+        """The screen replaces itself with a lock; it must not discover this from a failed POST."""
+        session = self.client.get("/api/v1/session/")
+        self.assertTrue(session.data["simulation_locked"])
 
     def test_the_saves_it_advertises_can_be_reached(self):
         """The defect this replaced a 403 to fix, stated as arithmetic rather than as a route.

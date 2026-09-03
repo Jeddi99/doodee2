@@ -27,6 +27,7 @@ import {
   overallScore,
   pillarsFor,
   ratioRows,
+  isReadable,
   METRIC_SIMULATION_REGION,
   METRIC_VIEW,
   type MetricCategory,
@@ -165,9 +166,6 @@ type InsightItem = InsightRow;
 
 /** How many insight rows are visible before the card is expanded. */
 const INSIGHT_PREVIEW = 3;
-
-/** How many ratio rows a partial-depth plan may read. See `analysisRedacted` in `Analysis`. */
-const FREE_RATIO_ROWS = 3;
 
 /**
  * Every figure the dashboard renders comes from here. qijek held these as module-level literals;
@@ -559,6 +557,12 @@ function Overview({
   // Summed off the pillars rather than read from `coverage`, so the number under the overall score
   // and the numbers under each pillar chip can never disagree: they come from one count.
   const scoredMetrics = pillars.reduce((total, item) => total + item.metricCount, 0);
+  // How many pillars the overall was actually averaged over, which is not the same as how many
+  // this reader may open. On a free account `unlockedCount` is 1, and the sentence under the
+  // overall said "averaged from 12 measurements in 1 pillar" — the 12 is right and the 1 is a
+  // description of the paywall, not of the arithmetic. The overall is the mean of every scored
+  // measurement whatever the plan withholds.
+  const measuredPillars = pillars.filter((item) => item.metricCount > 0).length;
   // The pillar the card headlines. qijek hardcodes `pillars[0]` and marks "harmony"
   // active; here it is whichever pillar is actually readable, so an account whose
   // first pillar is locked does not get a headline with nothing under it.
@@ -708,8 +712,8 @@ function Overview({
             <p>{overall === null
               ? (th ? "สแกนนี้ยังไม่มีคะแนนภาพรวม" : "This scan has no overall score yet")
               : th
-                ? `เฉลี่ยจากค่าที่วัดได้ ${scoredMetrics} ค่า ใน ${unlockedCount} มิติ`
-                : `Averaged across ${scoredMetrics} measurements in ${unlockedCount} pillars`}</p>
+                ? `เฉลี่ยจากค่าที่วัดได้ ${scoredMetrics} ค่า ใน ${measuredPillars} มิติ`
+                : `Averaged across ${scoredMetrics} measurements in ${measuredPillars} pillars`}</p>
             <div className="score-portrait-pair">
               <figure>
                 <ScanPhoto alt={th ? "ภาพหน้าตรงของคุณ" : "Your front scan"} />
@@ -936,7 +940,7 @@ function RatioModal({
           <div className="ratio-modal__score">
             <span className="eyebrow">{c.score}</span>
             <strong>
-              {metric.score.toFixed(1)}
+              {metric.score?.toFixed(1) ?? "—"}
               <small>/10</small>
             </strong>
             {/* Where the marker sits, and what the ends of the bar mean.
@@ -947,7 +951,7 @@ function RatioModal({
                 half its width. The marker was also clamped into 8-92%, so a 0.0 and a 0.8 landed
                 on the same pixel — a floor and a ceiling on a figure that has neither. */}
             <div className="ratio-range">
-              <i style={{ left: `${metric.score * 10}%` }} />
+              <i style={{ left: `${(metric.score ?? 0) * 10}%` }} />
               <span style={{ left: 0, transform: "none" }}>{c.farFromReference}</span>
               <span style={{ left: "100%", transform: "translateX(-100%)" }}>{c.reference}</span>
             </div>
@@ -996,7 +1000,7 @@ function RatioModal({
               <span className="eyebrow">{c.comparison}</span>
               <p>{c.comparisonBody(metric.value, metric.ideal)}</p>
               <div className="ratio-chips">
-                <span>{c.deviation(signedDeviation(metric.normalizedDeviation))}</span>
+                <span>{c.deviation(signedDeviation(metric.normalizedDeviation ?? 0))}</span>
                 <span>{metric.status}</span>
               </div>
             </div>
@@ -1545,22 +1549,7 @@ function Analysis({
    * scan scored is neither.
    */
   const pillarLocked = activePillar?.locked ?? true;
-  /**
-   * Whether this account's plan withholds the deeper rows, decided by the server.
-   *
-   * The gate here used to be `index > 2` — the fourth row onwards padlocked for everybody,
-   * including a Pro subscriber who had already paid for them, under a button offering to sell
-   * what they hold. `analysis_depth` is the entitlement that actually governs how much of an
-   * analysis a plan may read, and `GET /session/` publishes it exactly so the rule is not
-   * re-decided in the client (views.py:152).
-   *
-   * It is still only a curtain: `GET /scans/<id>/status/` serves `reference_scores` in full to
-   * every plan, so the withheld figures are already in the browser. Making the lock real means
-   * redacting them there, the way `score_card` and `skin-trend` already do — a backend change,
-   * noted here rather than papered over.
-   */
   const session = useQuery({ queryKey: ["session"], queryFn: getSession });
-  const analysisRedacted = session.data?.score_card_redacted === true;
   // The photograph on screen, and the geometry that goes with it, are the same view — the
   // measured spans are stored per captured view and cannot be drawn on any other one.
   const geometryView = photoViewKey(photoViews, angle);
@@ -1695,7 +1684,7 @@ function Analysis({
                 ? th ? "ยังให้คะแนนไม่ได้" : "Not measurable"
                 : pillarLocked
                   ? th ? "สแกนนี้ยังไม่ได้ให้คะแนน" : "Not scored on this scan"
-                  : activeRow
+                  : activeRow?.score != null
                     ? `${activeRow.score.toFixed(1)}/10`
                     : "—"}
             </strong>
@@ -1755,7 +1744,14 @@ function Analysis({
           <p className="ratio-panel__intro">{activePillar?.note}</p>
           <div className="ratio-list">
             {visible.map((metric, index) => {
-              const locked = pillarLocked || (analysisRedacted && index >= FREE_RATIO_ROWS);
+              // Off the row itself. Two gates preceded this one and both decided in the browser:
+              // first `index > 2`, which padlocked the fourth row onwards for a Pro subscriber who
+              // had paid for it, then `analysisRedacted && index >= 3`, which was the right
+              // entitlement applied by counting rows. Neither withheld anything — the numbers were
+              // in the payload either way — and both drew the line somewhere other than where the
+              // server drew it. `percentile.redact_reference_scores` empties the row now, so this
+              // reads the answer instead of guessing at it.
+              const locked = pillarLocked || metric.locked;
               return (
                 <button
                   className={`ratio-row ${activeIndex === index ? "is-active" : ""} ${locked ? "is-locked" : ""}`}
@@ -1775,7 +1771,9 @@ function Analysis({
                       length of the fill gave away the number the row claimed to be hiding. A
                       locked row draws no bar at all. */}
                   <div className="ratio-row__track">
-                    {!locked && (
+                    {/* `isReadable` rather than `!locked`: the bar is drawn from a number, and a
+                        row that has no number cannot draw one whatever the reason. */}
+                    {!locked && isReadable(metric) && (
                       <>
                         <i style={{ width: `${metric.score * 10}%` }} />
                         <b style={{ left: `${metric.score * 10}%` }} />
@@ -1786,7 +1784,9 @@ function Analysis({
                     {locked ? <LockKeyhole /> : metric.value}
                   </em>
                   <span className="ratio-score">
-                    {locked ? <LockedNumber suffix="" compact /> : metric.score.toFixed(1)}
+                    {locked || !isReadable(metric)
+                      ? <LockedNumber suffix="" compact />
+                      : metric.score.toFixed(1)}
                   </span>
                   <ChevronDown />
                 </button>

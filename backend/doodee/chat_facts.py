@@ -88,9 +88,22 @@ def _direction(z, lang):
     return "larger than the reference" if z > 0 else "smaller than the reference"
 
 
+def _withheld(rows):
+    """Rows `percentile.redact_reference_scores` emptied for a partial-depth plan.
+
+    They arrive with their key and category and nothing else, so every reader here has to step
+    over them rather than reach for a number that is not there. Counted rather than dropped
+    silently: a canned answer that says "12 measurements" while listing two is a worse answer than
+    one that says how many it is not showing.
+    """
+    return [row for row in rows if row.get("locked")]
+
+
 def _measurements(scores, lang):
     lines = []
-    for metric in scores.get("metrics") or []:
+    readable = [m for m in (scores.get("metrics") or []) if not m.get("locked")]
+    locked = _withheld(scores.get("metrics") or [])
+    for metric in readable:
         unit = ("องศา" if metric["unit"] == "degree" else "สัดส่วน") if lang == "th" else metric["unit"]
         lines.append(
             f"• {_metric_label(metric['key'], lang)}: {metric['observed']} {unit} "
@@ -98,15 +111,22 @@ def _measurements(scores, lang):
             f"{'คะแนน' if lang == 'th' else 'score'} {metric['score']}/100)"
         )
     body = "\n".join(lines)
+    total = len(lines) + len(locked)
     if lang == "th":
-        return (
-            f"วัดได้ {len(lines)} ค่า จากภาพที่คุณถ่าย ทุกค่าเทียบกับกลุ่มอ้างอิงคนไทย "
+        text = (
+            f"วัดได้ {total} ค่า จากภาพที่คุณถ่าย ทุกค่าเทียบกับกลุ่มอ้างอิงคนไทย "
             f"{(scores.get('reference') or {}).get('sample_size', 240)} คน:\n\n{body}"
         )
-    return (
-        f"{len(lines)} measurements were taken from your photos, each compared with a reference "
+        if locked:
+            text += f"\n\nอีก {len(locked)} ค่าอยู่ในแผนแบบเต็ม จึงยังไม่แสดงที่นี่"
+        return text
+    text = (
+        f"{total} measurements were taken from your photos, each compared with a reference "
         f"of {(scores.get('reference') or {}).get('sample_size', 240)} Thai adults:\n\n{body}"
     )
+    if locked:
+        text += f"\n\nThe other {len(locked)} are part of the full analysis and are not shown here."
+    return text
 
 
 def _extreme(scores, lang, furthest=True):
@@ -146,7 +166,8 @@ def _extreme(scores, lang, furthest=True):
 def _categories(scores, lang):
     lines = [
         f"• {_pick(CATEGORY_LABELS.get(c['key'], (c['key'], c['key'])), lang)}: "
-        f"{c['score']}/100 ({c['metric_count']} {'ค่า' if lang == 'th' else 'measurements'})"
+        + (("ยังไม่เปิดในแผนนี้" if lang == "th" else "not included in this plan") if c.get("locked")
+           else f"{c['score']}/100 ({c['metric_count']} {'ค่า' if lang == 'th' else 'measurements'})")
         for c in scores.get("categories") or []
     ]
     overall = scores.get("overall_score")

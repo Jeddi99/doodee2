@@ -52,6 +52,41 @@ VIEW_OF = {
 SCORED_VIEWS = ("front", "side")
 if set(VIEW_OF) != set(CATEGORIES):
     raise RuntimeError("VIEW_OF and CATEGORIES must name the same observations")
+
+# The four pillars the analysis screen groups these categories into, in the order it draws them.
+#
+# Mirrored from `apps/web/src/lib/dashboardData.ts`'s `PILLAR_CATEGORIES`, which is where the cards
+# are actually built; `dashboardData.test.js` reads this tuple and fails when the two disagree.
+# It lives here rather than there because the server has to withhold along the same lines the
+# client draws, and a paywall whose boundary is decided in the browser is not a paywall.
+PILLARS = (
+    ("harmony", ("proportions",)),
+    ("angularity", ("chin",)),
+    ("eyes", ("eyes",)),
+    ("features", ("nose", "lips")),
+)
+if {key for _name, keys in PILLARS for key in keys} != set(CATEGORIES.values()):
+    raise RuntimeError("PILLARS and CATEGORIES must name the same categories")
+
+
+def visible_categories(scored):
+    """The categories a partial-depth plan may read: the first pillar this scan actually scored.
+
+    One pillar, not a count of categories. The rule used to be "the two highest-scoring
+    categories", which had two problems. It told a free reader which of their categories scored
+    best — an ordering fact the tier is not meant to include — and it was a *second* rule, because
+    the dashboard picked its own. Between them a free account could open three of the five.
+
+    Sliding rather than fixed on `harmony`: a scan with no profile photograph, or one MediaPipe read
+    badly, can leave the first pillar unscored, and a fixed rule would show that account four
+    blurred cards and nothing else. `scored` is the set of category keys this scan has a number
+    for, so the first pillar with anything in it is the one that opens.
+    """
+    for _name, keys in PILLARS:
+        visible = tuple(key for key in keys if key in scored)
+        if visible:
+            return visible
+    return ()
 UNSUPPORTED_CATEGORIES = ("brows", "cheeks", "jaw", "smile", "neck", "skin")
 
 # The published cohort is Thai only. Other populations are recorded and flagged so future

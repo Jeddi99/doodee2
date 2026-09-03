@@ -157,6 +157,9 @@ export default function ChatPanel() {
   // Shown immediately so the question does not vanish while the request is in flight; the
   // stored copy from the server replaces it once the turn lands.
   const [pending, setPending] = useState<string | null>(null);
+  // Which turn `pending` is: a chip carries a topic key, typed text does not. Retry needs to know
+  // which of the two mutations to call, and the question alone cannot say.
+  const [pendingTopic, setPendingTopic] = useState<string | null>(null);
   // Only meaningful before the first turn: after that the server keeps the thread on the
   // voice it was opened with, and this falls back to showing that voice as a label.
   const [role, setRole] = useState<string | null>(null);
@@ -202,6 +205,7 @@ export default function ChatPanel() {
 
   const applyTurn = (data: { conversation_id: string }) => {
     setPending(null);
+    setPendingTopic(null);
     setConversationId(data.conversation_id);
     queryClient.invalidateQueries({ queryKey: ["chat", data.conversation_id] });
     queryClient.invalidateQueries({ queryKey: ["chats"] });
@@ -213,13 +217,11 @@ export default function ChatPanel() {
   const ask = useMutation({
     mutationFn: (topic: string) => askChatTopic({ topic, conversationId, scanId, lang: locale }),
     onSuccess: applyTurn,
-    onError: () => setPending(null),
   });
 
   const send = useMutation({
     mutationFn: (message: string) => sendChat({ message, conversationId, scanId, role: role ?? undefined }),
     onSuccess: applyTurn,
-    onError: () => setPending(null),
   });
 
   const remove = useMutation({
@@ -254,6 +256,7 @@ export default function ChatPanel() {
     if (!clean || busy || outOfTurns || chatOff) return;
     setValue("");
     setPending(clean);
+    setPendingTopic(null);
     send.mutate(clean);
   };
 
@@ -262,7 +265,17 @@ export default function ChatPanel() {
   const askTopic = (topic: string, question: string) => {
     if (busy) return;
     setPending(question);
+    setPendingTopic(topic);
     ask.mutate(topic);
+  };
+
+  // The same gates `submit` and `askTopic` apply, against the turn already on screen. Chips skip
+  // the quota checks here for the reason they skip them there: the server does not meter them.
+  const retry = () => {
+    if (!pending || busy) return;
+    if (pendingTopic !== null) { ask.mutate(pendingTopic); return; }
+    if (outOfTurns || chatOff) return;
+    send.mutate(pending);
   };
 
   return (
@@ -273,7 +286,7 @@ export default function ChatPanel() {
             <ScanFace />
             <strong>{copy.brand}</strong>
           </div>
-          <button type="button" onClick={() => { setConversationId(null); setPending(null); setRole(null); setRoleMenuOpen(false); }}>
+          <button type="button" onClick={() => { setConversationId(null); setPending(null); setPendingTopic(null); send.reset(); ask.reset(); setRole(null); setRoleMenuOpen(false); }}>
             <Plus /> {copy.newChat}
           </button>
         </header>
@@ -293,7 +306,7 @@ export default function ChatPanel() {
               className={`gpt-history-item ${item.id === conversationId ? "is-active" : ""}`}
               type="button"
               key={item.id}
-              onClick={() => { setConversationId(item.id); setPending(null); }}
+              onClick={() => { setConversationId(item.id); setPending(null); setPendingTopic(null); send.reset(); ask.reset(); }}
             >
               <MessageCircle />
               <span>
@@ -411,7 +424,11 @@ export default function ChatPanel() {
                   <p>{copy.thinking}</p>
                 </div>
               ) : null}
-              {send.error || ask.error ? (
+              {/* Gated on `pending`, not on the error alone. A mutation error outlives the turn
+                  that raised it, so a failed typed send left its bubble hanging under the next
+                  chip answer — in a different conversation, with the message it belonged to
+                  already gone. An error with no turn on screen belongs to nothing. */}
+              {pending && (send.error || ask.error) ? (
                 <div className="gpt-message is-assistant" role="alert">
                   <span>
                     <ScanFace />
@@ -441,6 +458,11 @@ export default function ChatPanel() {
                         </small>
                       </>
                     ) : null}
+                    {/* `copy.retry` existed in both languages and was never rendered, so the only
+                        way to send a failed question again was to remember it and retype it. */}
+                    <button type="button" className="gpt-retry" onClick={retry} disabled={busy}>
+                      {copy.retry}
+                    </button>
                   </p>
                 </div>
               ) : null}

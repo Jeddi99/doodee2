@@ -180,13 +180,23 @@ def _metric_label(key):
     return f"{key} ({CATEGORIES.get(key, 'uncategorised')})"
 
 
-def scan_context(scan):
+def scan_context(scan, user=None):
     """The scan's numbers as plain text for the cached system block.
 
     Text rather than raw JSON: it is a third the tokens, and the units and the meaning of z
     have to be spelled out anyway.
+
+    `user` decides how much of it there is. A partial-depth plan's block is built from the same
+    withheld payload the screen is drawn from, so the model is never holding a number the reader
+    has not paid for — the alternative is telling the model not to say it, which is a paywall made
+    of a sentence in a prompt. `None` keeps the full block, for callers with no user in hand.
     """
-    scores = ((scan.analysis_data or {}).get("reference_scores") or {}) if scan else {}
+    analysis_data = scan.analysis_data if scan else None
+    if scan and user is not None:
+        from .percentile import readable_scores
+
+        analysis_data = readable_scores(user, analysis_data)
+    scores = ((analysis_data or {}).get("reference_scores") or {}) if scan else {}
     if not scores or scores.get("status") != "experimental_reference_similarity":
         return NO_SCAN_CONTEXT
 
@@ -201,16 +211,30 @@ def scan_context(scan):
         "",
         "Per category (score/100, higher = closer to the reference average):",
     ]
+    # A withheld row arrives with its numbers removed and `locked: True`. It is named rather than
+    # dropped, and named as withheld rather than as absent: the model has to be able to answer
+    # "why can I not see my chin score" with the truth, and "this was not measured" is a different
+    # and false answer. See `percentile.redact_reference_scores`.
     for category in scores.get("categories") or []:
+        if category.get("locked"):
+            lines.append(f"- {category['key']}: WITHHELD — this reader's plan does not include it")
+            continue
         lines.append(f"- {category['key']}: {category['score']} from {category['metric_count']} measurements")
 
     lines += ["", "Per measurement — observed, reference mean, z (signed: negative = smaller than the reference), score:"]
     for metric in scores.get("metrics") or []:
+        if metric.get("locked"):
+            lines.append(f"- {_metric_label(metric['key'])}: WITHHELD — not included in this reader's plan")
+            continue
         lines.append(
             f"- {_metric_label(metric['key'])}: observed {metric['observed']} {metric['unit']}, "
             f"reference {metric['reference']} {metric['unit']}, z {metric['normalized_deviation']}, "
             f"score {metric['score']}"
         )
+    if any(item.get("locked") for item in (scores.get("categories") or [])):
+        lines += ["", "The WITHHELD figures are not in this context and you do not have them. If "
+                      "asked for one, say it is part of the paid analysis — never guess a number, "
+                      "and never infer one from the overall index."]
 
     unsupported = scores.get("unsupported_categories") or []
     if unsupported:

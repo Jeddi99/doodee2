@@ -59,15 +59,20 @@ export const siteCopy = {
     pricingBody:
       "Start free, then upgrade for the full set of measurements, a development plan and face simulations.",
     freeTitle: "Free",
-    freeBody: "A partial read: your overall score and a few standout metrics.",
+    freeBody: "A partial read: your overall score and one pillar of the analysis.",
     freeFeatures: [
-      "Overall score and a few standout metrics",
+      "Overall score and one pillar of the analysis",
       "Prioritised questions to bring to a consultation",
       `${PLAN_LIMITS.free.chatTurns} chat questions a month`,
     ],
-    // Said on the card rather than discovered after signing up. Free renders a face — three
-    // previews and three saves a month — but the analysis stays partial and there is no plan.
-    freeNote: `${PLAN_LIMITS.free.simulations} simulations a month. Partial analysis, and no development plan on this tier.`,
+    // Said on the card rather than discovered after signing up. Free does not render a face at
+    // all, and the analysis it does read is one pillar of four — both are what the tier is, not
+    // something to find out after signing up.
+    //
+    // Written out rather than built from `PLAN_LIMITS.free.simulations`, which is now 0: the
+    // template would have produced "0 simulations a month", which reads as an allowance that
+    // happens to be empty this month rather than as a tier that does not include the feature.
+    freeNote: "Your overall score and one pillar of the analysis. No face simulation and no development plan on this tier.",
     startFree: "Start free",
     completeTitle: "Plus",
     membership: "Monthly membership",
@@ -417,13 +422,13 @@ export const siteCopy = {
     pricingBody:
       "เริ่มใช้ฟรี แล้วเลือกอัปเกรดเมื่อต้องการค่าที่วัดได้ครบทุกค่า แผนพัฒนาตนเอง และการจำลองใบหน้า",
     freeTitle: "ฟรี",
-    freeBody: "เห็นบางส่วน: คะแนนรวมและค่าที่โดดเด่นบางตัว",
+    freeBody: "เห็นบางส่วน: คะแนนภาพรวมและผลวิเคราะห์ 1 มิติ",
     freeFeatures: [
-      "คะแนนรวมและค่าที่โดดเด่นบางตัว",
+      "คะแนนภาพรวมและผลวิเคราะห์ 1 มิติ",
       "คำถามสำคัญสำหรับไปปรึกษาแพทย์",
       `ถามแชทได้ ${PLAN_LIMITS.free.chatTurns} ข้อความต่อเดือน`,
     ],
-    freeNote: `จำลองใบหน้าได้ ${PLAN_LIMITS.free.simulations} ครั้งต่อเดือน · ผลวิเคราะห์แบบบางส่วน และไม่มีแผนพัฒนาตนเอง`,
+    freeNote: "เห็นคะแนนภาพรวมและผลวิเคราะห์ 1 มิติ · ไม่มีการจำลองใบหน้า และไม่มีแผนพัฒนาตนเอง",
     startFree: "เริ่มวิเคราะห์ฟรี",
     completeTitle: "พลัส",
     membership: "สมาชิกแบบรายเดือน",

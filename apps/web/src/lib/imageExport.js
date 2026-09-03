@@ -89,3 +89,20 @@ export function exportFailureText(reason, isTh) {
   }
   return isTh ? 'บันทึกภาพไม่สำเร็จ ลองอีกครั้ง' : 'The image could not be saved. Try again.';
 }
+
+/**
+ * What the score card is called once it is on the user's device.
+ *
+ * Dated for the same reason `simulationFileName` is, and with no angle to name: there is one card
+ * per scan, so the date is the whole of what tells two of them apart in a downloads folder. A
+ * second export on the same day overwrites — which is the right outcome, because it is the same
+ * card rendered twice rather than two different pictures.
+ */
+export function scoreCardFileName(date = new Date()) {
+  const day = [
+    date.getFullYear(),
+    String(date.getMonth() + 1).padStart(2, '0'),
+    String(date.getDate()).padStart(2, '0'),
+  ].join('-');
+  return `doodee-score-card-${day}.png`;
+}
